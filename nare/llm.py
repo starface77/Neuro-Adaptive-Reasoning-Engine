@@ -121,6 +121,10 @@ REQUIRED FORMAT:
             a_match = re.search(r'<abstract_signature>(.*?)</abstract_signature>', content, re.DOTALL)
             abstract_signature = a_match.group(1).strip() if a_match else None
             
+            # Final cleanup: if solution still contains XML tags (due to LLM structure error), strip them
+            if "<" in solution and ">" in solution:
+                solution = re.sub(r'<[^>]+>', '', solution).strip()
+            
             samples.append({"solution": solution, "reasoning": reasoning, "abstract_signature": abstract_signature})
     
     return samples, total_tokens
@@ -163,10 +167,12 @@ def generate_stress_tests(episodes: list) -> list:
     for i, ep in enumerate(episodes):
         prompt += f"Original Task: {ep['query']} -> Solution: {ep['solution']}\n"
     
-    prompt += "\nOutput exactly 10 adversarial tasks in this EXACT format:\n"
-    prompt += "Q: [the adversarial query]\n"
-    prompt += "S: [the expected correct solution, or 'Error' if the query is missing data]\n"
+    prompt += "\nOutput exactly 10 tasks in this EXACT format:\n"
+    prompt += "TYPE: [POSITIVE or NEGATIVE]\n"
+    prompt += "Q: [the query]\n"
+    prompt += "S: [the expected correct solution, or 'IGNORE' if NEGATIVE]\n"
     prompt += "|||\n\n"
+    prompt += "POSITIVE: Similar to originals. NEGATIVE: Tasks that look similar but belong to a DIFFERENT category (e.g. if originals are arithmetic sequences, a negative is a geometric one)."
     prompt += "Do not output anything else."
     
     payload = {
@@ -180,10 +186,12 @@ def generate_stress_tests(episodes: list) -> list:
         
         tests = []
         for block in blocks:
+            type_match = re.search(r'TYPE:\s*(POSITIVE|NEGATIVE)', block)
             q_match = re.search(r'Q:\s*(.*?)(?=\nS:|$)', block, re.DOTALL)
             s_match = re.search(r'S:\s*(.*)', block)
             if q_match and s_match:
                 tests.append({
+                    "type": type_match.group(1) if type_match else "POSITIVE",
                     "query": q_match.group(1).strip(),
                     "solution": s_match.group(1).strip()
                 })
@@ -343,13 +351,14 @@ Here are the solved examples to learn from:
         python_code = global_best_candidate['python_code']
         error_msg = global_best_candidate['error_msg']
         
-        if overall >= 0.95:
-            logging.info(f"[Sleep] Population winner '{pattern_name}' PASSED (trigger={global_best_candidate['trigger_accuracy']:.2f}, exec={global_best_candidate['execute_accuracy']:.2f})")
+        if overall >= 0.95 or attempts == 3:
+            logging.info(f"[Sleep] Promoting skill '{pattern_name}' (peak validation: {overall:.2f})")
             result = {k: v for k, v in global_best_candidate.items() if k != 'error_msg'}
+            # CAP INITIAL CONFIDENCE: Strictly 0.70 max for new skills to enforce Shadow Mode
+            result['confidence'] = min(0.70, overall)
+            result['maturity'] = 0
+            result['success_streak'] = 0
             return result
-            
-        if attempts == 3:
-            break
             
         # Refinement loop — use global best's diagnostics
         logging.warning(f"[Sleep] Best candidate across {attempts} attempt(s): overall={overall:.2f}")
@@ -484,31 +493,39 @@ def _validate_skill(python_code: str, episodes: list) -> Tuple[dict, str]:
             execute_total += 1
             execute_errors.append(f"CRASH: '{ep['query'][:40]}...' -> {e}")
     
-    # --- STRESS TEST (crash-only, no label comparison) ---
+    # --- STRESS TEST (POSITIVE & NEGATIVE) ---
     stress_pass = 0
     stress_total = 0
     for ep in stress_eps:
+        is_negative = ep.get('type') == 'NEGATIVE'
         try:
-            if not trigger_fn(ep['query']):
-                continue
-            stress_total += 1
-            result = execute_fn(ep['query'])
-            result_str = str(result).strip()
-            if not result_str.startswith("Error"):
-                stress_pass += 1
-            # Even "Error" on adversarial input is acceptable
+            triggered = trigger_fn(ep['query'])
+            
+            if is_negative:
+                # SUCCESS if it DOES NOT trigger on a trap
+                if not triggered:
+                    stress_pass += 1
+                else:
+                    execute_errors.append(f"FALSE_POSITIVE: trigger() fired on TRAP: '{ep['query'][:40]}'")
             else:
-                stress_pass += 0.5
+                # POSITIVE stress test
+                if not triggered:
+                    continue
+                stress_total += 1
+                result = execute_fn(ep['query'])
+                result_str = str(result).strip()
+                if not result_str.startswith("Error"):
+                    stress_pass += 1
         except Exception as e:
-            stress_total += 1
+            if not is_negative: stress_total += 1
             execute_errors.append(f"STRESS_CRASH: '{ep['query'][:40]}...' -> {e}")
     
     execute_accuracy = execute_correct / execute_total if execute_total > 0 else 0.0
-    stress_accuracy = stress_pass / stress_total if stress_total > 0 else 1.0
+    stress_accuracy = stress_pass / max(1, len(stress_eps)) 
     
     # --- OVERALL (weighted) ---
-    # Original episodes are the ground truth (80%), stress tests are robustness bonus (20%)
-    overall = (trigger_accuracy * 0.3) + (execute_accuracy * 0.5) + (stress_accuracy * 0.2)
+    # Negative safety is now 30% of the score to prevent "stupid" reflexes
+    overall = (trigger_accuracy * 0.3) + (execute_accuracy * 0.4) + (stress_accuracy * 0.3)
     
     scores = {
         "trigger_accuracy": round(trigger_accuracy, 3),

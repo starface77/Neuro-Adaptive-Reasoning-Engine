@@ -158,6 +158,7 @@ class NAREProductionAgent:
         if np.max(dense_clusters) < 1:
             # No clusters found, but we can still try to refine weak rules
             self._prune_weak_rules()
+            self.memory.prune_fading_memories()
             return
             
         core_idx = int(np.argmax(dense_clusters))
@@ -224,8 +225,9 @@ class NAREProductionAgent:
                 rebuild_vecs = self._normalize_embeddings(rebuild_vecs)
                 self.memory.episodic_index.add(rebuild_vecs)
             
-            # Run pruning on weak rules that never improved
+            # Run pruning on weak rules and fading episodes
             self._prune_weak_rules()
+            self.memory.prune_fading_memories()
             
             self.memory.save()
             logging.info(f"[Sleep] Compressed {len(to_delete)} episodes into 1 rule + 1 representative.")
@@ -285,6 +287,15 @@ class NAREProductionAgent:
             episode_data["signature_embedding"] = query_emb
             
         added = self.memory.add_episode(episode_data, np.array([query_emb], dtype=np.float32))
+        if not added:
+            # If it's a deduplication, we increase strength/last_used of the existing one
+            vec = np.array([query_emb], dtype=np.float32)
+            retrieved = self.memory.retrieve_episodes(vec, k=1)
+            if retrieved:
+                idx = retrieved[0]['memory_id']
+                self.memory.episodes[idx]['last_used'] = time.time()
+                self.memory.episodes[idx]['strength'] = retrieved[0].get('strength', 1.0) + 0.2
+                self.memory.save()
         return added
 
     def wait_for_sleep(self, timeout=300):
@@ -303,9 +314,27 @@ class NAREProductionAgent:
         from nare.sandbox import safe_execute
         
         # =====================================================
-        # LAYER 1 & 2: PROGRAMMATIC ABSTRACT MATCHING (0ms, no network)
-        # Evaluate the heuristic trigger() function for ALL semantic rules.
-        # This replaces both regex and text-embedding skill matching.
+        # LAYER 0: EXACT CACHE (O(1) Direct Lookup)
+        # =====================================================
+        # Check if we have an EXACT match in episodes with a high score
+        for ep in self.memory.episodes:
+            if ep['query'].strip() == query.strip() and ep.get('score', 0) > 0.8:
+                log.append(f"Route: FAST CACHE (Exact match found, score: {ep['score']:.2f})")
+                # Update usage metrics for forgetting logic
+                ep['last_used'] = time.time()
+                ep['strength'] = ep.get('strength', 1.0) + 0.1
+                self.memory.save()
+                return {
+                    "route_decision": "FAST",
+                    "retrieved_memories": [ep],
+                    "generated_candidates": [],
+                    "critic_evaluation_table": [],
+                    "final_answer": ep['solution'],
+                    "memory_update_log": log
+                }
+
+        # =====================================================
+        # LAYER 1: PROGRAMMATIC REFLEXES (AST Execution)
         # =====================================================
         for sem in sorted(self.memory.semantic_rules, key=lambda x: x.get('confidence', 0.5), reverse=True):
             conf = sem.get('confidence', 0.5)
@@ -326,20 +355,41 @@ class NAREProductionAgent:
                     final_answer = safe_execute(sem['python_code'], query)
                     
                     if not final_answer.startswith("Error"):
-                        # SUCCESS: Record in score history
-                        self._record_skill_result(sem, success=True)
-                        route_name = "REFLEX" if conf >= 0.95 else "HYBRID_SKILL"
-                        return {
-                            "route_decision": route_name,
-                            "retrieved_memories": [],
-                            "generated_candidates": [],
-                            "critic_evaluation_table": [],
-                            "final_answer": final_answer,
-                            "memory_update_log": log + [f"Route: {route_name} (programmatic, conf={conf:.2f}, {time.time()-start_time:.4f}s)"]
-                        }
+                        maturity = sem.get('maturity', 0)
+                        
+                        # LAYER 1: SHADOW VERIFICATION (for non-mature skills)
+                        if maturity < 3:
+                            # Hardened Shadow Check Prompt
+                            check_prompt = f"### VERIFICATION TASK ###\nTask: {query}\nProposed Answer: {final_answer}\n\nDoes this answer correctly solve the task? Respond ONLY with 'YES' if it is correct, or 'NO' if it is incorrect. DO NOT repeat the answer or provide any other text."
+                            verification, _ = llm.generate_samples(check_prompt, n=1, temperature=0.0)
+                            v_ans = verification[0]['solution'].upper()
+                            if "YES" not in v_ans:
+                                logging.warning(f"[Shadow Mode] REJECTED '{sem['pattern']}': {v_ans}")
+                                log.append(f"Shadow Check FAILED for '{sem['pattern']}'. Applying heavy penalty.")
+                                sem['confidence'] = max(0.1, sem.get('confidence', 0.5) - 0.3)
+                                sem['maturity'] = max(0, maturity - 1)
+                                # Fall through
+                            else:
+                                logging.info(f"[Shadow Mode] ACCEPTED '{sem['pattern']}'")
+                                log.append(f"Shadow Check PASSED for '{sem['pattern']}'.")
+                                self._record_skill_result(sem, success=True)
+                                return {
+                                    "route_decision": "REFLEX_PROVISIONAL",
+                                    "final_answer": final_answer,
+                                    "memory_update_log": log + [f"Route: REFLEX_PROVISIONAL (conf={conf:.2f}, maturity={maturity})"]
+                                }
+                        else:
+                            # MATURE SKILL: Full reflex speed
+                            self._record_skill_result(sem, success=True)
+                            return {
+                                "route_decision": "REFLEX",
+                                "final_answer": final_answer,
+                                "memory_update_log": log + [f"Route: REFLEX (mature, conf={conf:.2f})"]
+                            }
                     else:
                         self._record_skill_result(sem, success=False)
-                        log.append(f"Skill returned Error, falling through: {final_answer[:60]}")
+                        sem['confidence'] = max(0.1, sem.get('confidence', 0.5) - 0.2)
+                        log.append(f"Skill returned Error: {final_answer[:60]}")
             except Exception as e:
                 self._record_skill_result(sem, success=False)
                 log.append(f"Skill crash: {e}")
@@ -481,10 +531,21 @@ class NAREProductionAgent:
             # Increase confidence by 0.01 on success, capped at 0.99
             rule['confidence'] = min(0.99, round((rolling_success * 0.7) + (old_conf * 0.3) + 0.01, 3))
             
-        # Global Score: mix of confidence and reuse rate
-        maturity = min(1.0, rule.get('reuse_rate', 1) / 20.0)
+        # Maturity update: increment maturity after successful combat trials
+        if success:
+            rule['success_streak'] = rule.get('success_streak', 0) + 1
+            if rule['success_streak'] >= 5:
+                rule['maturity'] = rule.get('maturity', 0) + 1
+                rule['success_streak'] = 0
+                logging.info(f"[Evolution] Skill '{rule['pattern']}' reached maturity level {rule['maturity']}")
+        else:
+            rule['success_streak'] = 0
+            rule['maturity'] = max(0, rule.get('maturity', 0) - 1)
+
+        # Global Score: mix of confidence and maturity
+        maturity_bonus = min(0.3, rule.get('maturity', 0) * 0.1)
         conf = rule.get('confidence', 0.5)
-        rule['global_score'] = round((conf * 0.8) + (maturity * 0.2), 3)
+        rule['global_score'] = round((conf * 0.7) + maturity_bonus, 3)
         
         # Find and update rule in memory
         for i, r in enumerate(self.memory.semantic_rules):

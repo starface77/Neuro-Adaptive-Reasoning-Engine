@@ -42,10 +42,39 @@ class MemorySystem:
                 return False
                 
         episode_data['timestamp'] = time.time()
+        episode_data['last_used'] = time.time()
+        episode_data['strength'] = 1.0
         self.episodic_index.add(vector)
         self.episodes.append(episode_data)
         self.save()
         return True
+
+    def prune_fading_memories(self, threshold: float = 0.05):
+        """
+        Ebbinghaus Forgetting: R = e^(-t/S)
+        Where R is retention, t is time since last use, S is strength.
+        """
+        now = time.time()
+        kept_episodes = []
+        
+        for ep in self.episodes:
+            # t in hours, S*24 hours as base decay
+            t = (now - ep.get('last_used', ep['timestamp'])) / 3600
+            s = ep.get('strength', 1.0)
+            retention = np.exp(-t / (s * 24))
+            
+            if retention >= threshold:
+                kept_episodes.append(ep)
+                
+        if len(kept_episodes) < len(self.episodes):
+            logging.info(f"[Memory] Forgetting: {len(self.episodes) - len(kept_episodes)} episodes faded away.")
+            self.episodes = kept_episodes
+            self.episodic_index = faiss.IndexFlatIP(self.embedding_dim)
+            if self.episodes:
+                vecs = np.array([ep['embedding'] for ep in self.episodes], dtype=np.float32)
+                faiss.normalize_L2(vecs)
+                self.episodic_index.add(vecs)
+            self.save()
 
     def retrieve_episodes(self, query_emb: np.ndarray, k: int = 3) -> List[Dict[str, Any]]:
         if self.episodic_index.ntotal == 0:
