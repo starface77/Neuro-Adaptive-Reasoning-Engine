@@ -144,20 +144,53 @@ Output strictly 'A' or 'B' on the final line."""
     return 1 if last_word == 'A' else 2
 
 def extract_heuristic_rule(episodes: list):
-    """Sleep Phase: Compress episodes into Executable Reflexes."""
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemma-3-27b-it:generateContent?key={API_KEY}"
-    prompt = "Analyze these past solved tasks and extract an EXECUTABLE SKILL.\n"
-    prompt += "You must output the rule exactly in this markdown format:\n\n"
-    prompt += "PATTERN: [High-level name of the pattern]\n\n"
-    prompt += "```python\n"
-    prompt += "def trigger(query: str) -> bool:\n"
-    prompt += "    # Return True if this skill applies to the query, else False\n"
-    prompt += "    return ...\n\n"
-    prompt += "def execute(query: str) -> str:\n"
-    prompt += "    # Execute the algorithm and return the EXACT final answer as a string.\n"
-    prompt += "    return ...\n"
-    prompt += "```\n\n"
+    """Sleep Phase: Compress episodes into Executable Reflexes.
     
+    Generates robust Python code with regex-based triggers and 
+    validates it against the original episodes before returning.
+    """
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemma-3-27b-it:generateContent?key={API_KEY}"
+    
+    prompt = """You are a compiler that converts solved examples into a reusable Python SKILL.
+
+STRICT RULES FOR trigger():
+- Use regex (re module) to detect the CATEGORY of task, NOT exact strings.
+- The trigger must be BROAD: it should match any task of the same logical type.
+- Example: if tasks involve "find next term in sequence", trigger on r'sequence|next term|formula' patterns.
+- NEVER hardcode specific numbers or exact task phrasings.
+
+STRICT RULES FOR execute():
+- Parse numeric data from the query using regex: re.findall(r'-?\\d+\\.?\\d*', query)
+- ALWAYS wrap logic in try/except and return 'Error: <reason>' on failure.
+- The function must work on ANY input of the same category, not just the examples below.
+- Do NOT use string splitting like query.split(":") — it is fragile and will break.
+- Use only: re, math, and builtins. No imports beyond these.
+
+Output EXACTLY this format and nothing else:
+
+PATTERN: [Short name]
+
+```python
+def trigger(query: str) -> bool:
+    import re
+    # Broad regex match for the task category
+    return bool(re.search(r'your_pattern_here', query, re.IGNORECASE))
+
+def execute(query: str) -> str:
+    import re
+    import math
+    try:
+        # Extract numbers from query
+        numbers = [int(x) for x in re.findall(r'-?\\d+', query)]
+        # ... algorithm ...
+        return str(result)
+    except Exception as e:
+        return f'Error: {e}'
+```
+
+Here are the solved examples to learn from:
+
+"""
     for i, ep in enumerate(episodes):
         prompt += f"Task {i+1}: {ep['query']}\nSolution {i+1}: {ep['solution']}\n\n"
 
@@ -173,13 +206,83 @@ def extract_heuristic_rule(episodes: list):
     pattern_name = pattern_match.group(1).strip() if pattern_match else "Unknown Pattern"
     
     code_match = re.search(r'```python\n(.*?)\n```', content, re.DOTALL)
-    python_code = code_match.group(1) if code_match else "def trigger(q): return False\ndef execute(q): return 'Error'"
-            
+    python_code = code_match.group(1) if code_match else None
+    
+    if not python_code:
+        logging.warning("[Sleep] LLM did not produce valid Python code block.")
+        return None
+    
+    # === VALIDATION: Run the generated code against original episodes ===
+    validated = _validate_skill(python_code, episodes)
+    
+    if not validated:
+        logging.warning(f"[Sleep] Skill '{pattern_name}' FAILED validation. Discarding.")
+        return None
+    
+    logging.info(f"[Sleep] Skill '{pattern_name}' PASSED validation on {len(episodes)} episodes.")
+    
     return {
         "pattern": pattern_name,
         "python_code": python_code,
-        "confidence": 0.75
+        "confidence": 0.80
     }
+
+
+def _validate_skill(python_code: str, episodes: list) -> bool:
+    """Validate a generated skill by executing it against the episodes it was derived from.
+    
+    Returns True only if:
+    1. The code compiles without SyntaxError.
+    2. trigger() returns True for at least one original episode.
+    3. execute() does not throw an exception on any triggered episode.
+    4. execute() does not return an error string.
+    """
+    import re as _re, math as _math
+    safe_globals = {"__builtins__": __builtins__, "re": _re, "math": _math}
+    local_env = {}
+    
+    # 1. Compile check
+    try:
+        exec(python_code, safe_globals, local_env)
+    except SyntaxError as e:
+        logging.warning(f"[Validation] SyntaxError in generated code: {e}")
+        return False
+    
+    if 'trigger' not in local_env or 'execute' not in local_env:
+        logging.warning("[Validation] Missing trigger() or execute() function.")
+        return False
+    
+    trigger_fn = local_env['trigger']
+    execute_fn = local_env['execute']
+    
+    # 2. Trigger coverage check
+    triggered_count = 0
+    for ep in episodes:
+        try:
+            if trigger_fn(ep['query']):
+                triggered_count += 1
+        except Exception as e:
+            logging.warning(f"[Validation] trigger() crashed on '{ep['query'][:50]}': {e}")
+            return False
+    
+    if triggered_count == 0:
+        logging.warning("[Validation] trigger() returned False on ALL original episodes.")
+        return False
+    
+    # 3. Execute stability check
+    for ep in episodes:
+        try:
+            if trigger_fn(ep['query']):
+                result = execute_fn(ep['query'])
+                result_str = str(result)
+                if result_str.startswith("Error"):
+                    logging.warning(f"[Validation] execute() returned error: {result_str}")
+                    return False
+        except Exception as e:
+            logging.warning(f"[Validation] execute() crashed on '{ep['query'][:50]}': {e}")
+            return False
+    
+    return True
 
 def merge_heuristic_rules(existing_rule: dict, new_episodes: list):
     """Refine an existing Executable Reflex with new episodes."""

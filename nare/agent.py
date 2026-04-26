@@ -179,8 +179,11 @@ class NAREProductionAgent:
             else:
                 logging.info("=== [SLEEP PHASE] Crystallizing New Rule ===")
                 new_rule = llm.extract_heuristic_rule(cluster_episodes)
+                if new_rule is None:
+                    logging.warning("[Sleep] Skill failed validation. Keeping episodes for next attempt.")
+                    return
                 self.memory.add_semantic_rule(new_rule, centroid)
-                logging.info(f"[Crystallization] New Rule: {new_rule['pattern']}")
+                logging.info(f"[Crystallization] New Rule: {new_rule['pattern']} (confidence: {new_rule['confidence']})")
             
             # SUCCESS: Now compress the episodic memory
             to_delete = set(int(i) for i in cluster_indices) - {core_idx}
