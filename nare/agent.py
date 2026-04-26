@@ -109,9 +109,9 @@ class NAREProductionAgent:
         self.memory = MemorySystem()
         self.critic = HybridCritic()
         
-        self.tau_fast = 0.85
-        self.tau_hybrid = 0.65
-        self.tau_min = 0.80  # ARCH-3 fix: never go below 0.80
+        self.tau_fast = 0.98
+        self.tau_hybrid = 0.75   # Lowered: let HYBRID activate for similar queries
+        self.tau_min = 0.95
         
     def _calibrate_tau(self, reward: float, fast_path_used: bool):
         """Dynamic τ adjustment. Clamped to [0.80, 0.95]."""
@@ -132,9 +132,9 @@ class NAREProductionAgent:
         if len(self.memory.episodes) >= 200:
             return True
             
-        if len(self.memory.episodes) >= 2:
-            # BUG-4 FIX: normalize before computing dot product
-            raw_vecs = np.array([ep['embedding'] for ep in self.memory.episodes], dtype=np.float32)
+        if len(self.memory.episodes) >= 3:
+            # Use structural signature embeddings for clustering instead of raw query text
+            raw_vecs = np.array([ep.get('signature_embedding', ep['embedding']) for ep in self.memory.episodes], dtype=np.float32)
             vecs = self._normalize_embeddings(raw_vecs)
             sim_matrix = np.dot(vecs, vecs.T)
             # Zero out diagonal (self-similarity)
@@ -147,7 +147,8 @@ class NAREProductionAgent:
 
     def _sleep_phase(self):
         logging.info("=== [SLEEP PHASE] Crystallizing Memories ===")
-        raw_vecs = np.array([ep['embedding'] for ep in self.memory.episodes], dtype=np.float32)
+        # Use structural signature embeddings
+        raw_vecs = np.array([ep.get('signature_embedding', ep['embedding']) for ep in self.memory.episodes], dtype=np.float32)
         # BUG-4 FIX: normalize
         vecs = self._normalize_embeddings(raw_vecs)
         sim_matrix = np.dot(vecs, vecs.T)
@@ -155,6 +156,8 @@ class NAREProductionAgent:
         dense_clusters = np.sum(sim_matrix > 0.6, axis=1)
         
         if np.max(dense_clusters) < 1:
+            # No clusters found, but we can still try to refine weak rules
+            self._prune_weak_rules()
             return
             
         core_idx = int(np.argmax(dense_clusters))
@@ -171,19 +174,44 @@ class NAREProductionAgent:
         
         try:
             if existing_semantics and existing_semantics[0]['similarity'] > 0.7:
-                logging.info(f"=== [SEMANTIC CONSOLIDATION] Merging into rule: {existing_semantics[0]['pattern']} ===")
-                rule_idx = int(existing_semantics[0].get('memory_id', 0))
-                updated_rule = llm.merge_heuristic_rules(existing_semantics[0], cluster_episodes)
-                self.memory.update_semantic_rule(rule_idx, updated_rule, new_embedding=centroid)
-                logging.info(f"[Consolidation] Refined: {updated_rule['pattern']}")
+                existing_rule = existing_semantics[0]
+                rule_idx = int(existing_rule.get('memory_id', 0))
+                existing_conf = existing_rule.get('confidence', 0.5)
+                
+                if existing_conf < 0.95:
+                    # GRADED REFINEMENT: Weak/Hybrid skill needs more training
+                    logging.info(f"=== [GRADED REFINEMENT] Upgrading rule '{existing_rule.get('pattern')}' (conf: {existing_conf:.2f}) ===")
+                    updated_rule = llm.merge_heuristic_rules(existing_rule, cluster_episodes)
+                    
+                    # Re-validate the merged rule with stress tests
+                    from nare.llm import generate_stress_tests, _validate_skill
+                    stress_tests = generate_stress_tests(cluster_episodes)
+                    all_tests = cluster_episodes + stress_tests
+                    scores, error_msg = _validate_skill(updated_rule.get('python_code', ''), all_tests)
+                    
+                    updated_rule['confidence'] = scores['overall']
+                    updated_rule['trigger_accuracy'] = scores['trigger_accuracy']
+                    updated_rule['execute_accuracy'] = scores['execute_accuracy']
+                    updated_rule['sleep_cycles'] = existing_rule.get('sleep_cycles', 0) + 1
+                    self.memory.update_semantic_rule(rule_idx, updated_rule, new_embedding=centroid)
+                    logging.info(f"[Refinement] '{updated_rule['pattern']}' conf: {existing_conf:.2f} -> {scores['overall']:.2f} (trigger={scores['trigger_accuracy']:.2f}, exec={scores['execute_accuracy']:.2f})")
+                else:
+                    # Already strong rule, just merge for broader coverage
+                    logging.info(f"=== [SEMANTIC CONSOLIDATION] Merging into rule: {existing_rule['pattern']} ===")
+                    updated_rule = llm.merge_heuristic_rules(existing_rule, cluster_episodes)
+                    updated_rule['confidence'] = existing_conf  # Preserve high confidence
+                    updated_rule['sleep_cycles'] = existing_rule.get('sleep_cycles', 0) + 1
+                    self.memory.update_semantic_rule(rule_idx, updated_rule, new_embedding=centroid)
+                    logging.info(f"[Consolidation] Refined: {updated_rule['pattern']}")
             else:
                 logging.info("=== [SLEEP PHASE] Crystallizing New Rule ===")
                 new_rule = llm.extract_heuristic_rule(cluster_episodes)
                 if new_rule is None:
-                    logging.warning("[Sleep] Skill failed validation. Keeping episodes for next attempt.")
+                    logging.warning("[Sleep] Skill failed validation completely (robustness < 0.40). Keeping episodes.")
                     return
+                new_rule['sleep_cycles'] = 0
                 self.memory.add_semantic_rule(new_rule, centroid)
-                logging.info(f"[Crystallization] New Rule: {new_rule['pattern']} (confidence: {new_rule['confidence']})")
+                logging.info(f"[Crystallization] New Rule: {new_rule['pattern']} (confidence: {new_rule['confidence']:.2f})")
             
             # SUCCESS: Now compress the episodic memory
             to_delete = set(int(i) for i in cluster_indices) - {core_idx}
@@ -196,55 +224,145 @@ class NAREProductionAgent:
                 rebuild_vecs = self._normalize_embeddings(rebuild_vecs)
                 self.memory.episodic_index.add(rebuild_vecs)
             
+            # Run pruning on weak rules that never improved
+            self._prune_weak_rules()
+            
             self.memory.save()
             logging.info(f"[Sleep] Compressed {len(to_delete)} episodes into 1 rule + 1 representative.")
             
         except Exception as e:
             logging.error(f"[Sleep Phase] Failed: {e}")
 
+    def _prune_weak_rules(self):
+        """Garbage collect rules that are DEAD based on global_score."""
+        pruned = []
+        kept = []
+        for i, rule in enumerate(self.memory.semantic_rules):
+            g_score = rule.get('global_score', rule.get('confidence', 0.5))
+            cycles = rule.get('sleep_cycles', 0)
+            if g_score < 0.40 and cycles >= 2:
+                pruned.append(rule.get('pattern', 'Unknown'))
+            else:
+                kept.append(rule)
+        
+        if pruned:
+            logging.info(f"[Pruning] Garbage collected {len(pruned)} dead rules: {pruned}")
+            self.memory.semantic_rules = kept
+            # Rebuild semantic index
+            self.memory.semantic_index = faiss.IndexFlatIP(self.memory.embedding_dim)
+            for rule in kept:
+                if 'embedding' in rule:
+                    v = np.array(rule['embedding'], dtype=np.float32).flatten().reshape(1, -1)
+                    faiss.normalize_L2(v)
+                    self.memory.semantic_index.add(v)
+
     def _save_episode(self, query: str, query_emb: list, best_cand: Dict, prompt: str):
         """Unified episode saving for ALL paths that generate new content."""
+        score = best_cand.get('final_score', 0.5)
+        if score < 0.50:
+            logging.info(f"[Memory] Episode rejected due to low score ({score:.2f} < 0.50)")
+            return False
+            
         episode_data = {
             "query": query,
             "context": prompt,
             "solution": best_cand['solution'],
             "reasoning_trace": best_cand.get('reasoning', 'N/A'),
-            "score": best_cand.get('final_score', 0.5),
-            "embedding": query_emb
+            "abstract_signature": best_cand.get('abstract_signature', query),
+            "score": score,
+            "embedding": query_emb,
         }
+        
+        # Structure embedding for sleep clustering
+        sig = episode_data["abstract_signature"]
+        if sig and sig != query:
+            try:
+                episode_data["signature_embedding"] = llm.get_embedding(sig)
+            except Exception as e:
+                logging.warning(f"Failed to embed abstract signature: {e}")
+                episode_data["signature_embedding"] = query_emb
+        else:
+            episode_data["signature_embedding"] = query_emb
+            
         added = self.memory.add_episode(episode_data, np.array([query_emb], dtype=np.float32))
         return added
 
+    def wait_for_sleep(self, timeout=300):
+        """Wait for background sleep phase to complete."""
+        start = time.time()
+        while hasattr(self, '_is_sleeping') and self._is_sleeping:
+            if time.time() - start > timeout:
+                logging.warning("[Agent] Timeout waiting for sleep phase.")
+                break
+            time.sleep(1)
+            
     def solve(self, query: str) -> Dict[str, Any]:
         log = []
         log.append(f"Query: {query}")
         
+        from nare.sandbox import safe_execute
+        
+        # =====================================================
+        # LAYER 1 & 2: PROGRAMMATIC ABSTRACT MATCHING (0ms, no network)
+        # Evaluate the heuristic trigger() function for ALL semantic rules.
+        # This replaces both regex and text-embedding skill matching.
+        # =====================================================
+        for sem in sorted(self.memory.semantic_rules, key=lambda x: x.get('confidence', 0.5), reverse=True):
+            conf = sem.get('confidence', 0.5)
+            if conf < 0.40:
+                continue
+            
+            try:
+                import re as _re, math as _math
+                safe_globals = {
+                    "__builtins__": {k: __builtins__[k] for k in ['bool', 'int', 'str', 'float', 'len', 'list', 'dict', 'tuple', 'set', 'abs', 'min', 'max', 'sum', 'Exception', 'ValueError', 'TypeError', 'IndexError', '__import__']},
+                    "re": _re, "math": _math
+                }
+                local_env = {}
+                exec(sem['python_code'], safe_globals, local_env)
+                
+                if 'trigger' in local_env and local_env['trigger'](query):
+                    start_time = time.time()
+                    final_answer = safe_execute(sem['python_code'], query)
+                    
+                    if not final_answer.startswith("Error"):
+                        # SUCCESS: Record in score history
+                        self._record_skill_result(sem, success=True)
+                        route_name = "REFLEX" if conf >= 0.95 else "HYBRID_SKILL"
+                        return {
+                            "route_decision": route_name,
+                            "retrieved_memories": [],
+                            "generated_candidates": [],
+                            "critic_evaluation_table": [],
+                            "final_answer": final_answer,
+                            "memory_update_log": log + [f"Route: {route_name} (programmatic, conf={conf:.2f}, {time.time()-start_time:.4f}s)"]
+                        }
+                    else:
+                        self._record_skill_result(sem, success=False)
+                        log.append(f"Skill returned Error, falling through: {final_answer[:60]}")
+            except Exception as e:
+                self._record_skill_result(sem, success=False)
+                log.append(f"Skill crash: {e}")
+
+        # Need the query embedding for LAYER 3 (Episodic Cache)
         query_emb = llm.get_embedding(query)
         query_emb_np = np.array([query_emb], dtype=np.float32)
         
-        # 1. Retrieval
+        # =====================================================
+        # LAYER 3: SYSTEM 2 (Full LLM reasoning)
+        # =====================================================
         retrieved_eps = self.memory.retrieve_episodes(query_emb_np, k=3)
+        mem_avg = np.mean([ep.get('score', 0.5) for ep in retrieved_eps]) if retrieved_eps else 0.5
         all_semantics = self.memory.retrieve_semantics(query_emb_np, k=2)
         
-        # Filter semantics by threshold AND confidence
         retrieved_semantics = [
             s for s in all_semantics 
-            if s['similarity'] > 0.70 and s.get('confidence', 0.5) >= 0.70
+            if s['similarity'] > 0.85 and s.get('confidence', 0.5) >= 0.70
         ]
-        
-        if all_semantics and not retrieved_semantics:
-            reason = "similarity" if all_semantics[0]['similarity'] <= 0.70 else "low confidence"
-            log.append(f"Heuristic rejected: {reason} ({all_semantics[0].get('confidence', 0.5):.2f})")
         
         max_sim = retrieved_eps[0]['similarity'] if retrieved_eps else 0.0
         
-        # Entropy check: if ALL top-k similarities are suspiciously close to 1.0, force SLOW
-        if len(retrieved_eps) >= 2:
-            sims = [ep['similarity'] for ep in retrieved_eps]
-            sim_std = np.std(sims)
-            if sim_std < 0.01 and max_sim > 0.95:
-                logging.info(f"[Entropy Check] All similarities ~{max_sim:.3f} (std={sim_std:.4f}). Possible self-match. Forcing SLOW.")
-                max_sim = 0.0  # Force SLOW path
+        # (Entropy check removed as it was sabotaging high-certainty structural matches)
         
         route = "SLOW"
         alpha = 0.0
@@ -253,122 +371,73 @@ class NAREProductionAgent:
         best_cand = None
         prompt_used = ""
         
-        # 2. Routing Logic
-        
-        # 2.1 First Priority: EXECUTABLE REFLEXES (Skill-Based Cognitive System)
-        # We check ALL skills in procedural memory. If a skill applies, it REPLACES thinking.
-        reflex_triggered = False
-        for sem in self.memory.semantic_rules:
-            if sem.get('confidence', 0.5) < 0.70:
-                continue
+        if max_sim >= self.tau_fast:
+            route = "FAST"
+            alpha = max_sim
+            log.append(f"Route: FAST PATH (sim: {max_sim:.3f} >= {self.tau_fast})")
             
-            try:
-                import re as _re, math as _math
-                safe_globals = {"__builtins__": __builtins__, "re": _re, "math": _math}
-                local_env = {}
-                exec(sem['python_code'], safe_globals, local_env)
+            best_cand = retrieved_eps[0].copy()
+            best_cand['final_score'] = alpha
+            final_answer = best_cand['solution']
+            
+            if self._save_episode(query, query_emb, best_cand, "FAST PATH"):
+                log.append("Saved FAST episode to memory.")
                 
-                if 'trigger' in local_env and 'execute' in local_env:
-                    if local_env['trigger'](query):
-                        log.append(f"Route: REFLEX PATH (Executed Skill: {sem.get('pattern')})")
-                        
-                        try:
-                            final_answer = str(local_env['execute'](query))
-                            route = "REFLEX"
-                            reflex_triggered = True  # Only set to True if execution succeeds
-                        except Exception as exec_err:
-                            log.append(f"Execute failed: {exec_err}")
-                            raise exec_err
-                            
-                        best_cand = {
-                            'solution': final_answer,
-                            'reasoning_trace': f"Executed Procedural Skill: {sem.get('pattern')}",
-                            'final_score': 1.0
-                        }
-                        
-                        if self._save_episode(query, query_emb, best_cand, "EXECUTABLE REFLEX"):
-                            log.append("Saved REFLEX episode to memory.")
-                            
-                        # Reward rule
-                        sem['confidence'] = min(1.0, sem.get('confidence', 0.5) + 0.1)
-                        self.memory.update_semantic_rule(sem.get('memory_id', 0), sem) # Assuming index matches or handled in update
-                        break
-                        
-            except Exception as e:
-                log.append(f"Reflex Error for '{sem.get('pattern')}': {e}")
-                # Penalize rule
-                sem['confidence'] = max(0.0, sem.get('confidence', 0.5) - 0.2)
-                self.memory.update_semantic_rule(sem.get('memory_id', 0), sem)
-                
-        if not reflex_triggered:
-            # 2.2 Memory-Augmented Paths
-            if max_sim >= self.tau_fast:
-                route = "FAST"
-                alpha = max_sim
-                log.append(f"Route: FAST PATH (sim: {max_sim:.3f} >= {self.tau_fast})")
-                
-                best_cand = retrieved_eps[0]
-                best_cand['final_score'] = alpha
+        elif max_sim >= self.tau_hybrid and retrieved_eps:
+            route = "HYBRID"
+            alpha = max_sim
+            log.append(f"Route: HYBRID PATH (sim: {max_sim:.3f})")
+            
+            prompt_used = f"Task: {query}\n\n"
+            prompt_used += "--- RETRIEVED PAST EXPERIENCE ---\n"
+            prompt_used += f"Similar Past Task: {retrieved_eps[0]['query']}\n"
+            prompt_used += f"Past Reasoning: {retrieved_eps[0]['reasoning_trace']}\n"
+            prompt_used += f"Past Solution: {retrieved_eps[0]['solution']}\n\n"
+            prompt_used += "Your task is SKILL FORMATION and REASONING COMPRESSION. Because you have already solved a similar task, DO NOT write a full step-by-step trace from scratch. Skip the basics. Provide a highly compressed reasoning trace that only addresses the DIFFERENCES between the Past Task and the New Task. Reuse computation as a reflex."
+            
+            candidates, _ = llm.generate_samples(prompt_used, n=1, mode="HYBRID")
+            candidates = self.critic.evaluate(query, candidates)
+            best_cand = candidates[0] if candidates else None
+            
+            if best_cand:
+                hybrid_score = (alpha * 1.0) + ((1 - alpha) * best_cand['final_score'])
+                best_cand['final_score'] = hybrid_score
                 final_answer = best_cand['solution']
                 
-            elif max_sim >= self.tau_hybrid and retrieved_eps:
-                route = "HYBRID"
-                alpha = max_sim
-                log.append(f"Route: HYBRID PATH (sim: {max_sim:.3f})")
-                
-                prompt_used = f"Task: {query}\n\n"
-                prompt_used += "--- RETRIEVED PAST EXPERIENCE ---\n"
-                prompt_used += f"Similar Past Task: {retrieved_eps[0]['query']}\n"
-                prompt_used += f"Past Reasoning: {retrieved_eps[0]['reasoning_trace']}\n"
-                prompt_used += f"Past Solution: {retrieved_eps[0]['solution']}\n\n"
-                prompt_used += "Your task is SKILL FORMATION and REASONING COMPRESSION. Because you have already solved a similar task, DO NOT write a full step-by-step trace from scratch. Skip the basics. Provide a highly compressed reasoning trace that only addresses the DIFFERENCES between the Past Task and the New Task. Reuse computation as a reflex."
-                
-                candidates, _ = llm.generate_samples(prompt_used, n=1, mode="HYBRID")
-                candidates = self.critic.evaluate(query, candidates)
-                best_cand = candidates[0] if candidates else None
-                
-                if best_cand:
-                    hybrid_score = (alpha * 1.0) + ((1 - alpha) * best_cand['final_score'])
-                    best_cand['final_score'] = hybrid_score
-                    final_answer = best_cand['solution']
+                if self._save_episode(query, query_emb, best_cand, prompt_used):
+                    log.append("Saved HYBRID episode to memory.")
                     
-                    if self._save_episode(query, query_emb, best_cand, prompt_used):
-                        log.append("Saved HYBRID episode to memory.")
-                        
-            else:
-                route = "SLOW"
-                alpha = max_sim
-                log.append(f"Route: SLOW PATH (sim: {max_sim:.3f} < {self.tau_hybrid})")
+        else:
+            route = "SLOW"
+            alpha = max_sim
+            log.append(f"Route: SLOW PATH (sim: {max_sim:.3f} < {self.tau_hybrid})")
+            
+            prompt_used = f"Task: {query}\n\n"
+            
+            if retrieved_eps:
+                prompt_used += "--- RELEVANT EPISODIC MEMORIES (Use as analogies) ---\n"
+                for ep in retrieved_eps:
+                    prompt_used += f"Past Task: {ep['query']}\n"
+                    prompt_used += f"Past Reasoning: {ep['reasoning_trace']}\n"
+                    prompt_used += f"Past Solution: {ep['solution']}\n---\n"
+            
+            prompt_used += "\nSolve the new Task by synthesizing insights from the provided memories (if any) and applying deep reasoning."
                 
-                prompt_used = f"Task: {query}\n\n"
-                
-                if retrieved_eps:
-                    prompt_used += "--- RELEVANT EPISODIC MEMORIES (Use as analogies) ---\n"
-                    for ep in retrieved_eps:
-                        prompt_used += f"Past Task: {ep['query']}\n"
-                        prompt_used += f"Past Reasoning: {ep['reasoning_trace']}\n"
-                        prompt_used += f"Past Solution: {ep['solution']}\n---\n"
-                
-                prompt_used += "\nSolve the new Task by synthesizing insights from the provided memories (if any) and applying deep reasoning."
-                    
-                candidates, _ = llm.generate_samples(prompt_used, n=2, mode="SLOW")
-                candidates = self.critic.evaluate(query, candidates)
-                
-                best_cand = candidates[0] if candidates else None
-                
-                if best_cand:
-                    final_answer = best_cand['solution']
-                    if self._save_episode(query, query_emb, best_cand, prompt_used):
-                        log.append("Saved SLOW episode to memory.")
+            candidates, _ = llm.generate_samples(prompt_used, n=2, mode="SLOW")
+            candidates = self.critic.evaluate(query, candidates)
+            
+            best_cand = candidates[0] if candidates else None
+            
+            if best_cand:
+                final_answer = best_cand['solution']
+                if best_cand.get('final_score', 0.5) >= max(0.70, mem_avg) and self._save_episode(query, query_emb, best_cand, prompt_used):
+                    log.append(f"Saved SLOW episode to memory (score {best_cand.get('final_score', 0.5):.2f} >= mem_avg {mem_avg:.2f}).")
 
-        # 3. Calibration & Sleep
+        # 3. Calibration
         if best_cand:
             self._calibrate_tau(reward=best_cand.get('final_score', 0.5), fast_path_used=(route == "FAST"))
-            
-        if self._check_sleep_trigger():
-            self._sleep_phase()
 
-        return {
+        result = {
             "route_decision": route,
             "retrieved_memories": retrieved_eps + retrieved_semantics,
             "generated_candidates": candidates,
@@ -376,3 +445,51 @@ class NAREProductionAgent:
             "final_answer": final_answer,
             "memory_update_log": log
         }
+
+        # 4. Sleep Phase — DECOUPLED from solve() latency
+        # Run in background thread so answers return immediately.
+        if self._check_sleep_trigger() and not getattr(self, '_is_sleeping', False):
+            self._is_sleeping = True
+            import threading
+            def sleep_wrapper():
+                try:
+                    self._sleep_phase()
+                finally:
+                    self._is_sleeping = False
+            t = threading.Thread(target=sleep_wrapper, daemon=True)
+            t.start()
+            self._sleep_thread = t  # Keep reference for joining if needed
+
+        return result
+
+    def _record_skill_result(self, rule: dict, success: bool):
+        """Track skill execution history for lifecycle management."""
+        history = rule.get('score_history', [])
+        history.append(1.0 if success else 0.0)
+        # Keep last 20 results
+        rule['score_history'] = history[-20:]
+        
+        rule['reuse_rate'] = rule.get('reuse_rate', 0) + 1
+        
+        # Update confidence based on rolling success rate
+        if len(history) >= 3:
+            recent = history[-10:]  # Last 10 executions
+            rolling_success = sum(recent) / len(recent)
+            
+            # Dynamic Confidence Promotion: success breeds stability
+            old_conf = rule.get('confidence', 0.5)
+            # Increase confidence by 0.01 on success, capped at 0.99
+            rule['confidence'] = min(0.99, round((rolling_success * 0.7) + (old_conf * 0.3) + 0.01, 3))
+            
+        # Global Score: mix of confidence and reuse rate
+        maturity = min(1.0, rule.get('reuse_rate', 1) / 20.0)
+        conf = rule.get('confidence', 0.5)
+        rule['global_score'] = round((conf * 0.8) + (maturity * 0.2), 3)
+        
+        # Find and update rule in memory
+        for i, r in enumerate(self.memory.semantic_rules):
+            if r.get('pattern') == rule.get('pattern'):
+                self.memory.semantic_rules[i] = rule
+                self.memory.save()
+                break
+

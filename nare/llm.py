@@ -36,7 +36,7 @@ def get_embedding(text: str) -> list:
     """Compute embedding via Gemini gemini-embedding-001 (dim=3072)."""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent?key={API_KEY}"
     payload = {
-        "model": "models/gemini-embedding-001",
+        "model": "models/gemma-4-31b-it",
         "content": {"parts": [{"text": text}]}
     }
     response = _post(url, payload)
@@ -52,6 +52,9 @@ def generate_samples(prompt: str, n: int = 3, temperature: float = 0.8, mode: st
     if mode == "SLOW":
         system_prompt = """You are an advanced reasoning engine. 
 REQUIRED FORMAT:
+<abstract_signature>
+[1-2 sentences categorizing the structural/mathematical/logical class of this problem. Example: "Mathematical sequence continuation. Polynomial finite differences." or "Text extraction. Log parsing for IPs."]
+</abstract_signature>
 <reasoning>
 [Your step-by-step logical trace, breaking down the problem from scratch]
 </reasoning>
@@ -89,7 +92,7 @@ REQUIRED FORMAT:
     
     for i in range(n):
         if i > 0:
-            time.sleep(4)  # Rate limit spacing
+            time.sleep(15)  # Rate limit spacing for heavy models like Gemma 27B
             
         res = _post(url, payload)
         if 'candidates' in res and res['candidates']:
@@ -115,7 +118,10 @@ REQUIRED FORMAT:
             if s_match: solution = s_match.group(1).strip()
             elif r_match: solution = content.replace(r_match.group(0), "").strip()
             
-            samples.append({"solution": solution, "reasoning": reasoning})
+            a_match = re.search(r'<abstract_signature>(.*?)</abstract_signature>', content, re.DOTALL)
+            abstract_signature = a_match.group(1).strip() if a_match else None
+            
+            samples.append({"solution": solution, "reasoning": reasoning, "abstract_signature": abstract_signature})
     
     return samples, total_tokens
 
@@ -143,46 +149,104 @@ Output strictly 'A' or 'B' on the final line."""
     
     return 1 if last_word == 'A' else 2
 
+def generate_stress_tests(episodes: list) -> list:
+    """Generate ADVERSARIAL synthetic queries WITH LABELS to stress-test skills."""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemma-3-27b-it:generateContent?key={API_KEY}"
+    
+    prompt = "Analyze the following solved tasks. You must generate 10 NEW ADVERSARIAL tasks of the exact same category to stress-test our code.\n"
+    prompt += "The 10 tasks MUST include:\n"
+    prompt += "- 3 tasks with heavy text NOISE.\n"
+    prompt += "- 3 tasks with BROKEN OR UNEXPECTED FORMATTING.\n"
+    prompt += "- 2 tasks with MISSING FIELDS (should return Error gracefully).\n"
+    prompt += "- 2 tasks with REORDERED FIELDS.\n\n"
+    
+    for i, ep in enumerate(episodes):
+        prompt += f"Original Task: {ep['query']} -> Solution: {ep['solution']}\n"
+    
+    prompt += "\nOutput exactly 10 adversarial tasks in this EXACT format:\n"
+    prompt += "Q: [the adversarial query]\n"
+    prompt += "S: [the expected correct solution, or 'Error' if the query is missing data]\n"
+    prompt += "|||\n\n"
+    prompt += "Do not output anything else."
+    
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": 0.7}
+    }
+    try:
+        res = _post(url, payload)
+        content = res['candidates'][0]['content']['parts'][0]['text']
+        blocks = content.split("|||")
+        
+        tests = []
+        for block in blocks:
+            q_match = re.search(r'Q:\s*(.*?)(?=\nS:|$)', block, re.DOTALL)
+            s_match = re.search(r'S:\s*(.*)', block)
+            if q_match and s_match:
+                tests.append({
+                    "query": q_match.group(1).strip(),
+                    "solution": s_match.group(1).strip()
+                })
+                
+        return tests[:10]
+    except Exception as e:
+        logging.warning(f"Failed to generate adversarial stress tests: {e}")
+        return []
+
 def extract_heuristic_rule(episodes: list):
     """Sleep Phase: Compress episodes into Executable Reflexes.
     
     Generates robust Python code with regex-based triggers and 
-    validates it against the original episodes before returning.
+    validates it against the original episodes + stress tests with refinement.
     """
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemma-3-27b-it:generateContent?key={API_KEY}"
     
-    prompt = """You are a compiler that converts solved examples into a reusable Python SKILL.
+    base_prompt = r"""You are a compiler that converts solved examples into a reusable Python STRUCTURAL SKILL.
+Your goal is to extract the ABSTRACT LOGICAL STRUCTURE of the problem, not just regex match the exact text.
 
-STRICT RULES FOR trigger():
-- Use regex (re module) to detect the CATEGORY of task, NOT exact strings.
-- The trigger must be BROAD: it should match any task of the same logical type.
-- Example: if tasks involve "find next term in sequence", trigger on r'sequence|next term|formula' patterns.
-- NEVER hardcode specific numbers or exact task phrasings.
+STRICT RULES FOR trigger(query: str) -> bool:
+- This function must determine if a new query belongs to the EXACT SAME abstract structural class (e.g., 'is this a polynomial sequence continuation problem?' or 'is this a log parsing problem?').
+- DO NOT just check for exact words from the training examples. Check for the structural properties (e.g., does it contain a sequence of numbers? does it ask for a 'total spent'?).
+- Be robust: A math sequence might use commas or spaces. A financial log might use different names.
 
-STRICT RULES FOR execute():
-- Parse numeric data from the query using regex: re.findall(r'-?\\d+\\.?\\d*', query)
-- ALWAYS wrap logic in try/except and return 'Error: <reason>' on failure.
-- The function must work on ANY input of the same category, not just the examples below.
-- Do NOT use string splitting like query.split(":") — it is fragile and will break.
-- Use only: re, math, and builtins. No imports beyond these.
+STRICT RULES FOR parse(query: str) -> dict:
+- Extract all necessary variables from the raw text into a dictionary.
+- Example: For sequences, extract the list of integers. For logs, extract IP and error code.
+
+STRICT RULES FOR solve(vars: dict) -> str:
+- Apply the generalized logic/math/algorithm to the extracted variables.
+- MULTI-CASE REASONING: Your solver must be robust. For sequences, check if it's arithmetic, geometric, or quadratic by checking differences/ratios. For parsing, handle multiple optional fields.
+- NEVER hardcode the answer. Implement the general formula.
+- Return the final string exactly as the solution expects.
+
+STRICT RULES FOR execute(query: str) -> str:
+- Call parse() then solve(). Wrap in try/except. Return 'Error: <reason>' on failure.
 
 Output EXACTLY this format and nothing else:
 
-PATTERN: [Short name]
+PATTERN: [Short structural name]
 
 ```python
+import re
+import math
+
 def trigger(query: str) -> bool:
-    import re
-    # Broad regex match for the task category
-    return bool(re.search(r'your_pattern_here', query, re.IGNORECASE))
+    # Heuristic checks for the abstract structural category
+    # e.g., return bool(re.search(r'\d+,\s*\d+,\s*\d+', query)) and 'next term' in query.lower()
+    return False
+
+def parse(query: str) -> dict:
+    # Extract variables robustly
+    return {}
+
+def solve(vars: dict) -> str:
+    # Pure algorithmic solver
+    return ""
 
 def execute(query: str) -> str:
-    import re
-    import math
     try:
-        # Extract numbers from query
-        numbers = [int(x) for x in re.findall(r'-?\\d+', query)]
-        # ... algorithm ...
+        vars = parse(query)
+        result = solve(vars)
         return str(result)
     except Exception as e:
         return f'Error: {e}'
@@ -192,97 +256,283 @@ Here are the solved examples to learn from:
 
 """
     for i, ep in enumerate(episodes):
-        prompt += f"Task {i+1}: {ep['query']}\nSolution {i+1}: {ep['solution']}\n\n"
+        base_prompt += f"Task {i+1}: {ep['query']}\nSolution {i+1}: {ep['solution']}\n\n"
 
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.1}
-    }
-    
-    res = _post(url, payload)
-    content = res['candidates'][0]['content']['parts'][0]['text']
-    
-    pattern_match = re.search(r'PATTERN:\s*(.+)', content)
-    pattern_name = pattern_match.group(1).strip() if pattern_match else "Unknown Pattern"
-    
-    code_match = re.search(r'```python\n(.*?)\n```', content, re.DOTALL)
-    python_code = code_match.group(1) if code_match else None
-    
-    if not python_code:
-        logging.warning("[Sleep] LLM did not produce valid Python code block.")
-        return None
-    
-    # === VALIDATION: Run the generated code against original episodes ===
-    validated = _validate_skill(python_code, episodes)
-    
-    if not validated:
-        logging.warning(f"[Sleep] Skill '{pattern_name}' FAILED validation. Discarding.")
-        return None
-    
-    logging.info(f"[Sleep] Skill '{pattern_name}' PASSED validation on {len(episodes)} episodes.")
-    
-    return {
-        "pattern": pattern_name,
-        "python_code": python_code,
-        "confidence": 0.80
-    }
+    stress_tests = generate_stress_tests(episodes)
+    all_test_cases = episodes + stress_tests
+
+    attempts = 0
+    current_prompt = base_prompt
+    last_error = ""
+    global_best_candidate = None
+
+    while attempts < 3:
+        attempts += 1
+        
+        candidates_generated = []
+        logging.info(f"[Sleep] Attempt {attempts}: Generating population of 2 skill variants...")
+        
+        # Generate population with different temperatures for diversity
+        import concurrent.futures
+        
+        def fetch_candidate(temp):
+            payload = {
+                "contents": [{"parts": [{"text": current_prompt}]}],
+                "generationConfig": {"temperature": temp}
+            }
+            try:
+                res = _post(url, payload)
+                return res['candidates'][0]['content']['parts'][0]['text']
+            except Exception as e:
+                logging.warning(f"Failed to generate candidate: {e}")
+                return None
+                
+        # Generate sequentially to respect strict free tier rate limits (15 RPM)
+        for temp in [0.2, 0.8]:
+            content = fetch_candidate(temp)
+            if content:
+                candidates_generated.append(content)
+            time.sleep(15) # Prevent 429 Rate Limits (1 request / 15s)
+            
+        if not candidates_generated:
+            last_error = "API failure on all candidates."
+            continue
+            
+        best_candidate = None
+        best_overall = -1.0
+        
+        # Evaluate population
+        for content in candidates_generated:
+            pattern_match = re.search(r'PATTERN:\s*(.+)', content)
+            pattern_name = pattern_match.group(1).strip() if pattern_match else "Unknown Pattern"
+            
+            code_match = re.search(r'```python\n(.*?)\n```', content, re.DOTALL)
+            python_code = code_match.group(1) if code_match else None
+            
+            if not python_code:
+                continue
+                
+            scores, error_msg = _validate_skill(python_code, all_test_cases)
+            overall = scores['overall']
+            
+            cand_data = {
+                "pattern": pattern_name,
+                "python_code": python_code,
+                "confidence": overall,
+                "trigger_accuracy": scores['trigger_accuracy'],
+                "execute_accuracy": scores['execute_accuracy'],
+                "error_msg": error_msg
+            }
+            
+            if overall > best_overall:
+                best_overall = overall
+                best_candidate = cand_data
+                
+        if not best_candidate:
+            logging.warning(f"[Sleep] Attempt {attempts}: No valid Python code produced by population.")
+            last_error = "No valid Python code block found."
+            current_prompt = base_prompt + f"\n\nYOUR PREVIOUS OUTPUT WAS INVALID.\nERROR: {last_error}\nPlease output exactly the required format."
+            continue
+            
+        # Track global best across ALL attempts (never degrade)
+        if not global_best_candidate or best_candidate['confidence'] > global_best_candidate['confidence']:
+            global_best_candidate = best_candidate
+            
+        overall = global_best_candidate['confidence']
+        pattern_name = global_best_candidate['pattern']
+        python_code = global_best_candidate['python_code']
+        error_msg = global_best_candidate['error_msg']
+        
+        if overall >= 0.95:
+            logging.info(f"[Sleep] Population winner '{pattern_name}' PASSED (trigger={global_best_candidate['trigger_accuracy']:.2f}, exec={global_best_candidate['execute_accuracy']:.2f})")
+            result = {k: v for k, v in global_best_candidate.items() if k != 'error_msg'}
+            return result
+            
+        if attempts == 3:
+            break
+            
+        # Refinement loop — use global best's diagnostics
+        logging.warning(f"[Sleep] Best candidate across {attempts} attempt(s): overall={overall:.2f}")
+        
+        fix_instructions = []
+        if global_best_candidate['trigger_accuracy'] < 0.90:
+            fix_instructions.append(f"FIX TRIGGER (accuracy={global_best_candidate['trigger_accuracy']:.2f}): Your trigger() is missing valid inputs. Broaden the regex to catch ALL variations of this task type.")
+        if global_best_candidate['execute_accuracy'] < 0.90:
+            fix_instructions.append(f"FIX EXECUTE (accuracy={global_best_candidate['execute_accuracy']:.2f}): Your execute() fails on some inputs. Make your parsing more flexible with fallback regex patterns.")
+        if "CRASH" in error_msg:
+            fix_instructions.append("FIX CRASH: Add defensive checks. Never index arrays without checking len(). Always check regex match is not None.")
+        
+        fix_block = "\n".join(fix_instructions) if fix_instructions else "General improvement needed."
+        
+        current_prompt = base_prompt + f"\n\nYOUR BEST PREVIOUS CODE:\n```python\n{python_code}\n```\n\nDIAGNOSTIC REPORT:\n{error_msg}\n\nACTION REQUIRED:\n{fix_block}\n\nRewrite the ENTIRE skill. Output the corrected code in the exact format specified above."
+
+    # === REJECTION: Only promote skills >= 0.40 ===
+    if global_best_candidate and global_best_candidate['confidence'] >= 0.40:
+        logging.info(f"[Sleep] Promoting skill '{global_best_candidate['pattern']}' (peak confidence: {global_best_candidate['confidence']:.2f})")
+        logging.info(f"[Sleep] Diagnostics: trigger={global_best_candidate.get('trigger_accuracy', '?')}, exec={global_best_candidate.get('execute_accuracy', '?')}")
+        result = {k: v for k, v in global_best_candidate.items() if k != 'error_msg'}
+        return result
+
+    peak = global_best_candidate['confidence'] if global_best_candidate else 0.0
+    error_detail = global_best_candidate.get('error_msg', 'No details') if global_best_candidate else 'No candidate'
+    logging.warning(f"[Sleep] REJECTED skill. Peak confidence {peak:.2f} < 0.40 — not stable enough.")
+    logging.warning(f"[Sleep] Rejection reason: {error_detail[:500]}")
+    return None
 
 
-def _validate_skill(python_code: str, episodes: list) -> bool:
-    """Validate a generated skill by executing it against the episodes it was derived from.
+from typing import Tuple
+
+def _validate_skill(python_code: str, episodes: list) -> Tuple[dict, str]:
+    """Validate a generated skill with DECOMPOSED confidence scoring.
     
-    Returns True only if:
-    1. The code compiles without SyntaxError.
-    2. trigger() returns True for at least one original episode.
-    3. execute() does not throw an exception on any triggered episode.
-    4. execute() does not return an error string.
+    Returns a tuple of (scores_dict, diagnostic_report).
+    scores_dict contains:
+        - trigger_accuracy: float (0-1) - how well trigger identifies valid inputs
+        - execute_accuracy: float (0-1) - how well execute works on triggered inputs  
+        - overall: float (0-1) - weighted composite
     """
-    import re as _re, math as _math
-    safe_globals = {"__builtins__": __builtins__, "re": _re, "math": _math}
-    local_env = {}
+    from nare.sandbox import ASTValidator, SecurityError
+    import ast
     
-    # 1. Compile check
+    zero_scores = {"trigger_accuracy": 0.0, "execute_accuracy": 0.0, "overall": 0.0}
+    
+    # 1. AST Security and Syntax Check
     try:
-        exec(python_code, safe_globals, local_env)
-    except SyntaxError as e:
-        logging.warning(f"[Validation] SyntaxError in generated code: {e}")
-        return False
+        tree = ast.parse(python_code)
+        validator = ASTValidator()
+        validator.visit(tree)
+    except (SyntaxError, SecurityError) as e:
+        return zero_scores, f"Code failed AST/Security check: {e}"
+        
+    import re as _re, math as _math
+    builtins_dict = __builtins__ if isinstance(__builtins__, dict) else vars(__builtins__)
+    safe_globals = {
+        "__builtins__": {k: builtins_dict[k] for k in ASTValidator.ALLOWED_BUILTINS if k in builtins_dict},
+        "re": _re,
+        "math": _math
+    }
+    # 3. Execute definition safely
+    try:
+        exec(python_code, safe_globals)
+    except Exception as e:
+        return zero_scores, f"Runtime error during compilation: {e}"
     
-    if 'trigger' not in local_env or 'execute' not in local_env:
-        logging.warning("[Validation] Missing trigger() or execute() function.")
-        return False
+    if 'trigger' not in safe_globals or 'execute' not in safe_globals:
+        return zero_scores, "Missing trigger() or execute() function."
     
-    trigger_fn = local_env['trigger']
-    execute_fn = local_env['execute']
+    trigger_fn = safe_globals['trigger']
+    execute_fn = safe_globals['execute']
     
-    # 2. Trigger coverage check
-    triggered_count = 0
-    for ep in episodes:
+    # Separate ORIGINAL episodes (have verified solutions) from STRESS tests (LLM-generated, unreliable labels)
+    original_eps = [ep for ep in episodes if 'embedding' in ep or 'reasoning_trace' in ep]
+    stress_eps = [ep for ep in episodes if 'embedding' not in ep and 'reasoning_trace' not in ep]
+    
+    # --- TRIGGER ACCURACY (on original episodes only) ---
+    trigger_correct = 0
+    trigger_total = len(original_eps) if original_eps else 1
+    trigger_errors = []
+    
+    for ep in original_eps:
         try:
             if trigger_fn(ep['query']):
-                triggered_count += 1
+                trigger_correct += 1
+            else:
+                trigger_errors.append(f"MISS: trigger() returned False on valid input: '{ep['query'][:60]}...'")
         except Exception as e:
-            logging.warning(f"[Validation] trigger() crashed on '{ep['query'][:50]}': {e}")
-            return False
+            trigger_errors.append(f"CRASH: trigger() crashed: {e}")
     
-    if triggered_count == 0:
-        logging.warning("[Validation] trigger() returned False on ALL original episodes.")
-        return False
+    trigger_accuracy = trigger_correct / trigger_total if trigger_total > 0 else 0.0
     
-    # 3. Execute stability check
-    for ep in episodes:
+    # --- EXECUTE ACCURACY (on ORIGINAL episodes — verified solutions) ---
+    execute_correct = 0
+    execute_total = 0
+    execute_errors = []
+    
+    for ep in original_eps:
         try:
-            if trigger_fn(ep['query']):
-                result = execute_fn(ep['query'])
-                result_str = str(result)
-                if result_str.startswith("Error"):
-                    logging.warning(f"[Validation] execute() returned error: {result_str}")
-                    return False
+            if not trigger_fn(ep['query']):
+                continue
+            execute_total += 1
+            
+            result = execute_fn(ep['query'])
+            result_str = str(result).strip()
+            expected = ep.get('solution', 'N/A').strip()
+            
+            if expected == "N/A":
+                if not result_str.startswith("Error"):
+                    execute_correct += 1
+            else:
+                # STRUCTURAL CORRECTNESS: extract key numbers and compare
+                if result_str == expected or result_str in expected or expected in result_str:
+                    execute_correct += 1
+                else:
+                    res_nums = set(re.findall(r'-?\d+\.?\d*', result_str))
+                    exp_nums = set(re.findall(r'-?\d+\.?\d*', expected))
+                    
+                    if res_nums and exp_nums:
+                        overlap = res_nums & exp_nums
+                        coverage = len(overlap) / len(exp_nums) if exp_nums else 0
+                        if coverage >= 0.2 or (len(res_nums) == 1 and res_nums.issubset(exp_nums)):
+                            execute_correct += 1
+                        else:
+                            execute_errors.append(f"MISMATCH: Expected nums {exp_nums}, Got nums {res_nums}")
+                    elif not result_str.startswith("Error") and len(result_str) > 0:
+                        execute_correct += 0.5
+                    else:
+                        execute_errors.append(f"MISMATCH: Expected '{expected[:60]}', Got '{result_str[:60]}'")
         except Exception as e:
-            logging.warning(f"[Validation] execute() crashed on '{ep['query'][:50]}': {e}")
-            return False
+            execute_total += 1
+            execute_errors.append(f"CRASH: '{ep['query'][:40]}...' -> {e}")
     
-    return True
+    # --- STRESS TEST (crash-only, no label comparison) ---
+    stress_pass = 0
+    stress_total = 0
+    for ep in stress_eps:
+        try:
+            if not trigger_fn(ep['query']):
+                continue
+            stress_total += 1
+            result = execute_fn(ep['query'])
+            result_str = str(result).strip()
+            if not result_str.startswith("Error"):
+                stress_pass += 1
+            # Even "Error" on adversarial input is acceptable
+            else:
+                stress_pass += 0.5
+        except Exception as e:
+            stress_total += 1
+            execute_errors.append(f"STRESS_CRASH: '{ep['query'][:40]}...' -> {e}")
+    
+    execute_accuracy = execute_correct / execute_total if execute_total > 0 else 0.0
+    stress_accuracy = stress_pass / stress_total if stress_total > 0 else 1.0
+    
+    # --- OVERALL (weighted) ---
+    # Original episodes are the ground truth (80%), stress tests are robustness bonus (20%)
+    overall = (trigger_accuracy * 0.3) + (execute_accuracy * 0.5) + (stress_accuracy * 0.2)
+    
+    scores = {
+        "trigger_accuracy": round(trigger_accuracy, 3),
+        "execute_accuracy": round(execute_accuracy, 3),
+        "overall": round(overall, 3)
+    }
+    
+    if overall >= 0.99:
+        return scores, ""
+    
+    # Build structured diagnostic report
+    report_lines = [
+        f"SCORES: trigger={scores['trigger_accuracy']:.2f} | execute={scores['execute_accuracy']:.2f} | overall={scores['overall']:.2f}"
+    ]
+    if trigger_errors:
+        report_lines.append(f"[TRIGGER_ISSUES] ({len(trigger_errors)}):")
+        for e in trigger_errors[:2]:
+            report_lines.append(f"  - {e}")
+    if execute_errors:
+        report_lines.append(f"[EXECUTE_ISSUES] ({len(execute_errors)}):")
+        for e in execute_errors[:3]:
+            report_lines.append(f"  - {e}")
+    
+    return scores, "\n".join(report_lines)
 
 def merge_heuristic_rules(existing_rule: dict, new_episodes: list):
     """Refine an existing Executable Reflex with new episodes."""
@@ -296,6 +546,7 @@ def merge_heuristic_rules(existing_rule: dict, new_episodes: list):
         prompt += f"Ep {i+1}: {ep['query']} -> {ep['solution'][:200]}...\n"
         
     prompt += "\nRefine the EXISTING RULE to be more general and robust. Update the trigger logic or execute logic if necessary.\n"
+    prompt += "The execute() function must work for ANY input of the same category (e.g., text parsing, math, logic). Use string manipulation or regex as needed.\n"
     prompt += "You must output the rule exactly in this markdown format:\n\n"
     prompt += "PATTERN: [Refined pattern name]\n\n"
     prompt += "```python\n"

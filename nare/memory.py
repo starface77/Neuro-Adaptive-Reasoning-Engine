@@ -68,15 +68,37 @@ class MemorySystem:
 
     def add_semantic_rule(self, rule_data: Dict[str, Any], embedding: np.ndarray):
         """Rule Schema: {pattern, python_code, confidence, success_count}"""
+        vector = np.array(embedding, dtype=np.float32).reshape(1, -1)
+        faiss.normalize_L2(vector)
+        
+        # Deduplication check
+        if self.semantic_index.ntotal > 0:
+            sims, indices = self.semantic_index.search(vector, 1)
+            if sims[0][0] > 0.90:
+                idx = int(indices[0][0])
+                existing_rule = self.semantic_rules[idx]
+                logging.info(f"[Memory] Deduplication triggered: Merging new rule '{rule_data.get('pattern')}' into '{existing_rule.get('pattern')}' (sim: {sims[0][0]:.2f})")
+                
+                new_conf = rule_data.get('confidence', 0.5)
+                old_conf = existing_rule.get('confidence', 0.5)
+                
+                if new_conf > old_conf:
+                    rule_data['sleep_cycles'] = existing_rule.get('sleep_cycles', 0)
+                    rule_data['score_history'] = existing_rule.get('score_history', [])
+                    self.update_semantic_rule(idx, rule_data, new_embedding=embedding)
+                else:
+                    existing_rule['sleep_cycles'] = existing_rule.get('sleep_cycles', 0) + 1
+                    self.update_semantic_rule(idx, existing_rule)
+                return True
+                
         rule_data['embedding'] = embedding.tolist()
         rule_data['confidence'] = rule_data.get('confidence', 0.5)
         rule_data['success_count'] = rule_data.get('success_count', 0)
         
-        vector = np.array(embedding, dtype=np.float32)
-        faiss.normalize_L2(vector)
         self.semantic_index.add(vector)
         self.semantic_rules.append(rule_data)
         self.save()
+        return False
 
     def update_semantic_rule(self, idx: int, rule_data: Dict[str, Any], new_embedding: np.ndarray = None):
         """Update an existing rule and rebuild the semantic index."""
