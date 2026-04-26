@@ -1,0 +1,20 @@
+# Environment variables
+.env
+
+# Virtual Environment
+venv/
+env/
+.venv/
+
+# Python Cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Memory Store (Ignore contents but keep the folder via .gitkeep)
+memory_store/*
+!memory_store/.gitkeep
+
+# OS generated files
+.DS_Store
+Thumbs.db
