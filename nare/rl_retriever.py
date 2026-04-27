@@ -17,29 +17,52 @@ import logging
 import numpy as np
 from typing import Dict, Any, List, Tuple, Optional
 
+from .config import DEFAULT_CONFIG, NareConfig
+
 logger = logging.getLogger(__name__)
 
 
-class RLRetriever:
-    """Contextual bandit retriever that learns from outcome feedback."""
+def _sigmoid(x: float) -> float:
+    """Numerically stable sigmoid mapping R → (0, 1)."""
+    if x >= 0:
+        z = np.exp(-x)
+        return float(1.0 / (1.0 + z))
+    z = np.exp(x)
+    return float(z / (1.0 + z))
 
-    def __init__(self, embedding_dim: int = 3072, persist_dir: str = "memory_store",
-                 learning_rate: float = 0.01, discount: float = 0.95):
+
+class RLRetriever:
+    """Contextual bandit retriever that learns from outcome feedback.
+
+    All knobs (lr, discount, exploration schedule, blend weights, weight
+    clipping norm) live in :class:`nare.config.RetrievalConfig` rather
+    than as ad-hoc magic numbers.
+    """
+
+    def __init__(
+        self,
+        embedding_dim: int = 3072,
+        persist_dir: str = "memory_store",
+        config: NareConfig = DEFAULT_CONFIG,
+        learning_rate: Optional[float] = None,
+        discount: Optional[float] = None,
+    ):
         self.embedding_dim = embedding_dim
         self.persist_dir = persist_dir
-        self.lr = learning_rate
-        self.discount = discount
+        self.config = config
+        rcfg = config.retrieval
+
+        self.lr = learning_rate if learning_rate is not None else rcfg.rl_lr
+        self.discount = discount if discount is not None else rcfg.rl_discount
 
         # Value function: linear projection of embedding → scalar value
-        # w ∈ R^{embedding_dim}, bias ∈ R
         self.weights = np.zeros(embedding_dim, dtype=np.float32)
         self.bias = 0.0
 
         # Per-episode retrieval rewards history
         self.episode_values: Dict[int, float] = {}
 
-        # Exploration parameters
-        self.epsilon = 0.1  # ε-greedy exploration
+        self.epsilon = rcfg.rl_epsilon_initial
         self.total_updates = 0
 
         self._load()
@@ -59,22 +82,42 @@ class RLRetriever:
         if not candidates:
             return candidates
 
+        rcfg = self.config.retrieval
+        w_sim = rcfg.rerank_w_sim
+        w_rl = rcfg.rerank_w_rl
+
         for cand in candidates:
             emb = cand.get('embedding')
             if emb is not None:
-                rl_value = self.predict_value(emb)
-                cand['rl_value'] = rl_value
-                # Combined score: FAISS similarity * 0.6 + learned value * 0.4
+                rl_raw = self.predict_value(emb)
+                # Squash unbounded RL value into [0,1] before blending
+                # with cosine similarity — mixing two raw scales (sim is
+                # bounded, predict_value is not) was unsound.
+                rl_norm = _sigmoid(rl_raw)
+                cand['rl_value'] = rl_raw
+                cand['rl_value_normalized'] = rl_norm
                 sim = cand.get('similarity', 0.5)
-                cand['combined_score'] = sim * 0.6 + rl_value * 0.4
+                cand['combined_score'] = w_sim * sim + w_rl * rl_norm
             else:
                 cand['rl_value'] = 0.0
+                cand['rl_value_normalized'] = 0.5
                 cand['combined_score'] = cand.get('similarity', 0.5)
 
-        # ε-greedy: with probability ε, shuffle to explore
-        if np.random.random() < self.epsilon:
-            np.random.shuffle(candidates)
-            logger.info("[RL Retriever] Exploration: shuffled candidates")
+        # ε-greedy: with probability ε, sample softmax over scores rather
+        # than full random shuffle (full shuffle threw away signal).
+        if np.random.random() < self.epsilon and len(candidates) > 1:
+            scores = np.array(
+                [c['combined_score'] for c in candidates], dtype=np.float64
+            )
+            # Softmax with mild temperature.
+            scores = scores - scores.max()
+            probs = np.exp(scores / 0.5)
+            probs = probs / probs.sum()
+            order = np.random.choice(
+                len(candidates), size=len(candidates), replace=False, p=probs
+            )
+            candidates = [candidates[i] for i in order]
+            logger.info("[RL Retriever] Exploration: softmax-sampled order")
         else:
             candidates.sort(key=lambda c: c['combined_score'], reverse=True)
 
@@ -102,20 +145,23 @@ class RLRetriever:
         self.weights += self.lr * error * emb
         self.bias += self.lr * error
         
-        # Clip weights to prevent divergence
-        max_norm = 10.0
+        # Clip weights to prevent divergence (norm ball).
+        max_norm = self.config.retrieval.rl_weight_clip_norm
         norm = np.linalg.norm(self.weights)
         if norm > max_norm:
             self.weights *= max_norm / norm
+        # Bias also clipped — previously unbounded.
+        self.bias = float(np.clip(self.bias, -max_norm, max_norm))
 
         # Track per-episode values with exponential moving average
         old_val = self.episode_values.get(episode_id, 0.0)
         self.episode_values[episode_id] = old_val * self.discount + reward * (1 - self.discount)
 
         self.total_updates += 1
-        
-        # Decay epsilon (less exploration over time)
-        self.epsilon = max(0.01, self.epsilon * 0.999)
+
+        # Decay epsilon (less exploration over time).
+        rcfg = self.config.retrieval
+        self.epsilon = max(rcfg.rl_epsilon_floor, self.epsilon * rcfg.rl_epsilon_decay)
 
     def batch_update(self, retrieved_ids: List[int], 
                      embeddings: List[np.ndarray], 

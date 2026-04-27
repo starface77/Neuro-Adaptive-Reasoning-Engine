@@ -73,9 +73,7 @@ REQUIRED FORMAT:
     elif mode == "HYBRID":
         system_prompt = """You are an advanced reasoning engine performing DELTA REASONING.
 You have been provided with a past solution. DO NOT reason from scratch.
-<abstract_signature>
-[1-2 sentences categorizing the structural/mathematical/logical class of this problem]
-</abstract_signature>
+REQUIRED FORMAT:
 <delta_reasoning>
 [MAX 2 SENTENCES. Describe ONLY the logical differences or delta from the past solution]
 </delta_reasoning>
@@ -116,23 +114,23 @@ REQUIRED FORMAT:
             reasoning, solution = "No trace provided.", content
             r_match = None
             
-            # Robust XML parsing with case insensitivity
-            r_pattern = r'<(?:delta_reasoning|reasoning|rule_activation)>(.*?)</(?:delta_reasoning|reasoning|rule_activation)>'
-            r_match = re.search(r_pattern, content, re.DOTALL | re.IGNORECASE)
-            s_match = re.search(r'<solution>(.*?)</solution>', content, re.DOTALL | re.IGNORECASE)
-            a_match = re.search(r'<abstract_signature>(.*?)</abstract_signature>', content, re.DOTALL | re.IGNORECASE)
-
-            # Heuristic cleanup
-            clean_content = content
-            for tag in ['delta_reasoning', 'reasoning', 'rule_activation', 'solution', 'abstract_signature']:
-                clean_content = re.sub(f'<{tag}>.*?</{tag}>', '', clean_content, flags=re.DOTALL | re.IGNORECASE)
-            clean_content = clean_content.strip()
-
-            reasoning = r_match.group(1).strip() if r_match else "No trace provided."
-            solution = s_match.group(1).strip() if s_match else (clean_content if clean_content else content.strip())
+            if mode == "SLOW":
+                r_match = re.search(r'<reasoning>(.*?)</reasoning>', content, re.DOTALL)
+            elif mode == "HYBRID":
+                r_match = re.search(r'<delta_reasoning>(.*?)</delta_reasoning>', content, re.DOTALL)
+            elif mode == "REFLEX":
+                r_match = re.search(r'<rule_activation>(.*?)</rule_activation>', content, re.DOTALL)
+                
+            if r_match: reasoning = r_match.group(1).strip()
+                
+            s_match = re.search(r'<solution>(.*?)</solution>', content, re.DOTALL)
+            if s_match: solution = s_match.group(1).strip()
+            elif r_match: solution = content.replace(r_match.group(0), "").strip()
+            
+            a_match = re.search(r'<abstract_signature>(.*?)</abstract_signature>', content, re.DOTALL)
             abstract_signature = a_match.group(1).strip() if a_match else None
-
-            # Final cleanup of any dangling tags
+            
+            # Final cleanup: if solution still contains XML tags (due to LLM structure error), strip them
             if "<" in solution and ">" in solution:
                 solution = re.sub(r'<[^>]+>', '', solution).strip()
             
@@ -280,19 +278,12 @@ REQUIRED FORMAT:
             if 'candidates' in res and res['candidates']:
                 exp_content = res['candidates'][0].get('content', {}).get('parts', [{}])[0].get('text', '')
             
-            # More robust XML parsing
-            r_match = re.search(r'<(?:delta_reasoning|reasoning)>(.*?)</(?:delta_reasoning|reasoning)>', exp_content, re.DOTALL | re.IGNORECASE)
-            s_match = re.search(r'<solution>(.*?)</solution>', exp_content, re.DOTALL | re.IGNORECASE)
-            a_match = re.search(r'<abstract_signature>(.*?)</abstract_signature>', exp_content, re.DOTALL | re.IGNORECASE)
+            r_match = re.search(r'<reasoning>(.*?)</reasoning>', exp_content, re.DOTALL)
+            s_match = re.search(r'<solution>(.*?)</solution>', exp_content, re.DOTALL)
+            a_match = re.search(r'<abstract_signature>(.*?)</abstract_signature>', exp_content, re.DOTALL)
             
-            # Clean content if no tags found (heuristic)
-            clean_content = exp_content
-            for tag in ['delta_reasoning', 'reasoning', 'solution', 'abstract_signature']:
-                clean_content = re.sub(f'<{tag}>.*?</{tag}>', '', clean_content, flags=re.DOTALL | re.IGNORECASE)
-            clean_content = clean_content.strip()
-
             reasoning = r_match.group(1).strip() if r_match else thought
-            solution = s_match.group(1).strip() if s_match else (clean_content if clean_content else exp_content.strip())
+            solution = s_match.group(1).strip() if s_match else exp_content.strip()
             abstract_sig = a_match.group(1).strip() if a_match else None
             
             if "<" in solution and ">" in solution:
@@ -394,20 +385,19 @@ def extract_heuristic_rule(episodes: list):
 Your goal is to extract the ABSTRACT LOGICAL STRUCTURE of the problem, not just regex match the exact text.
 
 STRICT RULES FOR trigger(query: str) -> bool:
-- Determine if the query belongs to the ABSTRACT class (e.g., 'polynomial sequence').
-- Use structural cues: existence of 3+ numbers in a row, keywords like 'next', 'formula', 'sequence'.
-- Be careful with noise: a query might have "Task 1/5" - ignore these for triggering.
+- This function must determine if a new query belongs to the EXACT SAME abstract structural class (e.g., 'is this a polynomial sequence continuation problem?' or 'is this a log parsing problem?').
+- DO NOT just check for exact words from the training examples. Check for the structural properties (e.g., does it contain a sequence of numbers? does it ask for a 'total spent'?).
+- Be robust: A math sequence might use commas or spaces. A financial log might use different names.
 
 STRICT RULES FOR parse(query: str) -> dict:
-- Extract ONLY the relevant data. For sequences, look for clusters of 3+ numbers. 
-- IGNORE metadata numbers (like 'Task 1' or '2n^2' inside the question text).
-- Use regex like r'(\d+[\s,]+\d+[\s,]+\d+)' to find the sequence block.
+- Extract all necessary variables from the raw text into a dictionary.
+- Example: For sequences, extract the list of integers. For logs, extract IP and error code.
 
 STRICT RULES FOR solve(vars: dict) -> str:
-- NEVER hardcode indices. If you have N elements, the 'next' term is N+1.
-- Use robust algorithms (e.g., Method of Finite Differences for sequences).
-- Handle edge cases: if second differences aren't constant, it might be arithmetic or geometric. Try both.
-- Return a clear, formatted string with the result.
+- Apply the generalized logic/math/algorithm to the extracted variables.
+- MULTI-CASE REASONING: Your solver must be robust. For sequences, check if it's arithmetic, geometric, or quadratic by checking differences/ratios. For parsing, handle multiple optional fields.
+- NEVER hardcode the answer. Implement the general formula.
+- Return the final string exactly as the solution expects.
 
 STRICT RULES FOR execute(query: str) -> str:
 - Call parse() then solve(). Wrap in try/except. Return 'Error: <reason>' on failure.
@@ -649,35 +639,23 @@ def _validate_skill(python_code: str, episodes: list) -> Tuple[dict, str]:
         - execute_accuracy: float (0-1) - how well execute works on triggered inputs  
         - overall: float (0-1) - weighted composite
     """
-    from nare.sandbox import ASTValidator, SecurityError
-    import ast
-    
+    from nare.sandbox import SecurityError, safe_load_module
+
     zero_scores = {"trigger_accuracy": 0.0, "execute_accuracy": 0.0, "overall": 0.0}
-    
-    # 1. AST Security and Syntax Check
+
+    # AST validation + sandboxed loading goes through the single
+    # canonical entry point in nare.sandbox. Any change to security
+    # policy now lives in one place.
     try:
-        tree = ast.parse(python_code)
-        validator = ASTValidator()
-        validator.visit(tree)
-    except (SyntaxError, SecurityError) as e:
+        safe_globals = safe_load_module(python_code)
+    except SecurityError as e:
         return zero_scores, f"Code failed AST/Security check: {e}"
-        
-    import re as _re, math as _math
-    builtins_dict = __builtins__ if isinstance(__builtins__, dict) else vars(__builtins__)
-    safe_globals = {
-        "__builtins__": {k: builtins_dict[k] for k in ASTValidator.ALLOWED_BUILTINS if k in builtins_dict},
-        "re": _re,
-        "math": _math
-    }
-    # 3. Execute definition safely
-    try:
-        exec(python_code, safe_globals)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         return zero_scores, f"Runtime error during compilation: {e}"
-    
+
     if 'trigger' not in safe_globals or 'execute' not in safe_globals:
         return zero_scores, "Missing trigger() or execute() function."
-    
+
     trigger_fn = safe_globals['trigger']
     execute_fn = safe_globals['execute']
     

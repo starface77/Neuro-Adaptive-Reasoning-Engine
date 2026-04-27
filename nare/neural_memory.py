@@ -85,23 +85,30 @@ class NeuralMemory:
         out = _relu(h @ self.W2 + self.b2)
         return out
 
-    def compute_surprise(self, embedding: np.ndarray, 
+    def compute_surprise(self, embedding: np.ndarray,
                          target: Optional[np.ndarray] = None) -> float:
-        """Compute surprise = gradient magnitude of prediction error.
-        
-        High surprise → novel/important information → strong memory update.
-        Low surprise → routine → minimal update.
+        """Heuristic novelty score for an input embedding.
+
+        IMPORTANT — terminology disclaimer:
+          This is *not* "surprise" in the Free-Energy / Bayesian sense
+          (which would be -log p(o)). When ``target`` is None, we return
+          the standard deviation of the network's output as a cheap
+          proxy for "how non-uniform is the model's response"; when a
+          target is provided, we return Huber loss between forward(x)
+          and target. Both are bounded heuristics, useful for *ranking*
+          novelty among recent episodes, but should not be interpreted
+          as a probabilistic surprise.
+
+        Returns a non-negative scalar; higher = more novel / less well
+        predicted by the current weights.
         """
         x = np.array(embedding, dtype=np.float32).flatten()[:self.input_dim]
         output = self.forward(x)
-        
+
         if target is None:
-            # Self-prediction: surprise is magnitude of output variance
             return float(np.std(output))
-        
-        # Huber loss as surprise metric
-        loss = _huber_loss(output, target)
-        return loss
+
+        return float(_huber_loss(output, target))
 
     def update(self, embedding: np.ndarray, target: np.ndarray,
                importance: float = 1.0):

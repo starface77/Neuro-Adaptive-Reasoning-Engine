@@ -1,91 +1,240 @@
+"""AST-validated sandbox for LLM-generated skill code.
+
+SECURITY DISCLAIMER
+-------------------
+This sandbox uses AST whitelisting + restricted ``exec``. In-process
+Python sandboxes are *fundamentally* leaky — any unforeseen path through
+``__class__``, ``__subclasses__``, ``__globals__``, ``__builtins__``,
+``__getattribute__``, etc. can escape. We block all known escape routes
+below, but **for production use you should isolate execution in a
+separate process** (subprocess + seccomp / firejail / gVisor / pyodide).
+
+This module is intentionally the *single* entry-point for executing any
+generated code. ``agent.py`` MUST route every ``trigger`` and
+``execute`` call through ``safe_execute`` / ``safe_load_module`` so that
+``ASTValidator`` always runs first.
+"""
+
 import ast
-import re
 import math
-from typing import Dict, Any
+import re
+from typing import Any, Callable, Dict, Tuple
+
 
 class SecurityError(Exception):
     """Raised when generated code violates sandbox safety rules."""
-    pass
+
+
+# ---------------------------------------------------------------------------
+# AST validator
+# ---------------------------------------------------------------------------
+
+# Names that, if accessed as attributes, allow trivial sandbox escape.
+_FORBIDDEN_ATTRS = frozenset({
+    "__class__", "__bases__", "__base__", "__mro__", "__subclasses__",
+    "__globals__", "__builtins__", "__import__", "__loader__",
+    "__getattribute__", "__getattr__", "__setattr__", "__delattr__",
+    "__dict__", "__code__", "__closure__", "__func__", "__module__",
+    "__init_subclass__", "__class_getitem__", "__reduce__",
+    "__reduce_ex__", "f_globals", "f_locals", "f_back",
+    "gi_frame", "cr_frame", "ag_frame",
+})
+
+_FORBIDDEN_BARE_CALLS = frozenset({
+    "eval", "exec", "open", "compile", "__import__",
+    "globals", "locals", "vars", "dir", "delattr",
+    "setattr", "getattr",  # blocked — used in many escapes
+    "input", "breakpoint", "memoryview",
+    "exit", "quit", "help", "copyright", "credits", "license",
+})
+
 
 class ASTValidator(ast.NodeVisitor):
-    """
-    Validates Python AST to ensure it contains no malicious or unsafe operations.
-    Allowed: basic arithmetic, loops, conditionals, regex, math.
-    Blocked: imports (except re, math), file I/O, eval, exec, globals manipulation.
-    """
-    
-    ALLOWED_IMPORTS = {'re', 'math', 'json'}
-    ALLOWED_BUILTINS = {
-        'abs', 'all', 'any', 'ascii', 'bin', 'bool', 'bytearray', 'bytes',
-        'callable', 'chr', 'complex', 'dict', 'divmod', 'enumerate', 'filter',
-        'float', 'format', 'frozenset', 'getattr', 'hasattr', 'hash', 'hex',
-        'int', 'isinstance', 'issubclass', 'iter', 'len', 'list', 'map', 'max',
-        'min', 'next', 'object', 'oct', 'ord', 'pow', 'print', 'property', 'range',
-        'repr', 'reversed', 'round', 'set', 'slice', 'sorted', 'str', 'sum',
-        'tuple', 'type', 'zip', 'Exception', 'ValueError', 'TypeError', 'IndexError',
-        '__import__', 'dict', 'list'
-    }
+    """Validates Python AST against a strict whitelist."""
 
-    def visit_Import(self, node):
+    ALLOWED_IMPORTS = frozenset({"re", "math"})
+
+    # Builtins the skill is allowed to reference.
+    #
+    # ``__import__`` is included because Python's ``import`` statement
+    # looks it up in builtins at runtime. Removing it would break even
+    # ``import re``. Defense in depth instead:
+    #   * ``visit_Import`` / ``visit_ImportFrom`` restrict imports to
+    #     ``{re, math}`` regardless of ``__import__`` being callable;
+    #   * ``visit_Call`` blocks bare-name ``__import__(...)``;
+    #   * ``visit_Attribute`` blocks attribute access to ``__import__``.
+    # Together this means ``__import__`` is only reachable via the
+    # constrained ``import`` statement.
+    ALLOWED_BUILTINS = frozenset({
+        "__import__",
+        "abs", "all", "any", "ascii", "bin", "bool", "bytearray", "bytes",
+        "callable", "chr", "complex", "dict", "divmod", "enumerate",
+        "filter", "float", "format", "frozenset", "hash", "hex",
+        "int", "isinstance", "issubclass", "iter", "len", "list",
+        "map", "max", "min", "next", "object", "oct", "ord", "pow",
+        "print", "property", "range", "repr", "reversed", "round",
+        "set", "slice", "sorted", "str", "sum", "tuple", "type", "zip",
+        "Exception", "ValueError", "TypeError", "IndexError", "KeyError",
+        "ZeroDivisionError", "ArithmeticError", "AttributeError",
+        "RuntimeError", "StopIteration",
+    })
+
+    def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
             if alias.name not in self.ALLOWED_IMPORTS:
-                raise SecurityError(f"Importing '{alias.name}' is strictly forbidden.")
+                raise SecurityError(
+                    f"import '{alias.name}' is forbidden (allowed: {sorted(self.ALLOWED_IMPORTS)})"
+                )
         self.generic_visit(node)
 
-    def visit_ImportFrom(self, node):
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         if node.module not in self.ALLOWED_IMPORTS:
-            raise SecurityError(f"Importing from '{node.module}' is strictly forbidden.")
+            raise SecurityError(
+                f"from-import '{node.module}' is forbidden"
+            )
         self.generic_visit(node)
 
-    def visit_Call(self, node):
-        if isinstance(node.func, ast.Name):
-            func_name = node.func.id
-            if func_name in ['eval', 'exec', 'open', 'globals', 'locals', '__import__', 'compile']:
-                raise SecurityError(f"Calling built-in '{func_name}()' is strictly forbidden.")
+    def visit_Attribute(self, node: ast.Attribute) -> None:
+        # Block any access to dunder/internal attributes.
+        if node.attr in _FORBIDDEN_ATTRS or (
+            node.attr.startswith("__") and node.attr.endswith("__")
+            and node.attr not in {"__name__", "__doc__"}
+        ):
+            raise SecurityError(
+                f"access to attribute '{node.attr}' is forbidden"
+            )
         self.generic_visit(node)
 
-def safe_execute(python_code: str, query: str) -> str:
-    """
-    Safely executes an LLM-generated script by first validating its AST.
-    The script MUST contain `trigger(query)` and `execute(query)`.
-    Returns the execution result, or raises an exception.
-    """
-    if not python_code or not isinstance(python_code, str):
-        raise ValueError("Invalid python code provided to sandbox.")
+    def visit_Call(self, node: ast.Call) -> None:
+        # Block bare-name calls to dangerous builtins.
+        if isinstance(node.func, ast.Name) and node.func.id in _FORBIDDEN_BARE_CALLS:
+            raise SecurityError(
+                f"calling '{node.func.id}()' is forbidden"
+            )
+        self.generic_visit(node)
 
-    # 1. Parse and validate AST
-    try:
-        tree = ast.parse(python_code)
-    except SyntaxError as e:
-        raise SecurityError(f"SyntaxError in generated code: {e}")
+    def visit_Global(self, node: ast.Global) -> None:
+        raise SecurityError("'global' statements are forbidden")
 
-    validator = ASTValidator()
-    validator.visit(tree)
+    def visit_Nonlocal(self, node: ast.Nonlocal) -> None:
+        raise SecurityError("'nonlocal' statements are forbidden")
 
-    # 2. Setup restricted environment
-    builtins_dict = __builtins__ if isinstance(__builtins__, dict) else vars(__builtins__)
-    safe_globals = {
-        "__builtins__": {k: builtins_dict[k] for k in ASTValidator.ALLOWED_BUILTINS if k in builtins_dict},
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def _build_safe_globals() -> Dict[str, Any]:
+    """Construct the restricted globals dict used for skill execution."""
+    builtins_dict = (
+        __builtins__ if isinstance(__builtins__, dict) else vars(__builtins__)
+    )
+    safe_builtins = {
+        name: builtins_dict[name]
+        for name in ASTValidator.ALLOWED_BUILTINS
+        if name in builtins_dict
+    }
+    return {
+        "__builtins__": safe_builtins,
         "re": re,
         "math": math,
-        "json": __import__('json')
     }
-    # 3. Execute definition safely
-    exec(python_code, safe_globals)
 
-    if 'trigger' not in safe_globals or 'execute' not in safe_globals:
-        raise ValueError("Generated code missing required 'trigger' or 'execute' functions.")
 
-    trigger_fn = safe_globals['trigger']
-    execute_fn = safe_globals['execute']
+def validate_code(python_code: str) -> ast.AST:
+    """Parse + AST-validate. Returns parsed tree on success.
 
-    # 4. Run execution
+    Raises SecurityError on any policy violation; propagates SyntaxError
+    as SecurityError so callers have a single exception class to handle.
+    """
+    if not isinstance(python_code, str) or not python_code.strip():
+        raise SecurityError("empty or non-string code")
+
     try:
-        should_trigger = trigger_fn(query)
-        if not should_trigger:
-            return "Error: Trigger evaluated to False."
-            
+        tree = ast.parse(python_code)
+    except SyntaxError as exc:
+        raise SecurityError(f"SyntaxError: {exc}") from exc
+
+    ASTValidator().visit(tree)
+    return tree
+
+
+def safe_load_module(python_code: str) -> Dict[str, Any]:
+    """Validate then exec the skill code, returning its namespace.
+
+    This is the ONLY function modules outside this file should use to
+    materialize ``trigger`` / ``execute`` from generated code. It runs
+    the AST validator, then executes inside fresh restricted globals.
+
+    Returns the populated namespace (containing the defined functions).
+    """
+    validate_code(python_code)
+    safe_globals = _build_safe_globals()
+    exec(python_code, safe_globals)  # noqa: S102 - intentional, after validation
+    return safe_globals
+
+
+def safe_execute(python_code: str, query: str) -> str:
+    """Validate, load, and run a skill against a single query string.
+
+    Skill must define ``trigger(query) -> bool`` and
+    ``execute(query) -> str``. Returns the execute() result on success
+    (stringified), or "Error: ..." on a controlled failure.
+
+    Raises SecurityError if validation fails.
+    Raises ValueError if the skill is missing required functions.
+    """
+    namespace = safe_load_module(python_code)
+
+    trigger_fn: Callable[[str], bool] = namespace.get("trigger")  # type: ignore[assignment]
+    execute_fn: Callable[[str], str] = namespace.get("execute")   # type: ignore[assignment]
+
+    if trigger_fn is None or execute_fn is None:
+        raise ValueError(
+            "skill must define both trigger(query) and execute(query)"
+        )
+
+    try:
+        if not trigger_fn(query):
+            return "Error: trigger returned False."
         result = execute_fn(query)
-        return str(result)
-    except Exception as e:
-        raise RuntimeError(f"Execution crashed: {e}")
+    except Exception as exc:  # noqa: BLE001 - intentional broad catch in sandbox
+        # Controlled error path: caller treats "Error:" prefix as failure.
+        return f"Error: {type(exc).__name__}: {exc}"
+
+    return str(result)
+
+
+def safe_call_trigger(python_code: str, query: str) -> Tuple[bool, Dict[str, Any]]:
+    """Validate, load, and call only ``trigger(query)``.
+
+    Returns (triggered, namespace) so callers can re-use the same
+    validated namespace to call ``execute`` afterwards without re-loading.
+    """
+    namespace = safe_load_module(python_code)
+    trigger_fn = namespace.get("trigger")
+    if trigger_fn is None:
+        raise ValueError("skill must define trigger(query)")
+
+    try:
+        triggered = bool(trigger_fn(query))
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"trigger() crashed: {type(exc).__name__}: {exc}") from exc
+
+    return triggered, namespace
+
+
+def safe_call_execute_in_namespace(
+    namespace: Dict[str, Any], query: str
+) -> str:
+    """Call ``execute(query)`` inside an already-validated namespace.
+
+    Use together with ``safe_call_trigger`` to avoid double-loading.
+    """
+    execute_fn = namespace.get("execute")
+    if execute_fn is None:
+        raise ValueError("skill must define execute(query)")
+    try:
+        return str(execute_fn(query))
+    except Exception as exc:  # noqa: BLE001
+        return f"Error: {type(exc).__name__}: {exc}"
