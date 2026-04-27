@@ -55,10 +55,11 @@ def run_complex_benchmark():
         if result['route_decision'] == "FAST":
             print(f"    (Pure Memory Retrieval - No generation)")
         else:
-            cand = result['generated_candidates'][0] if result['generated_candidates'] else None
+            candidates = result.get('generated_candidates', [])
+            cand = candidates[0] if candidates else None
             if cand:
                 print(f"    [Trace Snippet]: {cand.get('reasoning', 'None')[:200]}...")
-                print(f"    [Solution Snippet]: {result['final_answer'][:200]}...\n")
+            print(f"    [Solution Snippet]: {result['final_answer'][:200]}...\n")
             
         print("    Memory Logs:")
         for log in result['memory_update_log']:

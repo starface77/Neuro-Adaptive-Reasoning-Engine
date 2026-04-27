@@ -43,8 +43,10 @@ def run_hardcore_benchmark():
         print(f"    ROUTE: {result['route_decision']}")
         
         if result['route_decision'] != "FAST":
-            cand = result['generated_candidates'][0]
-            print(f"    TRACE: {cand.get('reasoning', 'N/A')[:500]}...")
+            candidates = result.get('generated_candidates', [])
+            if candidates:
+                cand = candidates[0]
+                print(f"    TRACE: {cand.get('reasoning', 'N/A')[:500]}...")
             print(f"    FINAL ANSWER: {result['final_answer'][:200]}...")
         
         print("\n    LOGS:")
