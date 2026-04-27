@@ -5,6 +5,11 @@ import logging
 from typing import List, Dict, Any
 from . import llm
 from .memory import MemorySystem
+from .metrics import MetricsTracker
+from .graph_memory import EpisodeGraph
+from .rl_retriever import RLRetriever
+from .neural_memory import NeuralMemory
+from .meta_abduction import MetaAbductionEngine
 
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 
@@ -108,6 +113,11 @@ class NAREProductionAgent:
     def __init__(self):
         self.memory = MemorySystem()
         self.critic = HybridCritic()
+        self.metrics = MetricsTracker(persist_dir=self.memory.persist_dir)
+        self.graph = EpisodeGraph(persist_dir=self.memory.persist_dir)
+        self.rl_retriever = RLRetriever(persist_dir=self.memory.persist_dir)
+        self.neural_memory = NeuralMemory(persist_dir=self.memory.persist_dir)
+        self.meta_engine = MetaAbductionEngine(persist_dir=self.memory.persist_dir)
         
         self.tau_fast = 0.98
         self.tau_hybrid = 0.75   # Lowered: let HYBRID activate for similar queries
@@ -235,6 +245,115 @@ class NAREProductionAgent:
         except Exception as e:
             logging.error(f"[Sleep Phase] Failed: {e}")
 
+    def _rem_sleep_phase(self):
+        """REM Sleep: Generative modeling / dreaming.
+        
+        Stochastically recombines concepts, generates edge-case scenarios,
+        and stress-tests existing compiled reflexes.  Rules that fail are
+        iteratively corrected via LLM; rules that pass gain confidence.
+        
+        Per theory doc: "If compiled code fails in a simulated situation,
+        its structure is corrected, ensuring exceptional reliability of
+        the skill registry."
+        """
+        logging.info("=== [REM SLEEP] Dreaming — stress-testing existing skills ===")
+        if not self.memory.semantic_rules:
+            logging.info("[REM] No rules to dream about.")
+            return
+
+        import random
+        rules_to_test = random.sample(
+            self.memory.semantic_rules,
+            min(3, len(self.memory.semantic_rules)),
+        )
+
+        for rule in rules_to_test:
+            pattern = rule.get("pattern", "Unknown")
+            python_code = rule.get("python_code", "")
+            if not python_code:
+                continue
+
+            logging.info(f"[REM] Dreaming about rule '{pattern}' ...")
+
+            # Generate adversarial edge-cases using existing episodes as seed
+            related_episodes = [
+                ep for ep in self.memory.episodes
+                if any(w in ep.get("query", "").lower() for w in pattern.lower().split()[:3])
+            ][:3]
+            if not related_episodes:
+                related_episodes = self.memory.episodes[:3]
+            if not related_episodes:
+                continue
+
+            try:
+                from nare.llm import generate_stress_tests, _validate_skill, repair_skill
+                dream_tests = generate_stress_tests(related_episodes)
+                if not dream_tests:
+                    continue
+
+                scores, error_msg = _validate_skill(python_code, dream_tests)
+                old_conf = rule.get("confidence", 0.5)
+
+                if scores["overall"] >= 0.80:
+                    boost = min(0.05, (scores["overall"] - 0.80) * 0.25)
+                    rule["confidence"] = min(0.99, old_conf + boost)
+                    logging.info(
+                        f"[REM] '{pattern}' passed dream test "
+                        f"(overall={scores['overall']:.2f}). "
+                        f"conf: {old_conf:.2f} -> {rule['confidence']:.2f}"
+                    )
+                else:
+                    # Iterative code correction: attempt to repair the skill
+                    logging.warning(
+                        f"[REM] '{pattern}' FAILED dream test "
+                        f"(overall={scores['overall']:.2f}). "
+                        f"Attempting iterative repair..."
+                    )
+                    repaired_code = repair_skill(
+                        python_code, pattern, dream_tests,
+                        error_msg, scores, max_attempts=2,
+                    )
+                    if repaired_code and repaired_code != python_code:
+                        new_scores, new_err = _validate_skill(repaired_code, dream_tests)
+                        if new_scores["overall"] > scores["overall"]:
+                            rule["python_code"] = repaired_code
+                            rule["confidence"] = max(old_conf * 0.9, new_scores["overall"])
+                            rule["rem_repairs"] = rule.get("rem_repairs", 0) + 1
+                            logging.info(
+                                f"[REM] '{pattern}' REPAIRED successfully! "
+                                f"score: {scores['overall']:.2f} -> {new_scores['overall']:.2f}, "
+                                f"conf: {old_conf:.2f} -> {rule['confidence']:.2f}"
+                            )
+                        else:
+                            # Repair didn't improve; apply penalty
+                            penalty = max(0.05, (0.80 - scores["overall"]) * 0.3)
+                            rule["confidence"] = max(0.10, old_conf - penalty)
+                            rule["maturity"] = max(0, rule.get("maturity", 0) - 1)
+                            logging.warning(
+                                f"[REM] '{pattern}' repair did not improve "
+                                f"(old={scores['overall']:.2f}, new={new_scores['overall']:.2f}). "
+                                f"Penalizing: conf {old_conf:.2f} -> {rule['confidence']:.2f}"
+                            )
+                    else:
+                        # Repair failed or returned same code; apply penalty
+                        penalty = max(0.05, (0.80 - scores["overall"]) * 0.3)
+                        rule["confidence"] = max(0.10, old_conf - penalty)
+                        rule["maturity"] = max(0, rule.get("maturity", 0) - 1)
+                        logging.warning(
+                            f"[REM] '{pattern}' could not be repaired. "
+                            f"conf: {old_conf:.2f} -> {rule['confidence']:.2f}"
+                        )
+
+            except Exception as e:
+                logging.error(f"[REM] Dream failed for '{pattern}': {e}")
+
+        # Synaptic downscaling: weaken all graph edges slightly
+        self.graph.weaken_all(decay=0.02)
+        self.graph.save()
+        
+        self.memory.save()
+        logging.info("=== [REM SLEEP] Dreaming complete ===")
+
     def _prune_weak_rules(self):
         """Garbage collect rules that are DEAD based on global_score."""
         pruned = []
@@ -288,7 +407,6 @@ class NAREProductionAgent:
             
         added = self.memory.add_episode(episode_data, np.array([query_emb], dtype=np.float32))
         if not added:
-            # If it's a deduplication, we increase strength/last_used of the existing one
             vec = np.array([query_emb], dtype=np.float32)
             retrieved = self.memory.retrieve_episodes(vec, k=1)
             if retrieved:
@@ -296,7 +414,27 @@ class NAREProductionAgent:
                 self.memory.episodes[idx]['last_used'] = time.time()
                 self.memory.episodes[idx]['strength'] = retrieved[0].get('strength', 1.0) + 0.2
                 self.memory.save()
+        else:
+            # Add graph node and link to similar episodes
+            new_idx = len(self.memory.episodes) - 1
+            self.graph.add_node(new_idx, label=query[:50])
+            vec = np.array([query_emb], dtype=np.float32)
+            similar = self.memory.retrieve_episodes(vec, k=3)
+            for ep in similar:
+                mid = ep.get('memory_id', -1)
+                if mid >= 0 and mid != new_idx:
+                    self.graph.add_edge(new_idx, mid, weight=ep['similarity'])
+                    self.graph.add_edge(mid, new_idx, weight=ep['similarity'])
+            self.graph.save()
         return added
+
+    def learn_fact(self, content: str, source: str = "user", category: str = "general") -> bool:
+        """Ingest a factual knowledge entry into the RAG layer."""
+        embedding = llm.get_embedding(content)
+        return self.memory.add_fact(
+            {"content": content, "source": source, "category": category},
+            np.array(embedding, dtype=np.float32),
+        )
 
     def wait_for_sleep(self, timeout=300):
         """Wait for background sleep phase to complete."""
@@ -308,6 +446,8 @@ class NAREProductionAgent:
             time.sleep(1)
             
     def solve(self, query: str) -> Dict[str, Any]:
+        _solve_start = time.time()
+        _solve_tokens = 0
         log = []
         log.append(f"Query: {query}")
         
@@ -324,6 +464,15 @@ class NAREProductionAgent:
                 ep['last_used'] = time.time()
                 ep['strength'] = ep.get('strength', 1.0) + 0.1
                 self.memory.save()
+                # Record metrics for FAST CACHE hits
+                self.metrics.record(
+                    query=query, route="FAST",
+                    elapsed=time.time() - _solve_start,
+                    tokens_used=0,
+                    similarity=1.0,
+                    answer=ep['solution'],
+                    score=ep.get('score', 0.8),
+                )
                 return {
                     "route_decision": "FAST",
                     "retrieved_memories": [ep],
@@ -343,8 +492,9 @@ class NAREProductionAgent:
             
             try:
                 import re as _re, math as _math
+                _builtins_dict = __builtins__ if isinstance(__builtins__, dict) else vars(__builtins__)
                 safe_globals = {
-                    "__builtins__": {k: __builtins__[k] for k in ['bool', 'int', 'str', 'float', 'len', 'list', 'dict', 'tuple', 'set', 'abs', 'min', 'max', 'sum', 'Exception', 'ValueError', 'TypeError', 'IndexError', '__import__']},
+                    "__builtins__": {k: _builtins_dict[k] for k in ['bool', 'int', 'str', 'float', 'len', 'list', 'dict', 'tuple', 'set', 'range', 'abs', 'min', 'max', 'sum', 'sorted', 'enumerate', 'zip', 'map', 'filter', 'print', 'isinstance', 'round', 'pow', 'Exception', 'ValueError', 'TypeError', 'IndexError'] if k in _builtins_dict},
                     "re": _re, "math": _math
                 }
                 local_env = {}
@@ -375,6 +525,9 @@ class NAREProductionAgent:
                                 self._record_skill_result(sem, success=True)
                                 return {
                                     "route_decision": "REFLEX_PROVISIONAL",
+                                    "retrieved_memories": [],
+                                    "generated_candidates": [],
+                                    "critic_evaluation_table": [],
                                     "final_answer": final_answer,
                                     "memory_update_log": log + [f"Route: REFLEX_PROVISIONAL (conf={conf:.2f}, maturity={maturity})"]
                                 }
@@ -383,6 +536,9 @@ class NAREProductionAgent:
                             self._record_skill_result(sem, success=True)
                             return {
                                 "route_decision": "REFLEX",
+                                "retrieved_memories": [],
+                                "generated_candidates": [],
+                                "critic_evaluation_table": [],
                                 "final_answer": final_answer,
                                 "memory_update_log": log + [f"Route: REFLEX (mature, conf={conf:.2f})"]
                             }
@@ -402,6 +558,28 @@ class NAREProductionAgent:
         # LAYER 3: SYSTEM 2 (Full LLM reasoning)
         # =====================================================
         retrieved_eps = self.memory.retrieve_episodes(query_emb_np, k=3)
+        
+        # Graph-augmented retrieval: multi-hop from FAISS hits
+        if retrieved_eps:
+            start_ids = [ep.get('memory_id', -1) for ep in retrieved_eps if ep.get('memory_id', -1) >= 0]
+            graph_ids = self.graph.multi_hop_retrieve(start_ids, hops=2, min_weight=0.3)
+            for gid in graph_ids[:2]:
+                if gid < len(self.memory.episodes):
+                    graph_ep = self.memory.episodes[gid].copy()
+                    graph_ep['similarity'] = 0.5  # default for graph-retrieved
+                    graph_ep['memory_id'] = gid
+                    graph_ep['source'] = 'graph'
+                    if gid not in start_ids:
+                        retrieved_eps.append(graph_ep)
+                        log.append(f"Graph retrieval: added episode {gid} via multi-hop")
+            # Strengthen edges between co-retrieved episodes (Hebbian)
+            for i, id_a in enumerate(start_ids):
+                for id_b in start_ids[i+1:]:
+                    self.graph.strengthen_edge(id_a, id_b, delta=0.05)
+        
+        # RL re-ranking of retrieved episodes
+        retrieved_eps = self.rl_retriever.rerank(retrieved_eps)
+        
         mem_avg = np.mean([ep.get('score', 0.5) for ep in retrieved_eps]) if retrieved_eps else 0.5
         all_semantics = self.memory.retrieve_semantics(query_emb_np, k=2)
         
@@ -409,6 +587,11 @@ class NAREProductionAgent:
             s for s in all_semantics 
             if s['similarity'] > 0.85 and s.get('confidence', 0.5) >= 0.70
         ]
+        
+        # RAG: Retrieve relevant facts
+        retrieved_facts = self.memory.retrieve_facts(query_emb_np, k=3)
+        if retrieved_facts:
+            log.append(f"RAG: Retrieved {len(retrieved_facts)} relevant facts.")
         
         max_sim = retrieved_eps[0]['similarity'] if retrieved_eps else 0.0
         
@@ -443,9 +626,15 @@ class NAREProductionAgent:
             prompt_used += f"Similar Past Task: {retrieved_eps[0]['query']}\n"
             prompt_used += f"Past Reasoning: {retrieved_eps[0]['reasoning_trace']}\n"
             prompt_used += f"Past Solution: {retrieved_eps[0]['solution']}\n\n"
+            if retrieved_facts:
+                prompt_used += "--- RELEVANT FACTUAL KNOWLEDGE (RAG) ---\n"
+                for fact in retrieved_facts:
+                    prompt_used += f"Fact: {fact.get('content', '')[:300]}\n"
+                prompt_used += "\n"
             prompt_used += "Your task is SKILL FORMATION and REASONING COMPRESSION. Because you have already solved a similar task, DO NOT write a full step-by-step trace from scratch. Skip the basics. Provide a highly compressed reasoning trace that only addresses the DIFFERENCES between the Past Task and the New Task. Reuse computation as a reflex."
             
-            candidates, _ = llm.generate_samples(prompt_used, n=1, mode="HYBRID")
+            candidates, _htokens = llm.generate_samples(prompt_used, n=1, mode="HYBRID")
+            _solve_tokens += _htokens
             candidates = self.critic.evaluate(query, candidates)
             best_cand = candidates[0] if candidates else None
             
@@ -464,6 +653,16 @@ class NAREProductionAgent:
             
             prompt_used = f"Task: {query}\n\n"
             
+            # Meta-abduction: inject cross-domain meta-rules as hints
+            meta_rules = self.meta_engine.get_applicable_meta_rules(query)
+            if meta_rules:
+                prompt_used += "--- CROSS-DOMAIN META-RULES (from meta-abduction) ---\n"
+                for mr in meta_rules[:2]:
+                    prompt_used += f"Meta-Rule: {mr['name']}\n"
+                    prompt_used += f"Pattern: {mr['abstract_pattern']}\n"
+                    prompt_used += f"Common Operations: {', '.join(mr.get('common_operations', []))}\n---\n"
+                log.append(f"Meta-abduction: applied {len(meta_rules)} meta-rules")
+            
             if retrieved_eps:
                 prompt_used += "--- RELEVANT EPISODIC MEMORIES (Use as analogies) ---\n"
                 for ep in retrieved_eps:
@@ -471,9 +670,16 @@ class NAREProductionAgent:
                     prompt_used += f"Past Reasoning: {ep['reasoning_trace']}\n"
                     prompt_used += f"Past Solution: {ep['solution']}\n---\n"
             
+            if retrieved_facts:
+                prompt_used += "--- RELEVANT FACTUAL KNOWLEDGE (RAG) ---\n"
+                for fact in retrieved_facts:
+                    prompt_used += f"Fact: {fact.get('content', '')[:300]}\n"
+                prompt_used += "---\n"
             prompt_used += "\nSolve the new Task by synthesizing insights from the provided memories (if any) and applying deep reasoning."
                 
-            candidates, _ = llm.generate_samples(prompt_used, n=2, mode="SLOW")
+            # Use Tree-of-Thoughts for SLOW path (BFS with pruning)
+            candidates, _stokens = llm.tree_of_thoughts(prompt_used, breadth=3, depth=1)
+            _solve_tokens += _stokens
             candidates = self.critic.evaluate(query, candidates)
             
             best_cand = candidates[0] if candidates else None
@@ -496,6 +702,25 @@ class NAREProductionAgent:
             "memory_update_log": log
         }
 
+        # Record metrics
+        _outcome_score = best_cand.get('final_score', 0.5) if best_cand else 0.0
+        self.metrics.record(
+            query=query, route=route,
+            elapsed=time.time() - _solve_start,
+            tokens_used=_solve_tokens,
+            similarity=alpha,
+            answer=final_answer,
+            score=_outcome_score,
+        )
+        
+        # RL Retriever feedback: update value function based on outcome
+        if retrieved_eps:
+            r_ids = [ep.get('memory_id', 0) for ep in retrieved_eps if 'embedding' in ep]
+            r_embs = [np.array(ep['embedding'], dtype=np.float32) for ep in retrieved_eps if 'embedding' in ep]
+            if r_ids and r_embs:
+                self.rl_retriever.batch_update(r_ids, r_embs, _outcome_score)
+                self.rl_retriever.save()
+
         # 4. Sleep Phase — DECOUPLED from solve() latency
         # Run in background thread so answers return immediately.
         if self._check_sleep_trigger() and not getattr(self, '_is_sleeping', False):
@@ -503,7 +728,15 @@ class NAREProductionAgent:
             import threading
             def sleep_wrapper():
                 try:
-                    self._sleep_phase()
+                    self._sleep_phase()      # NREM: consolidation
+                    self._rem_sleep_phase()   # REM: dreaming / stress-testing
+                    # Titans/MIRAS: Neural memory consolidation
+                    self.neural_memory.consolidate(self.memory.episodes[-50:])
+                    self.neural_memory.save()
+                    # Meta-abduction: discover cross-domain patterns
+                    self.meta_engine.analyze_skills(
+                        self.memory.semantic_rules, self.memory.episodes
+                    )
                 finally:
                     self._is_sleeping = False
             t = threading.Thread(target=sleep_wrapper, daemon=True)

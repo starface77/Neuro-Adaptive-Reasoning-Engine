@@ -9,6 +9,13 @@ from dotenv import load_dotenv
 load_dotenv()
 API_KEY = os.getenv("GEMINI_API_KEY")
 
+def _ensure_api_key():
+    if not API_KEY:
+        raise RuntimeError(
+            "GEMINI_API_KEY is not set. "
+            "Copy .env.example to .env and add your key."
+        )
+
 def _post(url: str, payload: dict, retries: int = 5) -> dict:
     data = json.dumps(payload).encode('utf-8')
     
@@ -34,9 +41,10 @@ def _post(url: str, payload: dict, retries: int = 5) -> dict:
 
 def get_embedding(text: str) -> list:
     """Compute embedding via Gemini gemini-embedding-001 (dim=3072)."""
+    _ensure_api_key()
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent?key={API_KEY}"
     payload = {
-        "model": "models/gemma-4-31b-it",
+        "model": "models/gemini-embedding-001",
         "content": {"parts": [{"text": text}]}
     }
     response = _post(url, payload)
@@ -47,6 +55,7 @@ def generate_samples(prompt: str, n: int = 3, temperature: float = 0.8, mode: st
     Generate N candidates. 
     mode can be 'SLOW', 'HYBRID', or 'REFLEX'. The mode strictly controls the required XML output structure.
     """
+    _ensure_api_key()
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemma-3-27b-it:generateContent?key={API_KEY}"
     
     if mode == "SLOW":
@@ -128,6 +137,169 @@ REQUIRED FORMAT:
             samples.append({"solution": solution, "reasoning": reasoning, "abstract_signature": abstract_signature})
     
     return samples, total_tokens
+
+def tree_of_thoughts(prompt: str, breadth: int = 3, depth: int = 2) -> tuple:
+    """Tree-of-Thoughts: BFS with evaluation and backtracking.
+    
+    Generates a tree of reasoning paths by:
+    1. Generating `breadth` initial thought branches
+    2. Evaluating each branch for promise (0-10 score)
+    3. Expanding only the top branches to next depth level
+    4. Backtracking (pruning) branches that score below threshold
+    
+    Returns (best_candidates, total_tokens).
+    """
+    _ensure_api_key()
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemma-3-27b-it:generateContent?key={API_KEY}"
+    total_tokens = 0
+    
+    # Phase 1: Generate initial thought branches
+    branch_prompt = f"""You are performing Tree-of-Thoughts reasoning.
+
+TASK: {prompt}
+
+Generate {breadth} DIFFERENT initial reasoning approaches for this task.
+For each approach, provide a brief thought (2-3 sentences) about how you would start solving it.
+
+Format EXACTLY as:
+<thought_1>[Your first approach]</thought_1>
+<thought_2>[Your second approach]</thought_2>
+<thought_3>[Your third approach]</thought_3>"""
+
+    payload = {
+        "contents": [{"parts": [{"text": branch_prompt}]}],
+        "generationConfig": {"temperature": 0.9}
+    }
+    
+    res = _post(url, payload)
+    total_tokens += res.get('usageMetadata', {}).get('totalTokenCount', 0)
+    
+    content = ""
+    if 'candidates' in res and res['candidates']:
+        content = res['candidates'][0].get('content', {}).get('parts', [{}])[0].get('text', '')
+    
+    # Parse thought branches
+    thoughts = []
+    for i in range(1, breadth + 1):
+        match = re.search(rf'<thought_{i}>(.*?)</thought_{i}>', content, re.DOTALL)
+        if match:
+            thoughts.append(match.group(1).strip())
+    
+    if not thoughts:
+        # Fallback: treat entire content as single thought
+        thoughts = [content.strip()] if content.strip() else ["Direct approach"]
+    
+    # Phase 2: Evaluate each branch (score 0-10)
+    time.sleep(15)
+    eval_prompt = f"""TASK: {prompt}
+
+Rate each reasoning approach on a scale of 0-10 for how promising it is:
+
+"""
+    for i, t in enumerate(thoughts):
+        eval_prompt += f"Approach {i+1}: {t[:200]}\n\n"
+    
+    eval_prompt += """Respond with ONLY scores in this format:
+<scores>[score1],[score2],[score3]</scores>"""
+    
+    payload = {
+        "contents": [{"parts": [{"text": eval_prompt}]}],
+        "generationConfig": {"temperature": 0.1}
+    }
+    
+    res = _post(url, payload)
+    total_tokens += res.get('usageMetadata', {}).get('totalTokenCount', 0)
+    
+    eval_content = ""
+    if 'candidates' in res and res['candidates']:
+        eval_content = res['candidates'][0].get('content', {}).get('parts', [{}])[0].get('text', '')
+    
+    # Parse scores
+    scores = []
+    score_match = re.search(r'<scores>(.*?)</scores>', eval_content, re.DOTALL)
+    if score_match:
+        try:
+            scores = [float(s.strip()) for s in score_match.group(1).split(',')]
+        except (ValueError, TypeError):
+            scores = []
+    
+    if not scores:
+        # Fallback: extract any numbers
+        nums = re.findall(r'\b(\d+(?:\.\d+)?)\b', eval_content)
+        scores = [float(n) for n in nums[:len(thoughts)]]
+    
+    # Pad scores if needed
+    while len(scores) < len(thoughts):
+        scores.append(5.0)
+    
+    # Phase 3: Prune and expand top branches
+    scored_thoughts = sorted(zip(scores, thoughts), reverse=True)
+    # Keep top ceil(breadth/2) branches (backtrack/prune the rest)
+    keep = max(1, (breadth + 1) // 2)
+    top_branches = scored_thoughts[:keep]
+    
+    logging.info(f"[ToT] Scores: {[f'{s:.1f}' for s, _ in scored_thoughts]}")
+    logging.info(f"[ToT] Keeping top {keep} branches, pruning {len(scored_thoughts)-keep}")
+    
+    # Phase 4: Deep expansion — develop winning branches into full solutions
+    candidates = []
+    for depth_step in range(depth):
+        for score, thought in top_branches:
+            time.sleep(15)
+            expand_prompt = f"""You are an advanced reasoning engine performing Tree-of-Thoughts search.
+
+TASK: {prompt}
+
+SELECTED REASONING APPROACH (scored {score:.1f}/10):
+{thought}
+
+Now develop this approach into a COMPLETE solution.
+
+REQUIRED FORMAT:
+<abstract_signature>
+[1-2 sentences categorizing the problem class]
+</abstract_signature>
+<reasoning>
+[Full step-by-step solution following the selected approach]
+</reasoning>
+<solution>
+[Your final answer]
+</solution>"""
+
+            payload = {
+                "contents": [{"parts": [{"text": expand_prompt}]}],
+                "generationConfig": {"temperature": 0.4}
+            }
+            
+            res = _post(url, payload)
+            total_tokens += res.get('usageMetadata', {}).get('totalTokenCount', 0)
+            
+            exp_content = ""
+            if 'candidates' in res and res['candidates']:
+                exp_content = res['candidates'][0].get('content', {}).get('parts', [{}])[0].get('text', '')
+            
+            r_match = re.search(r'<reasoning>(.*?)</reasoning>', exp_content, re.DOTALL)
+            s_match = re.search(r'<solution>(.*?)</solution>', exp_content, re.DOTALL)
+            a_match = re.search(r'<abstract_signature>(.*?)</abstract_signature>', exp_content, re.DOTALL)
+            
+            reasoning = r_match.group(1).strip() if r_match else thought
+            solution = s_match.group(1).strip() if s_match else exp_content.strip()
+            abstract_sig = a_match.group(1).strip() if a_match else None
+            
+            if "<" in solution and ">" in solution:
+                solution = re.sub(r'<[^>]+>', '', solution).strip()
+            
+            candidates.append({
+                "solution": solution,
+                "reasoning": reasoning,
+                "abstract_signature": abstract_sig,
+                "tot_score": score,
+                "tot_depth": depth_step + 1,
+            })
+    
+    logging.info(f"[ToT] Generated {len(candidates)} candidates, used {total_tokens} tokens")
+    return candidates, total_tokens
+
 
 def llm_pairwise_judge(query: str, sol_a: str, sol_b: str) -> int:
     """Returns 1 if A is better, 2 if B is better."""
@@ -390,6 +562,73 @@ Here are the solved examples to learn from:
 
 
 from typing import Tuple
+
+
+def repair_skill(python_code: str, pattern: str, failing_tests: list,
+                 error_msg: str, scores: dict, max_attempts: int = 2) -> str:
+    """REM Sleep: Iteratively repair a skill that failed dream stress-tests.
+    
+    Uses LLM to analyze the failure diagnostics and generate a corrected
+    version of the skill code.  Returns the repaired code, or the original
+    code if repair fails.
+    """
+    _ensure_api_key()
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemma-3-27b-it:generateContent?key={API_KEY}"
+    
+    current_code = python_code
+    
+    for attempt in range(1, max_attempts + 1):
+        # Build the failing test cases summary
+        failing_summary = ""
+        for t in failing_tests[:5]:
+            failing_summary += f"  Q: {t.get('query', '')[:150]}\n"
+            failing_summary += f"  Expected: {t.get('solution', '')[:100]}\n"
+            failing_summary += f"  Type: {t.get('type', 'POSITIVE')}\n\n"
+        
+        prompt = f"""You are a code repair specialist. A compiled skill named '{pattern}' failed stress-testing during REM sleep.
+
+CURRENT CODE:
+```python
+{current_code}
+```
+
+FAILURE DIAGNOSTICS:
+- Trigger accuracy: {scores.get('trigger_accuracy', 0):.2f}
+- Execute accuracy: {scores.get('execute_accuracy', 0):.2f}
+- Overall score: {scores.get('overall', 0):.2f}
+- Error details: {(error_msg or 'No specific errors')[:500]}
+
+FAILING TEST CASES:
+{failing_summary}
+
+REPAIR INSTRUCTIONS:
+1. Analyze WHY the code fails on the test cases above.
+2. Fix the root cause (do not just patch individual cases).
+3. Keep the same function signatures: trigger(query), parse(query), solve(vars), execute(query).
+4. Make trigger() more robust to handle edge cases and noise.
+5. Make solve() handle boundary conditions and unexpected inputs.
+
+Output ONLY the corrected Python code inside ```python ... ``` tags. Nothing else."""
+
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"temperature": 0.3}
+        }
+        
+        try:
+            res = _post(url, payload)
+            content = res.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '')
+            
+            code_match = re.search(r'```python\n(.*?)\n```', content, re.DOTALL)
+            if code_match:
+                repaired = code_match.group(1)
+                logging.info(f"[REM Repair] Attempt {attempt}: generated repaired code ({len(repaired)} chars)")
+                return repaired
+        except Exception as e:
+            logging.warning(f"[REM Repair] Attempt {attempt} failed: {e}")
+    
+    return python_code
+
 
 def _validate_skill(python_code: str, episodes: list) -> Tuple[dict, str]:
     """Validate a generated skill with DECOMPOSED confidence scoring.

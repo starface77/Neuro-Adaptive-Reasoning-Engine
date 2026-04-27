@@ -38,12 +38,23 @@ Speedup via Executable Reflex: Exponential
 Token Savings on Reflex Tasks: 100% (0 generation tokens used)
 ```
 
+## Advanced Architecture (Full Theory Implementation)
+
+- **Tree-of-Thoughts (ToT)**: SLOW path uses BFS with branch evaluation, pruning, and backtracking instead of simple multi-sample generation. Generates multiple reasoning approaches, evaluates each for promise (0-10), prunes weak branches, and expands only the most promising ones into full solutions.
+- **REM Sleep (Dreaming)**: After NREM consolidation, the system enters a REM phase that stochastically stress-tests existing compiled reflexes with adversarial edge cases. Rules that fail lose confidence; rules that pass gain it.
+- **Factual Memory (RAG Layer)**: Three-tier memory architecture — episodic (reasoning traces), semantic (compiled skills), and factual (knowledge base). Facts are retrieved via FAISS and injected into HYBRID/SLOW prompts as contextual knowledge.
+- **Graph Memory**: Associative connections between episodes with Hebbian strengthening. Multi-hop graph traversal discovers related episodes beyond flat FAISS similarity. Synaptic downscaling during sleep prevents memory bloat.
+- **RL Retriever**: Contextual bandit that learns retrieval preferences from outcome feedback. Re-ranks FAISS results using a learned value function. ε-greedy exploration with decaying epsilon ensures continued learning.
+- **Neural Memory (Titans/MIRAS)**: Lightweight MLP that learns compressed memory representations online. Surprise-driven gating (gradient of prediction error) prioritizes novel information. Huber loss provides robustness to outliers. Retention Gate implements regularization-based forgetting.
+- **Meta-Abduction**: Analyzes the skill registry to discover structural isomorphisms between different problem domains. Generates cross-domain meta-rules that abstract over specific skills, enabling transfer learning across domains.
+- **Continuous Learning Metrics**: Tracks 4 key metrics — routing recall/precision, computational cost reduction, inference convergence (variance reduction), and stability-plasticity balance.
+
 ## Quick Start
 
 ```bash
 # 1. Clone the repository
 git clone https://github.com/starface77/Neuro-Adaptive-Reasoning-Engine.git
-cd nare
+cd Neuro-Adaptive-Reasoning-Engine
 
 # 2. Install dependencies
 pip install -r requirements.txt
@@ -93,12 +104,23 @@ FAST Paths (Cache): 1 (14.3%)
 Экономия токенов на Reflex-задачах: 100% (потрачено 0 токенов генерации)
 ```
 
+## Продвинутая архитектура (Полная реализация теории)
+
+- **Tree-of-Thoughts (ToT)**: SLOW-маршрут использует BFS с оценкой ветвей, отсечением (pruning) и возвратом (backtracking). Генерирует несколько подходов, оценивает каждый (0-10), отсекает слабые ветви, развивает лучшие в полные решения.
+- **REM-Сон (Сновидения)**: После NREM-консолидации система переходит в REM-фазу, стохастически стресс-тестируя существующие рефлексы адверсарными edge-cases. Провалившие тест правила теряют уверенность, прошедшие — набирают.
+- **Фактуальная память (RAG-слой)**: Трёхуровневая архитектура памяти — эпизодическая (траектории), семантическая (скомпилированные навыки) и фактуальная (база знаний). Факты извлекаются через FAISS и инжектируются в промпты HYBRID/SLOW.
+- **Графовая память**: Ассоциативные связи между эпизодами с хеббовским усилением. Multi-hop обход графа обнаруживает связанные эпизоды за пределами плоского FAISS-сходства. Синаптическое масштабирование во время сна предотвращает раздувание памяти.
+- **RL-ретривер**: Контекстный бандит, обучающийся предпочтениям извлечения на основе обратной связи по результатам. Переранжирует результаты FAISS через обученную функцию ценности. ε-greedy исследование с убывающим ε обеспечивает непрерывное обучение.
+- **Нейросетевая память (Titans/MIRAS)**: Лёгкий MLP, обучающийся сжатым представлениям памяти онлайн. Гейтирование по сюрпризу (градиент ошибки предсказания) приоритизирует новую информацию. Функция потерь Хьюбера обеспечивает устойчивость к выбросам. Retention Gate реализует регуляризационное забывание.
+- **Мета-абдукция**: Анализирует реестр навыков для обнаружения структурных изоморфизмов между доменами. Генерирует кросс-доменные мета-правила, абстрагирующиеся над конкретными навыками.
+- **Метрики непрерывного обучения**: Отслеживает 4 ключевые метрики — recall/precision маршрутизации, снижение вычислительных затрат, конвергенция выводов (снижение дисперсии) и баланс стабильности/пластичности.
+
 ## Быстрый старт
 
 ```bash
 # 1. Клонирование репозитория
 git clone https://github.com/starface77/Neuro-Adaptive-Reasoning-Engine.git
-cd nare
+cd Neuro-Adaptive-Reasoning-Engine
 
 # 2. Установка зависимостей
 pip install -r requirements.txt

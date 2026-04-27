@@ -4,6 +4,7 @@ import numpy as np
 import json
 import os
 import logging
+import threading
 from typing import List, Dict, Tuple, Any
 
 class MemorySystem:
@@ -14,6 +15,7 @@ class MemorySystem:
     def __init__(self, embedding_dim: int = 3072, persist_dir: str = "memory_store"):
         self.embedding_dim = embedding_dim
         self.persist_dir = persist_dir
+        self._lock = threading.Lock()
         
         # Episodic Memory (IndexFlatIP for Cosine Similarity with L2 normalized vectors)
         self.episodic_index = faiss.IndexFlatIP(embedding_dim)
@@ -22,6 +24,10 @@ class MemorySystem:
         # Semantic Memory (Rules)
         self.semantic_index = faiss.IndexFlatIP(embedding_dim)
         self.semantic_rules: List[Dict[str, Any]] = []
+        
+        # Factual Memory (RAG knowledge base)
+        self.factual_index = faiss.IndexFlatIP(embedding_dim)
+        self.facts: List[Dict[str, Any]] = []
         
         os.makedirs(self.persist_dir, exist_ok=True)
         self.load()
@@ -32,6 +38,8 @@ class MemorySystem:
         Deduplicates if similarity > 0.95
         """
         vector = np.array(embedding, dtype=np.float32)
+        if vector.ndim == 1:
+            vector = vector.reshape(1, -1)
         faiss.normalize_L2(vector)
         
         # Deduplication check
@@ -81,6 +89,8 @@ class MemorySystem:
             return []
             
         vector = np.array(query_emb, dtype=np.float32)
+        if vector.ndim == 1:
+            vector = vector.reshape(1, -1)
         faiss.normalize_L2(vector)
         k_search = min(k, self.episodic_index.ntotal)
         
@@ -153,6 +163,8 @@ class MemorySystem:
             return []
         
         vector = np.array(query_emb, dtype=np.float32)
+        if vector.ndim == 1:
+            vector = vector.reshape(1, -1)
         faiss.normalize_L2(vector)
         k_search = min(k, self.semantic_index.ntotal)
         
@@ -166,13 +178,59 @@ class MemorySystem:
                 results.append(res)
         return results
 
+    def add_fact(self, fact_data: Dict[str, Any], embedding: np.ndarray) -> bool:
+        """Add a factual knowledge entry (RAG layer).
+        
+        Schema: {content, source, category, timestamp}
+        Deduplicates if similarity > 0.92.
+        """
+        vector = np.array(embedding, dtype=np.float32)
+        if vector.ndim == 1:
+            vector = vector.reshape(1, -1)
+        faiss.normalize_L2(vector)
+
+        if self.factual_index.ntotal > 0:
+            sims, indices = self.factual_index.search(vector, 1)
+            if sims[0][0] > 0.92:
+                logging.info("[Memory] Fact deduplication triggered.")
+                return False
+
+        fact_data["timestamp"] = time.time()
+        fact_data["embedding"] = embedding.tolist() if hasattr(embedding, "tolist") else list(embedding.flat)
+        self.factual_index.add(vector)
+        self.facts.append(fact_data)
+        self.save()
+        return True
+
+    def retrieve_facts(self, query_emb: np.ndarray, k: int = 3) -> List[Dict[str, Any]]:
+        """Retrieve relevant facts via cosine similarity (RAG)."""
+        if self.factual_index.ntotal == 0:
+            return []
+        vector = np.array(query_emb, dtype=np.float32)
+        if vector.ndim == 1:
+            vector = vector.reshape(1, -1)
+        faiss.normalize_L2(vector)
+        k_search = min(k, self.factual_index.ntotal)
+        sims, indices = self.factual_index.search(vector, k_search)
+        results = []
+        for sim, idx in zip(sims[0], indices[0]):
+            if idx != -1 and float(sim) > 0.5:
+                res = self.facts[idx].copy()
+                res["similarity"] = float(sim)
+                results.append(res)
+        return results
+
     def save(self):
-        faiss.write_index(self.episodic_index, os.path.join(self.persist_dir, "episodic.faiss"))
-        faiss.write_index(self.semantic_index, os.path.join(self.persist_dir, "semantic.faiss"))
-        with open(os.path.join(self.persist_dir, "episodes.json"), "w", encoding="utf-8") as f:
-            json.dump(self.episodes, f, ensure_ascii=False, indent=2)
-        with open(os.path.join(self.persist_dir, "rules.json"), "w", encoding="utf-8") as f:
-            json.dump(self.semantic_rules, f, ensure_ascii=False, indent=2)
+        with self._lock:
+            faiss.write_index(self.episodic_index, os.path.join(self.persist_dir, "episodic.faiss"))
+            faiss.write_index(self.semantic_index, os.path.join(self.persist_dir, "semantic.faiss"))
+            faiss.write_index(self.factual_index, os.path.join(self.persist_dir, "factual.faiss"))
+            with open(os.path.join(self.persist_dir, "episodes.json"), "w", encoding="utf-8") as f:
+                json.dump(self.episodes, f, ensure_ascii=False, indent=2)
+            with open(os.path.join(self.persist_dir, "rules.json"), "w", encoding="utf-8") as f:
+                json.dump(self.semantic_rules, f, ensure_ascii=False, indent=2)
+            with open(os.path.join(self.persist_dir, "facts.json"), "w", encoding="utf-8") as f:
+                json.dump(self.facts, f, ensure_ascii=False, indent=2)
 
     def load(self):
         ep_index = os.path.join(self.persist_dir, "episodic.faiss")
@@ -188,3 +246,10 @@ class MemorySystem:
             self.semantic_index = faiss.read_index(sem_index)
             with open(sem_data, "r", encoding="utf-8") as f:
                 self.semantic_rules = json.load(f)
+
+        fact_index = os.path.join(self.persist_dir, "factual.faiss")
+        fact_data = os.path.join(self.persist_dir, "facts.json")
+        if os.path.exists(fact_index) and os.path.exists(fact_data):
+            self.factual_index = faiss.read_index(fact_index)
+            with open(fact_data, "r", encoding="utf-8") as f:
+                self.facts = json.load(f)
