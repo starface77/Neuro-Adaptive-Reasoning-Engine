@@ -149,9 +149,9 @@ class NAREProductionAgent:
             sim_matrix = np.dot(vecs, vecs.T)
             # Zero out diagonal (self-similarity)
             np.fill_diagonal(sim_matrix, 0.0)
-            dense_clusters = np.sum(sim_matrix > 0.6, axis=1)
+            dense_clusters = np.sum(sim_matrix > 0.5, axis=1)
             if np.any(dense_clusters >= 1):
-                logging.info("[Sleep Trigger] Dense cluster detected.")
+                logging.info(f"[Sleep Trigger] Dense cluster detected (min similarity: {np.max(sim_matrix):.2f})")
                 return True
         return False
 
@@ -163,7 +163,7 @@ class NAREProductionAgent:
         vecs = self._normalize_embeddings(raw_vecs)
         sim_matrix = np.dot(vecs, vecs.T)
         np.fill_diagonal(sim_matrix, 0.0)
-        dense_clusters = np.sum(sim_matrix > 0.6, axis=1)
+        dense_clusters = np.sum(sim_matrix > 0.5, axis=1)
         
         if np.max(dense_clusters) < 1:
             # No clusters found, but we can still try to refine weak rules
@@ -172,7 +172,7 @@ class NAREProductionAgent:
             return
             
         core_idx = int(np.argmax(dense_clusters))
-        cluster_indices = np.where(sim_matrix[core_idx] > 0.6)[0]
+        cluster_indices = np.where(sim_matrix[core_idx] > 0.5)[0]
         
         cluster_episodes = [self.memory.episodes[i] for i in cluster_indices]
         
@@ -293,56 +293,39 @@ class NAREProductionAgent:
 
                 scores, error_msg = _validate_skill(python_code, dream_tests)
                 old_conf = rule.get("confidence", 0.5)
+                
+                # Check real-world execution accuracy before penalizing
+                real_acc = rule.get('execute_accuracy', 0.0)
+                logging.info(f"[REM] Rule '{pattern}' stats: conf={old_conf:.2f}, real_acc={real_acc:.2f}, dream_score={scores['overall']:.2f}")
 
                 if scores["overall"] >= 0.80:
                     boost = min(0.05, (scores["overall"] - 0.80) * 0.25)
                     rule["confidence"] = min(0.99, old_conf + boost)
-                    logging.info(
-                        f"[REM] '{pattern}' passed dream test "
-                        f"(overall={scores['overall']:.2f}). "
-                        f"conf: {old_conf:.2f} -> {rule['confidence']:.2f}"
-                    )
+                    logging.info(f"[REM] '{pattern}' passed dream test (overall={scores['overall']:.2f}). conf: {old_conf:.2f} -> {rule['confidence']:.2f}")
                 else:
-                    # Iterative code correction: attempt to repair the skill
-                    logging.warning(
-                        f"[REM] '{pattern}' FAILED dream test "
-                        f"(overall={scores['overall']:.2f}). "
-                        f"Attempting iterative repair..."
-                    )
-                    repaired_code = repair_skill(
-                        python_code, pattern, dream_tests,
-                        error_msg, scores, max_attempts=2,
-                    )
-                    if repaired_code and repaired_code != python_code:
-                        new_scores, new_err = _validate_skill(repaired_code, dream_tests)
-                        if new_scores["overall"] > scores["overall"]:
-                            rule["python_code"] = repaired_code
-                            rule["confidence"] = max(old_conf * 0.9, new_scores["overall"])
-                            rule["rem_repairs"] = rule.get("rem_repairs", 0) + 1
-                            logging.info(
-                                f"[REM] '{pattern}' REPAIRED successfully! "
-                                f"score: {scores['overall']:.2f} -> {new_scores['overall']:.2f}, "
-                                f"conf: {old_conf:.2f} -> {rule['confidence']:.2f}"
-                            )
+                    if real_acc >= 0.80:
+                        logging.info(f"[REM] '{pattern}' failed dream test (overall={scores['overall']:.2f}), but SKIPPING penalty due to high real accuracy ({real_acc:.2f}).")
+                    else:
+                        logging.warning(f"[REM] '{pattern}' FAILED dream test (overall={scores['overall']:.2f}). Attempting iterative repair...")
+                        repaired_code = repair_skill(python_code, pattern, dream_tests, error_msg, scores, max_attempts=2)
+                        
+                        if repaired_code and repaired_code != python_code:
+                            new_scores, new_err = _validate_skill(repaired_code, dream_tests)
+                            if new_scores["overall"] > scores["overall"]:
+                                rule["python_code"] = repaired_code
+                                rule["confidence"] = max(old_conf * 0.9, new_scores["overall"])
+                                rule["rem_repairs"] = rule.get("rem_repairs", 0) + 1
+                                logging.info(f"[REM] '{pattern}' REPAIRED successfully! score: {scores['overall']:.2f} -> {new_scores['overall']:.2f}, conf: {old_conf:.2f} -> {rule['confidence']:.2f}")
+                            else:
+                                penalty = max(0.05, (0.80 - scores["overall"]) * 0.3)
+                                rule["confidence"] = max(0.10, old_conf - penalty)
+                                rule["maturity"] = max(0, rule.get("maturity", 0) - 1)
+                                logging.warning(f"[REM] '{pattern}' repair did not improve. Penalizing: conf {old_conf:.2f} -> {rule['confidence']:.2f}")
                         else:
-                            # Repair didn't improve; apply penalty
                             penalty = max(0.05, (0.80 - scores["overall"]) * 0.3)
                             rule["confidence"] = max(0.10, old_conf - penalty)
                             rule["maturity"] = max(0, rule.get("maturity", 0) - 1)
-                            logging.warning(
-                                f"[REM] '{pattern}' repair did not improve "
-                                f"(old={scores['overall']:.2f}, new={new_scores['overall']:.2f}). "
-                                f"Penalizing: conf {old_conf:.2f} -> {rule['confidence']:.2f}"
-                            )
-                    else:
-                        # Repair failed or returned same code; apply penalty
-                        penalty = max(0.05, (0.80 - scores["overall"]) * 0.3)
-                        rule["confidence"] = max(0.10, old_conf - penalty)
-                        rule["maturity"] = max(0, rule.get("maturity", 0) - 1)
-                        logging.warning(
-                            f"[REM] '{pattern}' could not be repaired. "
-                            f"conf: {old_conf:.2f} -> {rule['confidence']:.2f}"
-                        )
+                            logging.warning(f"[REM] '{pattern}' could not be repaired. conf: {old_conf:.2f} -> {rule['confidence']:.2f}")
 
             except Exception as e:
                 logging.error(f"[REM] Dream failed for '{pattern}': {e}")
@@ -396,6 +379,7 @@ class NAREProductionAgent:
         
         # Structure embedding for sleep clustering
         sig = episode_data["abstract_signature"]
+        logging.info(f"[Memory] Signature: {sig}")
         if sig and sig != query:
             try:
                 episode_data["signature_embedding"] = llm.get_embedding(sig)
@@ -436,7 +420,7 @@ class NAREProductionAgent:
             np.array(embedding, dtype=np.float32),
         )
 
-    def wait_for_sleep(self, timeout=300):
+    def wait_for_sleep(self, timeout=600):
         """Wait for background sleep phase to complete."""
         start = time.time()
         while hasattr(self, '_is_sleeping') and self._is_sleeping:
@@ -491,62 +475,71 @@ class NAREProductionAgent:
                 continue
             
             try:
-                import re as _re, math as _math
-                _builtins_dict = __builtins__ if isinstance(__builtins__, dict) else vars(__builtins__)
-                safe_globals = {
-                    "__builtins__": {k: _builtins_dict[k] for k in ['bool', 'int', 'str', 'float', 'len', 'list', 'dict', 'tuple', 'set', 'range', 'abs', 'min', 'max', 'sum', 'sorted', 'enumerate', 'zip', 'map', 'filter', 'print', 'isinstance', 'round', 'pow', 'Exception', 'ValueError', 'TypeError', 'IndexError'] if k in _builtins_dict},
-                    "re": _re, "math": _math
+                # Use a single dictionary for exec to avoid NameErrors between functions
+                import re as _re, math as _math, json as _json
+                from .sandbox import ASTValidator
+                builtins_dict = __builtins__ if isinstance(__builtins__, dict) else vars(__builtins__)
+                env = {
+                    "__builtins__": {k: builtins_dict[k] for k in ASTValidator.ALLOWED_BUILTINS if k in builtins_dict},
+                    "re": _re, "math": _math, "json": _json
                 }
-                local_env = {}
-                exec(sem['python_code'], safe_globals, local_env)
+                exec(sem['python_code'], env)
                 
-                if 'trigger' in local_env and local_env['trigger'](query):
-                    start_time = time.time()
+                if 'trigger' in env and env['trigger'](query):
+                    logging.info(f"[Reflex] Triggered rule '{sem['pattern']}'")
                     final_answer = safe_execute(sem['python_code'], query)
                     
                     if not final_answer.startswith("Error"):
                         maturity = sem.get('maturity', 0)
-                        
-                        # LAYER 1: SHADOW VERIFICATION (for non-mature skills)
-                        if maturity < 3:
-                            # Hardened Shadow Check Prompt
-                            check_prompt = f"### VERIFICATION TASK ###\nTask: {query}\nProposed Answer: {final_answer}\n\nDoes this answer correctly solve the task? Respond ONLY with 'YES' if it is correct, or 'NO' if it is incorrect. DO NOT repeat the answer or provide any other text."
-                            verification, _ = llm.generate_samples(check_prompt, n=1, temperature=0.0)
-                            v_ans = verification[0]['solution'].upper()
-                            if "YES" not in v_ans:
-                                logging.warning(f"[Shadow Mode] REJECTED '{sem['pattern']}': {v_ans}")
-                                log.append(f"Shadow Check FAILED for '{sem['pattern']}'. Applying heavy penalty.")
-                                sem['confidence'] = max(0.1, sem.get('confidence', 0.5) - 0.3)
-                                sem['maturity'] = max(0, maturity - 1)
-                                # Fall through
+                        if conf >= 0.45:
+                            # If rule is highly accurate (from sleep validation), we can trust it more
+                            if maturity < 3 and sem.get('execute_accuracy', 0.0) < 0.85:
+                                # SHADOW VERIFICATION for low-accuracy or very young rules
+                                check_prompt = f"### VERIFICATION TASK ###\nTask: {query}\nProposed Answer: {final_answer}\n\nIs this answer mathematically/factually correct for the given task? \nRules:\n1. If the answer is correct (even if concise), respond 'YES'.\n2. If the answer is wrong, respond 'NO'.\n3. Respond ONLY with 'YES' or 'NO' followed by a reason."
+                                verification, _ = llm.generate_samples(check_prompt, n=1, temperature=0.0)
+                                v_full = verification[0]['solution'].strip()
+                                v_ans_line = v_full.split('\n')[0].upper()
+                                
+                                if "YES" in v_ans_line or (len(v_full) < 10 and "YES" in v_full.upper()):
+                                    logging.info(f"[Shadow Mode] ACCEPTED '{sem['pattern']}'")
+                                    self._record_skill_result(sem, success=True)
+                                    return {
+                                        "route_decision": "REFLEX_PROVISIONAL",
+                                        "retrieved_memories": [],
+                                        "generated_candidates": [],
+                                        "critic_evaluation_table": [],
+                                        "final_answer": final_answer,
+                                        "memory_update_log": log + [f"Route: REFLEX_PROVISIONAL (conf={conf:.2f})"]
+                                    }
+                                else:
+                                    logging.warning(f"[Shadow Mode] REJECTED '{sem['pattern']}'. Reason: {v_full}")
+                                    log.append(f"Shadow Check REJECTED rule. Reasoning: {v_full}")
+                                    # Reduce confidence slightly but not as harsh as a crash
+                                    sem['confidence'] = max(0.1, sem.get('confidence', 0.5) - 0.05)
+                                    # Fall through to HYBRID
                             else:
-                                logging.info(f"[Shadow Mode] ACCEPTED '{sem['pattern']}'")
-                                log.append(f"Shadow Check PASSED for '{sem['pattern']}'.")
+                                # MATURE or HIGH-ACCURACY SKILL: Full reflex speed
+                                if maturity < 3:
+                                    logging.info(f"[Reflex] Trusting high-accuracy young skill '{sem['pattern']}' (exec_acc={sem.get('execute_accuracy', 0.0):.2f})")
+                                
                                 self._record_skill_result(sem, success=True)
                                 return {
-                                    "route_decision": "REFLEX_PROVISIONAL",
+                                    "route_decision": "REFLEX",
                                     "retrieved_memories": [],
                                     "generated_candidates": [],
                                     "critic_evaluation_table": [],
                                     "final_answer": final_answer,
-                                    "memory_update_log": log + [f"Route: REFLEX_PROVISIONAL (conf={conf:.2f}, maturity={maturity})"]
+                                    "memory_update_log": log + [f"Route: REFLEX (conf={conf:.2f})"]
                                 }
-                        else:
-                            # MATURE SKILL: Full reflex speed
-                            self._record_skill_result(sem, success=True)
-                            return {
-                                "route_decision": "REFLEX",
-                                "retrieved_memories": [],
-                                "generated_candidates": [],
-                                "critic_evaluation_table": [],
-                                "final_answer": final_answer,
-                                "memory_update_log": log + [f"Route: REFLEX (mature, conf={conf:.2f})"]
-                            }
                     else:
+                        logging.warning(f"[Reflex] Execution error for '{sem['pattern']}': {final_answer}")
                         self._record_skill_result(sem, success=False)
                         sem['confidence'] = max(0.1, sem.get('confidence', 0.5) - 0.2)
-                        log.append(f"Skill returned Error: {final_answer[:60]}")
+                else:
+                    # Optional: log why it didn't trigger if similarity is high
+                    pass
             except Exception as e:
+                logging.error(f"[Reflex] Crash in rule '{sem.get('pattern')}': {e}")
                 self._record_skill_result(sem, success=False)
                 log.append(f"Skill crash: {e}")
 
@@ -729,6 +722,10 @@ class NAREProductionAgent:
             def sleep_wrapper():
                 try:
                     self._sleep_phase()      # NREM: consolidation
+                    # RELEASE BLOCKING LOCK: NREM is done, the main thread can continue.
+                    # REM sleep will continue in the background without blocking benchmarks.
+                    self._is_sleeping = False
+                    
                     self._rem_sleep_phase()   # REM: dreaming / stress-testing
                     # Titans/MIRAS: Neural memory consolidation
                     self.neural_memory.consolidate(self.memory.episodes[-50:])
@@ -737,6 +734,8 @@ class NAREProductionAgent:
                     self.meta_engine.analyze_skills(
                         self.memory.semantic_rules, self.memory.episodes
                     )
+                except Exception as e:
+                    logging.error(f"[Sleep Wrapper] Crash: {e}")
                 finally:
                     self._is_sleeping = False
             t = threading.Thread(target=sleep_wrapper, daemon=True)

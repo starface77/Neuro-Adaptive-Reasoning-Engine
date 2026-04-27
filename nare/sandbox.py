@@ -14,7 +14,7 @@ class ASTValidator(ast.NodeVisitor):
     Blocked: imports (except re, math), file I/O, eval, exec, globals manipulation.
     """
     
-    ALLOWED_IMPORTS = {'re', 'math'}
+    ALLOWED_IMPORTS = {'re', 'math', 'json'}
     ALLOWED_BUILTINS = {
         'abs', 'all', 'any', 'ascii', 'bin', 'bool', 'bytearray', 'bytes',
         'callable', 'chr', 'complex', 'dict', 'divmod', 'enumerate', 'filter',
@@ -23,7 +23,7 @@ class ASTValidator(ast.NodeVisitor):
         'min', 'next', 'object', 'oct', 'ord', 'pow', 'print', 'property', 'range',
         'repr', 'reversed', 'round', 'set', 'slice', 'sorted', 'str', 'sum',
         'tuple', 'type', 'zip', 'Exception', 'ValueError', 'TypeError', 'IndexError',
-        '__import__'
+        '__import__', 'dict', 'list'
     }
 
     def visit_Import(self, node):
@@ -67,7 +67,8 @@ def safe_execute(python_code: str, query: str) -> str:
     safe_globals = {
         "__builtins__": {k: builtins_dict[k] for k in ASTValidator.ALLOWED_BUILTINS if k in builtins_dict},
         "re": re,
-        "math": math
+        "math": math,
+        "json": __import__('json')
     }
     # 3. Execute definition safely
     exec(python_code, safe_globals)
