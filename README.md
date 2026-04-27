@@ -256,13 +256,12 @@ Neuro-Adaptive-Reasoning-Engine/
 │   ├── rl_retriever.py            # Contextual bandit retriever (164 lines)
 │   ├── metrics.py                 # Continuous learning metrics (150 lines)
 │   ├── sandbox.py                 # AST-validated secure execution (90 lines)
+│   ├── oracle.py                  # External validation protocols (150 lines)
+│   ├── config.py                  # Centralized system parameters (130 lines)
 │   └── __init__.py                # Package exports
 ├── benchmarks/                    # Evaluation suites
-│   ├── metrics_benchmark.py       # Numerical sequence tasks
-│   ├── complex_benchmark.py       # Algorithmic tasks (Kadane's, etc.)
-│   ├── nlp_benchmark.py           # NLP extraction tasks
-│   ├── hardcore_benchmark.py      # Stress tests (500th term)
-│   └── benchmark.py               # Base benchmark template
+│   ├── quick_test.py              # Sanity check (6 tasks, all 4 routes)
+│   └── full_benchmark.py          # 24 real tasks across 6 domains
 ├── scripts/                       # Utility scripts
 │   ├── list_models.py             # List Gemini models
 │   └── list_gemma.py              # List Gemma models
