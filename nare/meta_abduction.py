@@ -188,7 +188,12 @@ class MetaAbductionEngine:
 
     def _generate_meta_rule(self, cluster: List[Tuple[Dict, Dict]],
                              episodes: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-        """Generate a meta-rule from a cluster of structurally similar skills."""
+        """Generate a meta-rule from a cluster of structurally similar skills.
+        
+        Uses LLM to formulate abstract epistemological principles from the
+        cluster of skills, discovering structural isomorphisms across domains.
+        Falls back to rule-based generation if LLM is unavailable.
+        """
         if len(cluster) < 2:
             return None
 
@@ -219,19 +224,95 @@ class MetaAbductionEngine:
             words = re.findall(r'[a-zA-Z]+', p.lower())
             keywords.update(w for w in words if len(w) > 3)
 
+        # --- LLM-based abstract principle generation ---
+        abstract_principle = ""
+        llm_keywords = []
+        try:
+            abstract_principle, llm_keywords = self._llm_generate_principle(rules)
+            if llm_keywords:
+                keywords.update(llm_keywords)
+        except Exception as e:
+            logger.warning(f"[MetaAbduction] LLM principle generation failed: {e}")
+
         meta_rule = {
             'name': f"Meta-{primary_domain.title()}: {', '.join(patterns[:3])}",
             'domain': primary_domain,
-            'abstract_pattern': f"Problems involving {primary_domain} with "
-                               f"{', '.join(common_ops[:3]) if common_ops else 'mixed operations'}",
+            'abstract_pattern': abstract_principle or (
+                f"Problems involving {primary_domain} with "
+                f"{', '.join(common_ops[:3]) if common_ops else 'mixed operations'}"
+            ),
             'source_skills': [r.get('pattern', 'Unknown') for r in rules],
             'common_operations': common_ops,
-            'keywords': list(keywords)[:10],
+            'keywords': list(keywords)[:15],
             'num_source_skills': len(rules),
-            'confidence': np.mean([r.get('confidence', 0.5) for r in rules]),
+            'confidence': float(np.mean([r.get('confidence', 0.5) for r in rules])),
         }
 
         return meta_rule
+
+    def _llm_generate_principle(self, rules: List[Dict[str, Any]]) -> Tuple[str, List[str]]:
+        """Use LLM to discover abstract epistemological principles from skills.
+        
+        Returns (abstract_principle, keywords).
+        """
+        try:
+            from nare.llm import _ensure_api_key, _post, API_KEY
+            _ensure_api_key()
+        except Exception:
+            return "", []
+
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemma-3-27b-it:generateContent?key={API_KEY}"
+
+        skills_desc = ""
+        for r in rules[:5]:
+            skills_desc += f"Skill: {r.get('pattern', 'Unknown')}\n"
+            code = r.get('python_code', '')[:400]
+            if code:
+                skills_desc += f"Code:\n{code}\n"
+            skills_desc += "---\n"
+
+        prompt = f"""You are a meta-cognition engine performing STRUCTURAL ISOMORPHISM ANALYSIS.
+
+Below are {len(rules)} compiled skills that share structural similarities. Your task is to discover the ABSTRACT EPISTEMOLOGICAL PRINCIPLE that unifies them — the deep structural pattern common to all.
+
+SKILLS:
+{skills_desc}
+
+INSTRUCTIONS:
+1. Identify the structural isomorphism: What abstract algorithm or reasoning pattern do ALL these skills share?
+2. Formulate a GENERAL PRINCIPLE that could apply to entirely new domains where the same structural pattern appears.
+3. Extract 5-10 KEYWORDS that would help identify new problems matching this meta-pattern.
+
+Output in EXACTLY this format:
+PRINCIPLE: [One paragraph describing the abstract meta-rule — the deep structural pattern shared by all skills, stated in domain-independent terms]
+KEYWORDS: [comma-separated keywords that would trigger this meta-rule for new, unseen problems]"""
+
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"temperature": 0.4}
+        }
+
+        try:
+            res = _post(url, payload)
+            content = res.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '')
+
+            principle = ""
+            llm_keywords = []
+
+            principle_match = re.search(r'PRINCIPLE:\s*(.*?)(?=KEYWORDS:|$)', content, re.DOTALL)
+            if principle_match:
+                principle = principle_match.group(1).strip()[:500]
+
+            keywords_match = re.search(r'KEYWORDS:\s*(.*)', content)
+            if keywords_match:
+                raw = keywords_match.group(1).strip()
+                llm_keywords = [w.strip().lower() for w in raw.split(',') if len(w.strip()) > 2][:10]
+
+            logger.info(f"[MetaAbduction] LLM principle: {principle[:100]}...")
+            return principle, llm_keywords
+        except Exception as e:
+            logger.warning(f"[MetaAbduction] LLM call failed: {e}")
+            return "", []
 
     def _is_duplicate(self, new_mr: Dict[str, Any]) -> bool:
         """Check if a meta-rule already exists."""

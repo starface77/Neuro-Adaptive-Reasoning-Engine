@@ -563,6 +563,73 @@ Here are the solved examples to learn from:
 
 from typing import Tuple
 
+
+def repair_skill(python_code: str, pattern: str, failing_tests: list,
+                 error_msg: str, scores: dict, max_attempts: int = 2) -> str:
+    """REM Sleep: Iteratively repair a skill that failed dream stress-tests.
+    
+    Uses LLM to analyze the failure diagnostics and generate a corrected
+    version of the skill code.  Returns the repaired code, or the original
+    code if repair fails.
+    """
+    _ensure_api_key()
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemma-3-27b-it:generateContent?key={API_KEY}"
+    
+    current_code = python_code
+    
+    for attempt in range(1, max_attempts + 1):
+        # Build the failing test cases summary
+        failing_summary = ""
+        for t in failing_tests[:5]:
+            failing_summary += f"  Q: {t.get('query', '')[:150]}\n"
+            failing_summary += f"  Expected: {t.get('solution', '')[:100]}\n"
+            failing_summary += f"  Type: {t.get('type', 'POSITIVE')}\n\n"
+        
+        prompt = f"""You are a code repair specialist. A compiled skill named '{pattern}' failed stress-testing during REM sleep.
+
+CURRENT CODE:
+```python
+{current_code}
+```
+
+FAILURE DIAGNOSTICS:
+- Trigger accuracy: {scores.get('trigger_accuracy', 0):.2f}
+- Execute accuracy: {scores.get('execute_accuracy', 0):.2f}
+- Overall score: {scores.get('overall', 0):.2f}
+- Error details: {(error_msg or 'No specific errors')[:500]}
+
+FAILING TEST CASES:
+{failing_summary}
+
+REPAIR INSTRUCTIONS:
+1. Analyze WHY the code fails on the test cases above.
+2. Fix the root cause (do not just patch individual cases).
+3. Keep the same function signatures: trigger(query), parse(query), solve(vars), execute(query).
+4. Make trigger() more robust to handle edge cases and noise.
+5. Make solve() handle boundary conditions and unexpected inputs.
+
+Output ONLY the corrected Python code inside ```python ... ``` tags. Nothing else."""
+
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"temperature": 0.3}
+        }
+        
+        try:
+            res = _post(url, payload)
+            content = res.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '')
+            
+            code_match = re.search(r'```python\n(.*?)\n```', content, re.DOTALL)
+            if code_match:
+                repaired = code_match.group(1)
+                logging.info(f"[REM Repair] Attempt {attempt}: generated repaired code ({len(repaired)} chars)")
+                return repaired
+        except Exception as e:
+            logging.warning(f"[REM Repair] Attempt {attempt} failed: {e}")
+    
+    return python_code
+
+
 def _validate_skill(python_code: str, episodes: list) -> Tuple[dict, str]:
     """Validate a generated skill with DECOMPOSED confidence scoring.
     

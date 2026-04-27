@@ -250,7 +250,11 @@ class NAREProductionAgent:
         
         Stochastically recombines concepts, generates edge-case scenarios,
         and stress-tests existing compiled reflexes.  Rules that fail are
-        penalised; rules that pass gain confidence.
+        iteratively corrected via LLM; rules that pass gain confidence.
+        
+        Per theory doc: "If compiled code fails in a simulated situation,
+        its structure is corrected, ensuring exceptional reliability of
+        the skill registry."
         """
         logging.info("=== [REM SLEEP] Dreaming — stress-testing existing skills ===")
         if not self.memory.semantic_rules:
@@ -282,7 +286,7 @@ class NAREProductionAgent:
                 continue
 
             try:
-                from nare.llm import generate_stress_tests, _validate_skill
+                from nare.llm import generate_stress_tests, _validate_skill, repair_skill
                 dream_tests = generate_stress_tests(related_episodes)
                 if not dream_tests:
                     continue
@@ -299,16 +303,46 @@ class NAREProductionAgent:
                         f"conf: {old_conf:.2f} -> {rule['confidence']:.2f}"
                     )
                 else:
-                    penalty = max(0.05, (0.80 - scores["overall"]) * 0.3)
-                    rule["confidence"] = max(0.10, old_conf - penalty)
-                    rule["maturity"] = max(0, rule.get("maturity", 0) - 1)
+                    # Iterative code correction: attempt to repair the skill
                     logging.warning(
                         f"[REM] '{pattern}' FAILED dream test "
                         f"(overall={scores['overall']:.2f}). "
-                        f"conf: {old_conf:.2f} -> {rule['confidence']:.2f}"
+                        f"Attempting iterative repair..."
                     )
-                    if error_msg:
-                        logging.warning(f"[REM] Diagnostics: {error_msg[:200]}")
+                    repaired_code = repair_skill(
+                        python_code, pattern, dream_tests,
+                        error_msg, scores, max_attempts=2,
+                    )
+                    if repaired_code and repaired_code != python_code:
+                        new_scores, new_err = _validate_skill(repaired_code, dream_tests)
+                        if new_scores["overall"] > scores["overall"]:
+                            rule["python_code"] = repaired_code
+                            rule["confidence"] = max(old_conf * 0.9, new_scores["overall"])
+                            rule["rem_repairs"] = rule.get("rem_repairs", 0) + 1
+                            logging.info(
+                                f"[REM] '{pattern}' REPAIRED successfully! "
+                                f"score: {scores['overall']:.2f} -> {new_scores['overall']:.2f}, "
+                                f"conf: {old_conf:.2f} -> {rule['confidence']:.2f}"
+                            )
+                        else:
+                            # Repair didn't improve; apply penalty
+                            penalty = max(0.05, (0.80 - scores["overall"]) * 0.3)
+                            rule["confidence"] = max(0.10, old_conf - penalty)
+                            rule["maturity"] = max(0, rule.get("maturity", 0) - 1)
+                            logging.warning(
+                                f"[REM] '{pattern}' repair did not improve "
+                                f"(old={scores['overall']:.2f}, new={new_scores['overall']:.2f}). "
+                                f"Penalizing: conf {old_conf:.2f} -> {rule['confidence']:.2f}"
+                            )
+                    else:
+                        # Repair failed or returned same code; apply penalty
+                        penalty = max(0.05, (0.80 - scores["overall"]) * 0.3)
+                        rule["confidence"] = max(0.10, old_conf - penalty)
+                        rule["maturity"] = max(0, rule.get("maturity", 0) - 1)
+                        logging.warning(
+                            f"[REM] '{pattern}' could not be repaired. "
+                            f"conf: {old_conf:.2f} -> {rule['confidence']:.2f}"
+                        )
 
             except Exception as e:
                 logging.error(f"[REM] Dream failed for '{pattern}': {e}")
@@ -430,6 +464,15 @@ class NAREProductionAgent:
                 ep['last_used'] = time.time()
                 ep['strength'] = ep.get('strength', 1.0) + 0.1
                 self.memory.save()
+                # Record metrics for FAST CACHE hits
+                self.metrics.record(
+                    query=query, route="FAST",
+                    elapsed=time.time() - _solve_start,
+                    tokens_used=0,
+                    similarity=1.0,
+                    answer=ep['solution'],
+                    score=ep.get('score', 0.8),
+                )
                 return {
                     "route_decision": "FAST",
                     "retrieved_memories": [ep],
