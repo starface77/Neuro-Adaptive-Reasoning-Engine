@@ -4,6 +4,7 @@ import numpy as np
 import json
 import os
 import logging
+import threading
 from typing import List, Dict, Tuple, Any
 
 class MemorySystem:
@@ -14,6 +15,7 @@ class MemorySystem:
     def __init__(self, embedding_dim: int = 3072, persist_dir: str = "memory_store"):
         self.embedding_dim = embedding_dim
         self.persist_dir = persist_dir
+        self._lock = threading.Lock()
         
         # Episodic Memory (IndexFlatIP for Cosine Similarity with L2 normalized vectors)
         self.episodic_index = faiss.IndexFlatIP(embedding_dim)
@@ -32,6 +34,8 @@ class MemorySystem:
         Deduplicates if similarity > 0.95
         """
         vector = np.array(embedding, dtype=np.float32)
+        if vector.ndim == 1:
+            vector = vector.reshape(1, -1)
         faiss.normalize_L2(vector)
         
         # Deduplication check
@@ -81,6 +85,8 @@ class MemorySystem:
             return []
             
         vector = np.array(query_emb, dtype=np.float32)
+        if vector.ndim == 1:
+            vector = vector.reshape(1, -1)
         faiss.normalize_L2(vector)
         k_search = min(k, self.episodic_index.ntotal)
         
@@ -153,6 +159,8 @@ class MemorySystem:
             return []
         
         vector = np.array(query_emb, dtype=np.float32)
+        if vector.ndim == 1:
+            vector = vector.reshape(1, -1)
         faiss.normalize_L2(vector)
         k_search = min(k, self.semantic_index.ntotal)
         
@@ -167,12 +175,13 @@ class MemorySystem:
         return results
 
     def save(self):
-        faiss.write_index(self.episodic_index, os.path.join(self.persist_dir, "episodic.faiss"))
-        faiss.write_index(self.semantic_index, os.path.join(self.persist_dir, "semantic.faiss"))
-        with open(os.path.join(self.persist_dir, "episodes.json"), "w", encoding="utf-8") as f:
-            json.dump(self.episodes, f, ensure_ascii=False, indent=2)
-        with open(os.path.join(self.persist_dir, "rules.json"), "w", encoding="utf-8") as f:
-            json.dump(self.semantic_rules, f, ensure_ascii=False, indent=2)
+        with self._lock:
+            faiss.write_index(self.episodic_index, os.path.join(self.persist_dir, "episodic.faiss"))
+            faiss.write_index(self.semantic_index, os.path.join(self.persist_dir, "semantic.faiss"))
+            with open(os.path.join(self.persist_dir, "episodes.json"), "w", encoding="utf-8") as f:
+                json.dump(self.episodes, f, ensure_ascii=False, indent=2)
+            with open(os.path.join(self.persist_dir, "rules.json"), "w", encoding="utf-8") as f:
+                json.dump(self.semantic_rules, f, ensure_ascii=False, indent=2)
 
     def load(self):
         ep_index = os.path.join(self.persist_dir, "episodic.faiss")

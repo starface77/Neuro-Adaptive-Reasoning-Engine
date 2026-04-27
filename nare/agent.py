@@ -343,8 +343,9 @@ class NAREProductionAgent:
             
             try:
                 import re as _re, math as _math
+                _builtins_dict = __builtins__ if isinstance(__builtins__, dict) else vars(__builtins__)
                 safe_globals = {
-                    "__builtins__": {k: __builtins__[k] for k in ['bool', 'int', 'str', 'float', 'len', 'list', 'dict', 'tuple', 'set', 'abs', 'min', 'max', 'sum', 'Exception', 'ValueError', 'TypeError', 'IndexError', '__import__']},
+                    "__builtins__": {k: _builtins_dict[k] for k in ['bool', 'int', 'str', 'float', 'len', 'list', 'dict', 'tuple', 'set', 'range', 'abs', 'min', 'max', 'sum', 'sorted', 'enumerate', 'zip', 'map', 'filter', 'print', 'isinstance', 'round', 'pow', 'Exception', 'ValueError', 'TypeError', 'IndexError'] if k in _builtins_dict},
                     "re": _re, "math": _math
                 }
                 local_env = {}
@@ -375,6 +376,9 @@ class NAREProductionAgent:
                                 self._record_skill_result(sem, success=True)
                                 return {
                                     "route_decision": "REFLEX_PROVISIONAL",
+                                    "retrieved_memories": [],
+                                    "generated_candidates": [],
+                                    "critic_evaluation_table": [],
                                     "final_answer": final_answer,
                                     "memory_update_log": log + [f"Route: REFLEX_PROVISIONAL (conf={conf:.2f}, maturity={maturity})"]
                                 }
@@ -383,6 +387,9 @@ class NAREProductionAgent:
                             self._record_skill_result(sem, success=True)
                             return {
                                 "route_decision": "REFLEX",
+                                "retrieved_memories": [],
+                                "generated_candidates": [],
+                                "critic_evaluation_table": [],
                                 "final_answer": final_answer,
                                 "memory_update_log": log + [f"Route: REFLEX (mature, conf={conf:.2f})"]
                             }

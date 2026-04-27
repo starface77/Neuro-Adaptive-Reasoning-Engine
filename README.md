@@ -43,7 +43,7 @@ Token Savings on Reflex Tasks: 100% (0 generation tokens used)
 ```bash
 # 1. Clone the repository
 git clone https://github.com/starface77/Neuro-Adaptive-Reasoning-Engine.git
-cd nare
+cd Neuro-Adaptive-Reasoning-Engine
 
 # 2. Install dependencies
 pip install -r requirements.txt
@@ -98,7 +98,7 @@ FAST Paths (Cache): 1 (14.3%)
 ```bash
 # 1. Клонирование репозитория
 git clone https://github.com/starface77/Neuro-Adaptive-Reasoning-Engine.git
-cd nare
+cd Neuro-Adaptive-Reasoning-Engine
 
 # 2. Установка зависимостей
 pip install -r requirements.txt

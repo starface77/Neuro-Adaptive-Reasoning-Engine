@@ -9,6 +9,13 @@ from dotenv import load_dotenv
 load_dotenv()
 API_KEY = os.getenv("GEMINI_API_KEY")
 
+def _ensure_api_key():
+    if not API_KEY:
+        raise RuntimeError(
+            "GEMINI_API_KEY is not set. "
+            "Copy .env.example to .env and add your key."
+        )
+
 def _post(url: str, payload: dict, retries: int = 5) -> dict:
     data = json.dumps(payload).encode('utf-8')
     
@@ -34,9 +41,10 @@ def _post(url: str, payload: dict, retries: int = 5) -> dict:
 
 def get_embedding(text: str) -> list:
     """Compute embedding via Gemini gemini-embedding-001 (dim=3072)."""
+    _ensure_api_key()
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent?key={API_KEY}"
     payload = {
-        "model": "models/gemma-4-31b-it",
+        "model": "models/gemini-embedding-001",
         "content": {"parts": [{"text": text}]}
     }
     response = _post(url, payload)
@@ -47,6 +55,7 @@ def generate_samples(prompt: str, n: int = 3, temperature: float = 0.8, mode: st
     Generate N candidates. 
     mode can be 'SLOW', 'HYBRID', or 'REFLEX'. The mode strictly controls the required XML output structure.
     """
+    _ensure_api_key()
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemma-3-27b-it:generateContent?key={API_KEY}"
     
     if mode == "SLOW":
