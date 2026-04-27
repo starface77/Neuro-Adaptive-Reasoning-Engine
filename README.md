@@ -217,6 +217,46 @@ print(f"Route: {result['route']}")
 # Route: REFLEX
 ```
 
+#### Plugging in an external oracle (recommended)
+
+By default, generated skills are validated against the heuristic
+string/numeric-overlap fallback in `nare/oracle.py`. For any
+benchmark-grade run you should supply a real oracle so the skill is
+judged against verified ground truth instead of self-referential LLM
+labels:
+
+```python
+from nare.agent import NAREProductionAgent
+from nare.oracle import numeric_set_oracle, python_assert_oracle
+
+# Domain-specific oracle: every skill output must contain the right
+# integer answer.
+def my_oracle(query: str, candidate: str):
+    expected = run_reference_solver(query)        # your ground truth
+    return numeric_set_oracle([expected])(query, candidate)
+
+agent = NAREProductionAgent(oracle=my_oracle)
+```
+
+You can also attach an `oracle_spec` to individual episodes after they
+are stored. The spec is JSON-serializable so it survives save/load,
+and it takes priority over the global oracle when the sleep phase
+validates a skill compiled from that episode:
+
+```python
+ep = agent.memory.episodes[-1]
+ep["oracle_spec"] = {"type": "numeric_set", "expected": [7]}
+agent.memory.save()
+```
+
+Recognized spec types live in `nare/oracle.py`:
+`numeric_set` / `string_contains` / `python_assert` / `heuristic_overlap`.
+
+The validator's weights live in `nare.config.SkillValidationConfig`.
+By default `w_positive_stress = 0`: LLM-judged stress tests are
+reported as `positive_no_crash_rate` for diagnostics but do not bias
+the `overall` score that gates promotion. See `LIMITATIONS.md` §3.
+
 ---
 
 <a name="benchmarks"></a>

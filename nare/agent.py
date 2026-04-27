@@ -2,8 +2,11 @@ import time
 import numpy as np
 import faiss
 import logging
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional, TYPE_CHECKING
 from . import llm
+
+if TYPE_CHECKING:
+    from .oracle import Oracle  # noqa: F401
 from .config import DEFAULT_CONFIG, NareConfig
 from .memory import MemorySystem
 from .metrics import MetricsTracker
@@ -99,8 +102,16 @@ class HybridCritic:
 
 
 class NAREProductionAgent:
-    def __init__(self, config: NareConfig = DEFAULT_CONFIG):
+    def __init__(
+        self,
+        config: NareConfig = DEFAULT_CONFIG,
+        oracle: "Oracle | None" = None,
+    ):
         self.config = config
+        # Optional external oracle used during sleep/REM phases when
+        # validating compiled skills. When None, _validate_skill falls
+        # back to a heuristic string/numeric overlap. See nare.oracle.
+        self.oracle = oracle
         self.memory = MemorySystem(config=config)
         self.critic = HybridCritic(config=config)
         self.metrics = MetricsTracker(persist_dir=self.memory.persist_dir)
@@ -166,22 +177,30 @@ class NAREProductionAgent:
 
     def _sleep_phase(self):
         logging.info("=== [SLEEP PHASE] Crystallizing Memories ===")
-        # Use structural signature embeddings
-        raw_vecs = np.array([ep.get('signature_embedding', ep['embedding']) for ep in self.memory.episodes], dtype=np.float32)
-        # BUG-4 FIX: normalize
+        sleep_cfg = self.config.sleep
+        sim_threshold = sleep_cfg.cluster_similarity_threshold
+
+        # Use structural signature embeddings.
+        raw_vecs = np.array(
+            [
+                ep.get('signature_embedding', ep['embedding'])
+                for ep in self.memory.episodes
+            ],
+            dtype=np.float32,
+        )
         vecs = self._normalize_embeddings(raw_vecs)
         sim_matrix = np.dot(vecs, vecs.T)
         np.fill_diagonal(sim_matrix, 0.0)
-        dense_clusters = np.sum(sim_matrix > 0.6, axis=1)
-        
+        dense_clusters = np.sum(sim_matrix > sim_threshold, axis=1)
+
         if np.max(dense_clusters) < 1:
-            # No clusters found, but we can still try to refine weak rules
+            # No clusters above threshold; still try to refine weak rules.
             self._prune_weak_rules()
             self.memory.prune_fading_memories()
             return
-            
+
         core_idx = int(np.argmax(dense_clusters))
-        cluster_indices = np.where(sim_matrix[core_idx] > 0.6)[0]
+        cluster_indices = np.where(sim_matrix[core_idx] > sim_threshold)[0]
         
         cluster_episodes = [self.memory.episodes[i] for i in cluster_indices]
         
@@ -208,7 +227,12 @@ class NAREProductionAgent:
                     from nare.llm import generate_stress_tests, _validate_skill
                     stress_tests = generate_stress_tests(cluster_episodes)
                     all_tests = cluster_episodes + stress_tests
-                    scores, error_msg = _validate_skill(updated_rule.get('python_code', ''), all_tests)
+                    scores, error_msg = _validate_skill(
+                        updated_rule.get('python_code', ''),
+                        all_tests,
+                        oracle=self.oracle,
+                        config=self.config,
+                    )
                     
                     updated_rule['confidence'] = scores['overall']
                     updated_rule['trigger_accuracy'] = scores['trigger_accuracy']
@@ -226,7 +250,11 @@ class NAREProductionAgent:
                     logging.info(f"[Consolidation] Refined: {updated_rule['pattern']}")
             else:
                 logging.info("=== [SLEEP PHASE] Crystallizing New Rule ===")
-                new_rule = llm.extract_heuristic_rule(cluster_episodes)
+                new_rule = llm.extract_heuristic_rule(
+                    cluster_episodes,
+                    oracle=self.oracle,
+                    config=self.config,
+                )
                 if new_rule is None:
                     logging.warning("[Sleep] Skill failed validation completely (robustness < 0.40). Keeping episodes.")
                     return
@@ -301,7 +329,10 @@ class NAREProductionAgent:
                 if not dream_tests:
                     continue
 
-                scores, error_msg = _validate_skill(python_code, dream_tests)
+                scores, error_msg = _validate_skill(
+                    python_code, dream_tests,
+                    oracle=self.oracle, config=self.config,
+                )
                 old_conf = rule.get("confidence", 0.5)
 
                 if scores["overall"] >= 0.80:
@@ -324,7 +355,10 @@ class NAREProductionAgent:
                         error_msg, scores, max_attempts=2,
                     )
                     if repaired_code and repaired_code != python_code:
-                        new_scores, new_err = _validate_skill(repaired_code, dream_tests)
+                        new_scores, new_err = _validate_skill(
+                            repaired_code, dream_tests,
+                            oracle=self.oracle, config=self.config,
+                        )
                         if new_scores["overall"] > scores["overall"]:
                             rule["python_code"] = repaired_code
                             rule["confidence"] = max(old_conf * 0.9, new_scores["overall"])

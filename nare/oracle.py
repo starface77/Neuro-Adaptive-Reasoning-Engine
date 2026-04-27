@@ -141,10 +141,94 @@ def llm_yes_no_oracle(judge_fn: Callable[[str], str]) -> Oracle:
     return _oracle
 
 
+def heuristic_overlap_oracle(expected_solution: str) -> Oracle:
+    """Default oracle reproducing the legacy string/numeric-overlap check.
+
+    This is what ``_validate_skill`` used inline before oracles were
+    pluggable: a candidate is "correct" if it matches the expected
+    solution exactly, contains it, is contained by it, OR shares
+    enough numeric tokens with it (>= 20% coverage of expected numbers).
+
+    It is **a heuristic, not a real ground-truth check**. Use it as the
+    fallback when no stricter oracle is available; prefer
+    :func:`numeric_set_oracle` or :func:`python_assert_oracle` whenever
+    you can reduce the task to one of those forms.
+    """
+    expected = (expected_solution or "").strip()
+
+    def _oracle(query: str, candidate_answer: str) -> Tuple[bool, str]:
+        cand = (candidate_answer or "").strip()
+        if expected == "" or expected == "N/A":
+            if cand and not cand.startswith("Error"):
+                return True, "no expected solution; non-error output accepted"
+            return False, "no expected solution and candidate is empty/error"
+
+        if cand == expected or cand in expected or expected in cand:
+            return True, "string match"
+
+        cand_nums = set(re.findall(r"-?\d+\.?\d*", cand))
+        exp_nums = set(re.findall(r"-?\d+\.?\d*", expected))
+        if cand_nums and exp_nums:
+            overlap = cand_nums & exp_nums
+            coverage = len(overlap) / len(exp_nums)
+            if coverage >= 0.2 or (
+                len(cand_nums) == 1 and cand_nums.issubset(exp_nums)
+            ):
+                return True, f"numeric overlap {coverage:.0%}"
+            return False, (
+                f"numeric mismatch: expected {sorted(exp_nums)}, "
+                f"got {sorted(cand_nums)}"
+            )
+
+        if cand and not cand.startswith("Error"):
+            # Partial credit: legacy behaviour gave 0.5 here. We surface
+            # it via info so the caller can decide whether to count it.
+            return False, "non-error output but no string/numeric match"
+
+        return False, f"expected '{expected[:40]}' got '{cand[:40]}'"
+
+    return _oracle
+
+
+def build_oracle_from_spec(spec: dict) -> Oracle:
+    """Materialize an Oracle from a JSON-serializable specification.
+
+    Episodes can carry an ``oracle_spec`` field on disk (so they survive
+    save/load). Recognized shapes:
+
+      * ``{"type": "numeric_set", "expected": [42, 3.14], "rel_tol": 1e-6}``
+      * ``{"type": "string_contains", "must_contain": ["foo", "bar"]}``
+      * ``{"type": "python_assert", "code": "assert int(answer) == 5"}``
+      * ``{"type": "heuristic_overlap", "expected_solution": "..."}``
+
+    Unknown ``type`` values raise ``ValueError`` so callers can detect
+    misconfiguration rather than silently fall back to a weaker oracle.
+    """
+    kind = spec.get("type")
+    if kind == "numeric_set":
+        return numeric_set_oracle(
+            list(spec.get("expected", [])),
+            rel_tol=spec.get("rel_tol", 1e-6),
+            abs_tol=spec.get("abs_tol", 1e-9),
+        )
+    if kind == "string_contains":
+        return string_contains_oracle(list(spec.get("must_contain", [])))
+    if kind == "python_assert":
+        code = spec.get("code", "")
+        if not isinstance(code, str) or not code.strip():
+            raise ValueError("python_assert oracle requires non-empty 'code'")
+        return python_assert_oracle(code)
+    if kind == "heuristic_overlap":
+        return heuristic_overlap_oracle(spec.get("expected_solution", ""))
+    raise ValueError(f"Unknown oracle spec type: {kind!r}")
+
+
 __all__ = [
     "Oracle",
     "numeric_set_oracle",
     "string_contains_oracle",
     "python_assert_oracle",
     "llm_yes_no_oracle",
+    "heuristic_overlap_oracle",
+    "build_oracle_from_spec",
 ]

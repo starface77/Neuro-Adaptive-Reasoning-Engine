@@ -41,11 +41,23 @@ The code does **not** instantiate any of these objects:
 
 These framings should be read as **inspirations**, not theorems. If you need the formal versions, cite the original papers.
 
-## 3. Validation signal is leaky
+## 3. Validation signal: self-judging weight removed (was leaky)
 
-`extract_heuristic_rule` (in `nare/llm.py`) generates skills with one LLM call, generates "stress test" queries-and-labels with the same LLM, then scores the skill against those labels (30% weight in `overall`). When the skill model and the label model are the same (or the same family), this is **self-referential**: systematic errors are not caught.
+**Status:** mitigated as of the oracle-integration PR. Previously, `extract_heuristic_rule` (in `nare/llm.py`) generated skills with one LLM call, generated "stress test" queries-and-labels with the same LLM, then counted those labels for **30% of `overall`**. When the skill model and the label model are the same family, that 30% was self-referential: systematic errors were never caught.
 
-Mitigation in this repo: `nare/oracle.py` ships with a small protocol (`numeric_set_oracle`, `string_contains_oracle`, `python_assert_oracle`) so callers can plug in an *external* oracle. The skill-extraction pipeline does not yet route through it; doing so is left as a follow-up. Until that lands, treat the per-skill `overall` score as a weak signal.
+Current behaviour:
+
+* `_validate_skill` now accepts an `oracle` argument (and uses an episode's `oracle_spec` first, then the caller-provided oracle, then a documented heuristic fallback).
+* `overall` weights live in `nare.config.SkillValidationConfig`. The new defaults are:
+  * `w_trigger = 0.35` &nbsp;(real, labelled originals)
+  * `w_execute = 0.55` &nbsp;(oracle-judged against verified solutions)
+  * `w_negative_trap = 0.10` &nbsp;(real signal: must not trigger on adversarial off-distribution queries)
+  * `w_positive_stress = 0.0` &nbsp;(POSITIVE LLM-judged stress is reported as `positive_no_crash_rate` for diagnostics but excluded from overall by default).
+* Hard gates: a skill that fails on its own training originals (`trigger < 0.50` or `execute < 0.40`) is capped at `overall = 0.50` regardless of stress luck.
+* `NAREProductionAgent(oracle=...)` propagates the oracle into the sleep / REM phases.
+* `nare/oracle.py` ships `numeric_set_oracle`, `string_contains_oracle`, `python_assert_oracle`, `heuristic_overlap_oracle` (the documented fallback), and `build_oracle_from_spec` for JSON-serializable per-episode specs.
+
+What is **still** weak: when neither an episode `oracle_spec` nor a global oracle is supplied, `_validate_skill` falls back to `heuristic_overlap_oracle`, which is a string/numeric-overlap check on the stored solution. This is a heuristic, not ground truth — it is just no longer the *only* option. If you want a real benchmark-grade signal, supply a real oracle (or per-episode `oracle_spec`).
 
 ## 4. Sandbox is best-effort, not isolation-grade
 

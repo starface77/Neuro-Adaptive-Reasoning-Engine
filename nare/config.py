@@ -122,12 +122,59 @@ class RetrievalConfig:
 
 
 @dataclass(frozen=True)
+class SkillValidationConfig:
+    """Weights and policy for ``llm._validate_skill``.
+
+    The previous default mixed an LLM-judged stress-test signal (30% of
+    ``overall``) with two real-ground-truth signals (trigger correctness
+    on labelled episodes, execute correctness against verified
+    solutions). When the same model writes the skill, the stress tests,
+    AND the labels, that 30% is self-referential.
+
+    The new defaults:
+
+      * Trigger accuracy (real, labelled originals): 0.35
+      * Execute accuracy (real, oracle-checked against verified
+        solutions): 0.55
+      * NEGATIVE-trap accuracy (still real signal: must NOT trigger
+        on adversarial off-distribution queries): 0.10
+      * POSITIVE LLM-judged stress accuracy: 0.0 by default. It is
+        still computed and surfaced as ``positive_no_crash_rate`` for
+        diagnostics, but no longer biases the ``overall`` score that
+        gates promotion.
+
+    A user with an external oracle can flip ``include_positive_stress``
+    on and the POSITIVE stress signal will be consumed only when the
+    oracle agrees \u2014 not when only the model agrees with itself.
+    """
+
+    w_trigger: float = 0.35
+    w_execute: float = 0.55
+    w_negative_trap: float = 0.10
+    w_positive_stress: float = 0.0
+
+    # If True, POSITIVE stress tests are checked through the oracle (if
+    # one is provided) and contribute ``w_positive_stress`` to overall.
+    # If False (default), POSITIVE stress is computed only as a no-crash
+    # diagnostic and excluded from overall.
+    include_positive_stress: bool = False
+
+    # Hard threshold below which a generated skill is rejected outright
+    # regardless of stress signal.
+    minimum_trigger_accuracy: float = 0.50
+    minimum_execute_accuracy: float = 0.40
+
+
+@dataclass(frozen=True)
 class NareConfig:
     routing: RoutingConfig = field(default_factory=RoutingConfig)
     sleep: SleepConfig = field(default_factory=SleepConfig)
     critic: CriticConfig = field(default_factory=CriticConfig)
     skill: SkillLifecycleConfig = field(default_factory=SkillLifecycleConfig)
     retrieval: RetrievalConfig = field(default_factory=RetrievalConfig)
+    skill_validation: SkillValidationConfig = field(
+        default_factory=SkillValidationConfig
+    )
 
 
 # Singleton — modules import this directly. Override per-test by passing

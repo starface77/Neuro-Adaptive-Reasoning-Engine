@@ -373,11 +373,23 @@ def generate_stress_tests(episodes: list) -> list:
         logging.warning(f"Failed to generate adversarial stress tests: {e}")
         return []
 
-def extract_heuristic_rule(episodes: list):
+def extract_heuristic_rule(
+    episodes: list,
+    oracle: "Oracle | None" = None,
+    config: "NareConfig | None" = None,
+):
     """Sleep Phase: Compress episodes into Executable Reflexes.
-    
-    Generates robust Python code with regex-based triggers and 
-    validates it against the original episodes + stress tests with refinement.
+
+    Generates robust Python code with regex-based triggers and
+    validates it against the original episodes + stress tests with
+    refinement.
+
+    ``oracle``: optional :class:`~nare.oracle.Oracle` used by
+    :func:`_validate_skill` to judge correctness against verified
+    solutions instead of the legacy string/numeric-overlap heuristic.
+    Per-episode ``oracle_spec`` overrides this argument. When neither
+    is supplied, the heuristic overlap fallback is used (documented as
+    a fallback in :mod:`nare.oracle`).
     """
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemma-3-27b-it:generateContent?key={API_KEY}"
     
@@ -492,7 +504,9 @@ Here are the solved examples to learn from:
             if not python_code:
                 continue
                 
-            scores, error_msg = _validate_skill(python_code, all_test_cases)
+            scores, error_msg = _validate_skill(
+                python_code, all_test_cases, oracle=oracle, config=config
+            )
             overall = scores['overall']
             
             cand_data = {
@@ -561,7 +575,11 @@ Here are the solved examples to learn from:
     return None
 
 
-from typing import Tuple
+from typing import Tuple, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .oracle import Oracle  # noqa: F401
+    from .config import NareConfig  # noqa: F401
 
 
 def repair_skill(python_code: str, pattern: str, failing_tests: list,
@@ -630,18 +648,60 @@ Output ONLY the corrected Python code inside ```python ... ``` tags. Nothing els
     return python_code
 
 
-def _validate_skill(python_code: str, episodes: list) -> Tuple[dict, str]:
-    """Validate a generated skill with DECOMPOSED confidence scoring.
-    
-    Returns a tuple of (scores_dict, diagnostic_report).
-    scores_dict contains:
-        - trigger_accuracy: float (0-1) - how well trigger identifies valid inputs
-        - execute_accuracy: float (0-1) - how well execute works on triggered inputs  
-        - overall: float (0-1) - weighted composite
+def _validate_skill(
+    python_code: str,
+    episodes: list,
+    oracle: "Oracle | None" = None,
+    config: "NareConfig | None" = None,
+) -> Tuple[dict, str]:
+    """Validate a generated skill with decomposed, oracle-aware scoring.
+
+    What ``overall`` is built from (weights live in
+    :class:`nare.config.SkillValidationConfig`):
+
+      * ``trigger_accuracy`` \u2014 fraction of *labelled originals* that
+        ``trigger()`` returns True for. Real signal: the labels here
+        come from solved episodes, not from the LLM.
+      * ``execute_accuracy`` \u2014 fraction of *triggered originals* whose
+        output is judged correct by an :class:`~nare.oracle.Oracle`.
+        Each episode's own ``oracle_spec`` (if present) takes priority,
+        then the explicit ``oracle`` argument, then a heuristic
+        string/numeric-overlap fallback. The fallback reproduces the
+        legacy behaviour but is documented as heuristic in
+        :mod:`nare.oracle`.
+      * ``negative_trap_accuracy`` \u2014 fraction of NEGATIVE stress
+        tests on which ``trigger()`` correctly does NOT fire. Real
+        signal regardless of label quality (the only thing checked is
+        a boolean).
+      * ``positive_no_crash_rate`` \u2014 advisory only by default.
+        POSITIVE stress tests have LLM-generated labels and should not
+        bias ``overall`` unless an external oracle vetoes them. With
+        ``include_positive_stress=True`` and an ``oracle``, this
+        signal is gated through the oracle and contributes
+        ``w_positive_stress`` to overall.
+
+    Returns ``(scores_dict, diagnostic_report)`` where ``scores_dict``
+    contains keys: trigger_accuracy, execute_accuracy,
+    negative_trap_accuracy, positive_no_crash_rate, overall.
     """
     from nare.sandbox import SecurityError, safe_load_module
+    from nare.oracle import (
+        build_oracle_from_spec,
+        heuristic_overlap_oracle,
+    )
+    from nare.config import DEFAULT_CONFIG as _DEFAULT_CONFIG
 
-    zero_scores = {"trigger_accuracy": 0.0, "execute_accuracy": 0.0, "overall": 0.0}
+    if config is None:
+        config = _DEFAULT_CONFIG
+    vcfg = config.skill_validation
+
+    zero_scores = {
+        "trigger_accuracy": 0.0,
+        "execute_accuracy": 0.0,
+        "negative_trap_accuracy": 0.0,
+        "positive_no_crash_rate": 0.0,
+        "overall": 0.0,
+    }
 
     # AST validation + sandboxed loading goes through the single
     # canonical entry point in nare.sandbox. Any change to security
@@ -658,114 +718,189 @@ def _validate_skill(python_code: str, episodes: list) -> Tuple[dict, str]:
 
     trigger_fn = safe_globals['trigger']
     execute_fn = safe_globals['execute']
-    
-    # Separate ORIGINAL episodes (have verified solutions) from STRESS tests (LLM-generated, unreliable labels)
-    original_eps = [ep for ep in episodes if 'embedding' in ep or 'reasoning_trace' in ep]
-    stress_eps = [ep for ep in episodes if 'embedding' not in ep and 'reasoning_trace' not in ep]
-    
+
+    # Separate ORIGINAL episodes (have verified solutions) from STRESS
+    # tests (LLM-generated; positive labels are not trustworthy).
+    original_eps = [
+        ep for ep in episodes if 'embedding' in ep or 'reasoning_trace' in ep
+    ]
+    stress_eps = [
+        ep for ep in episodes
+        if 'embedding' not in ep and 'reasoning_trace' not in ep
+    ]
+
+    def _oracle_for(ep: dict):
+        spec = ep.get('oracle_spec')
+        if spec:
+            try:
+                return build_oracle_from_spec(spec), 'episode oracle_spec'
+            except Exception as e:  # noqa: BLE001
+                logging.warning(
+                    f"[Validate] Bad oracle_spec on episode "
+                    f"'{ep.get('query', '')[:40]}': {e}; falling back."
+                )
+        if oracle is not None:
+            return oracle, 'caller-provided oracle'
+        return (
+            heuristic_overlap_oracle(ep.get('solution', '')),
+            'heuristic overlap (fallback)',
+        )
+
     # --- TRIGGER ACCURACY (on original episodes only) ---
     trigger_correct = 0
     trigger_total = len(original_eps) if original_eps else 1
     trigger_errors = []
-    
+
     for ep in original_eps:
         try:
             if trigger_fn(ep['query']):
                 trigger_correct += 1
             else:
-                trigger_errors.append(f"MISS: trigger() returned False on valid input: '{ep['query'][:60]}...'")
+                trigger_errors.append(
+                    f"MISS: trigger() returned False on valid input: "
+                    f"'{ep['query'][:60]}...'"
+                )
         except Exception as e:
             trigger_errors.append(f"CRASH: trigger() crashed: {e}")
-    
+
     trigger_accuracy = trigger_correct / trigger_total if trigger_total > 0 else 0.0
-    
-    # --- EXECUTE ACCURACY (on ORIGINAL episodes — verified solutions) ---
+
+    # --- EXECUTE ACCURACY (oracle-checked against verified solutions) ---
     execute_correct = 0
     execute_total = 0
     execute_errors = []
-    
+
     for ep in original_eps:
         try:
             if not trigger_fn(ep['query']):
                 continue
             execute_total += 1
-            
+
             result = execute_fn(ep['query'])
             result_str = str(result).strip()
-            expected = ep.get('solution', 'N/A').strip()
-            
-            if expected == "N/A":
-                if not result_str.startswith("Error"):
-                    execute_correct += 1
+
+            ep_oracle, source = _oracle_for(ep)
+            ok, info = ep_oracle(ep['query'], result_str)
+            if ok:
+                execute_correct += 1
             else:
-                # STRUCTURAL CORRECTNESS: extract key numbers and compare
-                if result_str == expected or result_str in expected or expected in result_str:
-                    execute_correct += 1
-                else:
-                    res_nums = set(re.findall(r'-?\d+\.?\d*', result_str))
-                    exp_nums = set(re.findall(r'-?\d+\.?\d*', expected))
-                    
-                    if res_nums and exp_nums:
-                        overlap = res_nums & exp_nums
-                        coverage = len(overlap) / len(exp_nums) if exp_nums else 0
-                        if coverage >= 0.2 or (len(res_nums) == 1 and res_nums.issubset(exp_nums)):
-                            execute_correct += 1
-                        else:
-                            execute_errors.append(f"MISMATCH: Expected nums {exp_nums}, Got nums {res_nums}")
-                    elif not result_str.startswith("Error") and len(result_str) > 0:
-                        execute_correct += 0.5
-                    else:
-                        execute_errors.append(f"MISMATCH: Expected '{expected[:60]}', Got '{result_str[:60]}'")
+                execute_errors.append(
+                    f"MISMATCH ({source}): "
+                    f"q='{ep['query'][:40]}' -> '{result_str[:40]}': {info}"
+                )
         except Exception as e:
             execute_total += 1
-            execute_errors.append(f"CRASH: '{ep['query'][:40]}...' -> {e}")
-    
-    # --- STRESS TEST (POSITIVE & NEGATIVE) ---
-    stress_pass = 0
-    stress_total = 0
+            execute_errors.append(
+                f"CRASH: '{ep['query'][:40]}...' -> {e}"
+            )
+
+    execute_accuracy = (
+        execute_correct / execute_total if execute_total > 0 else 0.0
+    )
+
+    # --- NEGATIVE TRAPS (real signal) + POSITIVE STRESS (advisory) ---
+    negative_total = 0
+    negative_pass = 0
+    positive_total = 0
+    positive_no_crash = 0
+    positive_oracle_pass = 0
+    positive_oracle_total = 0
+
     for ep in stress_eps:
         is_negative = ep.get('type') == 'NEGATIVE'
         try:
             triggered = trigger_fn(ep['query'])
-            
+
             if is_negative:
-                # SUCCESS if it DOES NOT trigger on a trap
+                negative_total += 1
                 if not triggered:
-                    stress_pass += 1
+                    negative_pass += 1
                 else:
-                    execute_errors.append(f"FALSE_POSITIVE: trigger() fired on TRAP: '{ep['query'][:40]}'")
-            else:
-                # POSITIVE stress test
-                if not triggered:
-                    continue
-                stress_total += 1
-                result = execute_fn(ep['query'])
-                result_str = str(result).strip()
-                if not result_str.startswith("Error"):
-                    stress_pass += 1
+                    execute_errors.append(
+                        f"FALSE_POSITIVE: trigger() fired on TRAP: "
+                        f"'{ep['query'][:40]}'"
+                    )
+                continue
+
+            # POSITIVE stress: trigger first
+            if not triggered:
+                continue
+            positive_total += 1
+
+            result = execute_fn(ep['query'])
+            result_str = str(result).strip()
+            if not result_str.startswith("Error"):
+                positive_no_crash += 1
+
+            # Only count toward overall when the user opted in AND we
+            # have an oracle that can adjudicate. Otherwise the LLM
+            # label on this stress test is self-referential.
+            if vcfg.include_positive_stress and oracle is not None:
+                positive_oracle_total += 1
+                ok, _info = oracle(ep['query'], result_str)
+                if ok:
+                    positive_oracle_pass += 1
         except Exception as e:
-            if not is_negative: stress_total += 1
-            execute_errors.append(f"STRESS_CRASH: '{ep['query'][:40]}...' -> {e}")
-    
-    execute_accuracy = execute_correct / execute_total if execute_total > 0 else 0.0
-    stress_accuracy = stress_pass / max(1, len(stress_eps)) 
-    
+            if is_negative:
+                negative_total += 1
+            else:
+                positive_total += 1
+            execute_errors.append(
+                f"STRESS_CRASH: '{ep['query'][:40]}...' -> {e}"
+            )
+
+    negative_trap_accuracy = (
+        negative_pass / negative_total if negative_total > 0 else 1.0
+    )
+    positive_no_crash_rate = (
+        positive_no_crash / positive_total if positive_total > 0 else 1.0
+    )
+
+    if vcfg.include_positive_stress and positive_oracle_total > 0:
+        positive_stress_signal = positive_oracle_pass / positive_oracle_total
+    else:
+        positive_stress_signal = 0.0
+
     # --- OVERALL (weighted) ---
-    # Negative safety is now 30% of the score to prevent "stupid" reflexes
-    overall = (trigger_accuracy * 0.3) + (execute_accuracy * 0.4) + (stress_accuracy * 0.3)
-    
+    raw_overall = (
+        vcfg.w_trigger * trigger_accuracy
+        + vcfg.w_execute * execute_accuracy
+        + vcfg.w_negative_trap * negative_trap_accuracy
+        + vcfg.w_positive_stress * positive_stress_signal
+    )
+    weight_sum = (
+        vcfg.w_trigger
+        + vcfg.w_execute
+        + vcfg.w_negative_trap
+        + (vcfg.w_positive_stress if vcfg.include_positive_stress else 0.0)
+    )
+    overall = raw_overall / weight_sum if weight_sum > 0 else 0.0
+
+    # Hard gates: a skill that cannot trigger or execute on its own
+    # training set is not promotable regardless of negative-trap luck.
+    if (
+        trigger_accuracy < vcfg.minimum_trigger_accuracy
+        or execute_accuracy < vcfg.minimum_execute_accuracy
+    ):
+        overall = min(overall, 0.50)
+
     scores = {
         "trigger_accuracy": round(trigger_accuracy, 3),
         "execute_accuracy": round(execute_accuracy, 3),
-        "overall": round(overall, 3)
+        "negative_trap_accuracy": round(negative_trap_accuracy, 3),
+        "positive_no_crash_rate": round(positive_no_crash_rate, 3),
+        "overall": round(overall, 3),
     }
-    
+
     if overall >= 0.99:
         return scores, ""
-    
-    # Build structured diagnostic report
+
     report_lines = [
-        f"SCORES: trigger={scores['trigger_accuracy']:.2f} | execute={scores['execute_accuracy']:.2f} | overall={scores['overall']:.2f}"
+        f"SCORES: trigger={scores['trigger_accuracy']:.2f} | "
+        f"execute={scores['execute_accuracy']:.2f} | "
+        f"neg_trap={scores['negative_trap_accuracy']:.2f} | "
+        f"pos_no_crash={scores['positive_no_crash_rate']:.2f} (advisory) | "
+        f"overall={scores['overall']:.2f}"
     ]
     if trigger_errors:
         report_lines.append(f"[TRIGGER_ISSUES] ({len(trigger_errors)}):")
@@ -775,7 +910,7 @@ def _validate_skill(python_code: str, episodes: list) -> Tuple[dict, str]:
         report_lines.append(f"[EXECUTE_ISSUES] ({len(execute_errors)}):")
         for e in execute_errors[:3]:
             report_lines.append(f"  - {e}")
-    
+
     return scores, "\n".join(report_lines)
 
 def merge_heuristic_rules(existing_rule: dict, new_episodes: list):
