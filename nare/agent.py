@@ -51,15 +51,7 @@ class HybridCritic:
         Returns a score in [0, 1] if validation was possible, or None
         if the solution is not code (falls back to LLM critic).
         """
-        code = None
-        if "def " in solution and ("return" in solution or "print" in solution):
-            code = solution
-        elif "```python" in solution:
-            import re
-            m = re.search(r'```python\n(.*?)\n```', solution, re.DOTALL)
-            if m:
-                code = m.group(1)
-
+        code = NAREProductionAgent._extract_code(solution)
         if code is None:
             return None
 
@@ -384,12 +376,12 @@ class NAREProductionAgent:
                 self.memory.add_semantic_rule(new_rule, centroid)
                 logging.info(f"[Crystallization] New Rule: {new_rule['pattern']} (confidence: {new_rule['confidence']:.2f})")
             
-            # SUCCESS: Now compress the episodic memory
+            # SUCCESS: Now compress the episodic memory (under lock
+            # to avoid race with concurrent solve() reads).
             to_delete = set(int(i) for i in cluster_indices) - {core_idx}
-            self.memory.episodes = [ep for i, ep in enumerate(self.memory.episodes) if i not in to_delete]
-            
-            # Rebuild HNSW index with remaining episodes
-            self.memory._rebuild_episodic_index()
+            with self.memory._lock:
+                self.memory.episodes = [ep for i, ep in enumerate(self.memory.episodes) if i not in to_delete]
+                self.memory._rebuild_episodic_index()
             
             # Run pruning on weak rules and fading episodes
             self._prune_weak_rules()
@@ -516,11 +508,27 @@ class NAREProductionAgent:
         self.memory.save()
         logging.info("=== [REM SLEEP] Dreaming complete ===")
 
-    def _background_validate_episodes(self):
-        """Background Validation : periodically audit random episodes.
+    @staticmethod
+    def _extract_code(solution: str) -> Optional[str]:
+        """Extract Python code from a solution string.
 
-        For code episodes, attempt compilation.  For all others, use a
-        quick LLM sanity check.  Update τ_i accordingly.
+        Handles both raw code and markdown-fenced ```python blocks.
+        Returns None if no code detected.
+        """
+        if "```python" in solution:
+            import re
+            m = re.search(r'```python\n(.*?)\n```', solution, re.DOTALL)
+            if m:
+                return m.group(1)
+        if "def " in solution and ("return" in solution or "print" in solution):
+            return solution
+        return None
+
+    def _background_validate_episodes(self):
+        """Background Validation: periodically audit random episodes.
+
+        For code episodes, attempt compilation.  For all others, check
+        basic sanity.  Update τ_i accordingly and persist changes.
         """
         import random
         count = self.config.immune.background_audit_count
@@ -533,15 +541,14 @@ class NAREProductionAgent:
         for idx in indices:
             ep = self.memory.episodes[idx]
             solution = ep.get('solution', '')
+            code = self._extract_code(solution)
             try:
-                # For code: attempt AST validation
-                if 'def ' in solution and ('return' in solution or 'print' in solution):
+                if code is not None:
                     from .sandbox import validate_code
-                    validate_code(solution)
+                    validate_code(code)
                     self.memory.update_episode_tau(idx, +1.0)
                     logging.info(f"[Background Audit] Episode {idx} code valid, τ boosted")
                 else:
-                    # For non-code: basic sanity — check answer is non-empty
                     if len(solution.strip()) > 10:
                         self.memory.update_episode_tau(idx, +0.5)
                     else:
@@ -553,6 +560,8 @@ class NAREProductionAgent:
 
         # Prune episodes that fell below immune threshold
         self.memory.prune_untrusted_episodes()
+        # Persist tau updates even if nothing was pruned
+        self.memory.save()
 
     def _prune_weak_rules(self):
         """Garbage collect rules that are DEAD based on global_score."""
