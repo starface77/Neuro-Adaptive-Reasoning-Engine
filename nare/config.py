@@ -12,6 +12,56 @@ from typing import Tuple
 
 
 @dataclass(frozen=True)
+class BootstrapConfig:
+    """Cold-start / bootstrap strategy (theory §4.5).
+
+    When memory is empty (α ≈ 0), every query goes through expensive
+    SLOW path.  Bootstrap pre-warms the cache with seed examples and
+    uses simplified CoT instead of full ToT until a base pool is built.
+    """
+
+    # Number of episodes below which the system is in "cold start" mode.
+    cold_start_threshold: int = 10
+
+    # When in cold-start, use simplified CoT (n=1, no ToT) to save tokens.
+    cold_start_use_simple_cot: bool = True
+
+    # Path to a JSON file with pre-warmed seed examples.
+    # Each entry: {"query": str, "solution": str, "reasoning_trace": str}
+    seed_examples_path: str = ""
+
+
+@dataclass(frozen=True)
+class ImmuneSystemConfig:
+    """Immune system for memory quality (theory §7.2).
+
+    Each episode carries a trust coefficient τ_i ∈ [0,1].  After each
+    use the coefficient is updated: τ_i ← τ_i + γ·ΔV.  Episodes whose
+    τ falls below θ_immune are quarantined/deleted.
+    """
+
+    # Initial trust for new episodes.
+    initial_tau: float = 0.5
+
+    # Learning rate γ for trust updates.
+    tau_lr: float = 0.10
+
+    # Deletion threshold: τ < this → episode removed.
+    theta_immune: float = 0.15
+
+    # Penalty backpropagation discount: how much of a skill's penalty
+    # propagates back to its source episodes.
+    penalty_backprop_gamma: float = 0.5
+
+    # Background validation: how many random episodes to audit per
+    # sleep cycle.
+    background_audit_count: int = 3
+
+    # Suppression rules: max number of suppression entries.
+    max_suppression_rules: int = 100
+
+
+@dataclass(frozen=True)
 class RoutingConfig:
     """Thresholds for the 4-way router (FAST / HYBRID / SLOW / REFLEX)."""
 
@@ -166,6 +216,24 @@ class SkillValidationConfig:
 
 
 @dataclass(frozen=True)
+class AmortizationConfig:
+    """Formal amortization metrics (theory §10).
+
+    α_t = 1 - exp(-κ·|M_t|)   — coverage ratio
+    C_t = (1-α_t)·C_LLM + α_t·C_mem  — blended cost
+    """
+
+    # κ — coverage growth rate.  Higher → faster saturation.
+    kappa: float = 0.05
+
+    # Average cost of a full System-2 inference (tokens).
+    c_llm: float = 2000.0
+
+    # Average cost of a memory retrieval (tokens equivalent).
+    c_mem: float = 0.0
+
+
+@dataclass(frozen=True)
 class NareConfig:
     routing: RoutingConfig = field(default_factory=RoutingConfig)
     sleep: SleepConfig = field(default_factory=SleepConfig)
@@ -175,6 +243,9 @@ class NareConfig:
     skill_validation: SkillValidationConfig = field(
         default_factory=SkillValidationConfig
     )
+    bootstrap: BootstrapConfig = field(default_factory=BootstrapConfig)
+    immune: ImmuneSystemConfig = field(default_factory=ImmuneSystemConfig)
+    amortization: AmortizationConfig = field(default_factory=AmortizationConfig)
 
 
 # Singleton — modules import this directly. Override per-test by passing

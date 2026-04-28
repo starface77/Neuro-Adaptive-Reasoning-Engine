@@ -10,6 +10,20 @@ from typing import List, Dict, Tuple, Any, Optional
 from .config import DEFAULT_CONFIG, NareConfig
 
 
+def _make_hnsw_index(dim: int, max_elements: int = 1000) -> faiss.Index:
+    """Create an HNSW index for O(log N) approximate nearest neighbour.
+
+    Theory §5: FAST cache should use HNSW/FAISS for O(log N) retrieval,
+    not brute-force O(N).  IndexHNSWFlat wraps a flat storage with an
+    HNSW graph that provides logarithmic search complexity.
+    """
+    M = 32  # HNSW connectivity parameter
+    index = faiss.IndexHNSWFlat(dim, M, faiss.METRIC_INNER_PRODUCT)
+    index.hnsw.efConstruction = 64
+    index.hnsw.efSearch = 32
+    return index
+
+
 class MemorySystem:
     """Unified episodic + semantic + factual memory.
 
@@ -18,6 +32,14 @@ class MemorySystem:
     runs sleep/REM phases on a background thread, and ``solve()`` reads
     these structures concurrently — without this lock there were race
     conditions on index rebuilds.
+
+    Changes vs previous revision:
+      * Episodic index uses HNSW (O(log N)) instead of IndexFlatIP (O(N))
+        per theory §5.  Semantic/factual remain brute-force (small N).
+      * Each episode now carries a trust coefficient ``tau`` ∈ [0,1]
+        (immune system, §7.2).
+      * Suppression dictionary blocks known-bad (query, answer) pairs
+        (§7.2 suppression rules).
     """
 
     def __init__(
@@ -29,22 +51,25 @@ class MemorySystem:
         self.embedding_dim = embedding_dim
         self.persist_dir = persist_dir
         self.config = config
-        # Reentrant: save() may be invoked from within a write path that
-        # already holds the lock.
         self._lock = threading.RLock()
-        
-        # Episodic Memory (IndexFlatIP for Cosine Similarity with L2 normalized vectors)
-        self.episodic_index = faiss.IndexFlatIP(embedding_dim)
+
+        # Episodic Memory — HNSW index for O(log N) retrieval (§5)
+        self.episodic_index = _make_hnsw_index(embedding_dim)
         self.episodes: List[Dict[str, Any]] = []
-        
-        # Semantic Memory (Rules)
+
+        # Semantic Memory (Rules) — brute-force (small N)
         self.semantic_index = faiss.IndexFlatIP(embedding_dim)
         self.semantic_rules: List[Dict[str, Any]] = []
-        
+
         # Factual Memory (RAG knowledge base)
         self.factual_index = faiss.IndexFlatIP(embedding_dim)
         self.facts: List[Dict[str, Any]] = []
-        
+
+        # Suppression dictionary (§7.2): list of {query_hash, answer_hash,
+        # embedding} entries.  When a retrieval hit matches a suppressed
+        # pair, it is filtered out.
+        self.suppression_rules: List[Dict[str, Any]] = []
+
         os.makedirs(self.persist_dir, exist_ok=True)
         self.load()
 
@@ -52,6 +77,7 @@ class MemorySystem:
         """Episode Schema: {query, context, solution, reasoning_trace, score, timestamp}.
 
         Deduplicates if similarity > config.sleep.episode_dedup_threshold.
+        Initialises immune-system trust coefficient τ (§7.2).
         """
         vector = np.array(embedding, dtype=np.float32)
         if vector.ndim == 1:
@@ -71,10 +97,67 @@ class MemorySystem:
             episode_data['timestamp'] = time.time()
             episode_data['last_used'] = time.time()
             episode_data['strength'] = 1.0
+            # Immune system (§7.2): initial trust coefficient
+            episode_data.setdefault('tau', self.config.immune.initial_tau)
             self.episodic_index.add(vector)
             self.episodes.append(episode_data)
             self.save()
             return True
+
+    # ------------------------------------------------------------------
+    # Immune system helpers (§7.2)
+    # ------------------------------------------------------------------
+
+    def update_episode_tau(self, idx: int, delta_v: float):
+        """Update trust coefficient: τ_i ← τ_i + γ·ΔV, clamped to [0, 1]."""
+        gamma = self.config.immune.tau_lr
+        with self._lock:
+            if 0 <= idx < len(self.episodes):
+                old_tau = self.episodes[idx].get('tau', self.config.immune.initial_tau)
+                new_tau = max(0.0, min(1.0, old_tau + gamma * delta_v))
+                self.episodes[idx]['tau'] = new_tau
+
+    def prune_untrusted_episodes(self):
+        """Remove episodes whose τ fell below θ_immune (§7.2)."""
+        theta = self.config.immune.theta_immune
+        with self._lock:
+            before = len(self.episodes)
+            self.episodes = [ep for ep in self.episodes if ep.get('tau', 1.0) >= theta]
+            removed = before - len(self.episodes)
+            if removed:
+                logging.info(f"[Immune] Removed {removed} untrusted episodes (τ < {theta})")
+                self._rebuild_episodic_index()
+                self.save()
+
+    def add_suppression_rule(self, query: str, answer: str, embedding: np.ndarray):
+        """Block a specific (query, answer) pair from future retrieval (§7.2)."""
+        rule = {
+            'query_hash': hash(query.strip().lower()),
+            'answer_hash': hash(answer.strip().lower()),
+            'query_snippet': query[:100],
+            'answer_snippet': answer[:100],
+            'timestamp': time.time(),
+        }
+        max_rules = self.config.immune.max_suppression_rules
+        with self._lock:
+            self.suppression_rules.append(rule)
+            if len(self.suppression_rules) > max_rules:
+                self.suppression_rules = self.suppression_rules[-max_rules:]
+            self.save()
+        logging.info(f"[Immune] Suppression rule added for query: {query[:60]}")
+
+    def is_suppressed(self, query: str, answer: str) -> bool:
+        """Check if a (query, answer) pair is suppressed."""
+        qh = hash(query.strip().lower())
+        ah = hash(answer.strip().lower())
+        for rule in self.suppression_rules:
+            if rule['query_hash'] == qh and rule['answer_hash'] == ah:
+                return True
+        return False
+
+    # ------------------------------------------------------------------
+    # Ebbinghaus forgetting
+    # ------------------------------------------------------------------
 
     def prune_fading_memories(self, threshold: Optional[float] = None):
         """Ebbinghaus Forgetting: R = exp(-t / (s * 24h)).
@@ -102,17 +185,22 @@ class MemorySystem:
                     f"{len(self.episodes) - len(kept_episodes)} episodes faded."
                 )
                 self.episodes = kept_episodes
-                self.episodic_index = faiss.IndexFlatIP(self.embedding_dim)
-                if self.episodes:
-                    vecs = np.array(
-                        [ep['embedding'] for ep in self.episodes],
-                        dtype=np.float32,
-                    )
-                    faiss.normalize_L2(vecs)
-                    self.episodic_index.add(vecs)
+                self._rebuild_episodic_index()
                 self.save()
 
+    def _rebuild_episodic_index(self):
+        """Rebuild the HNSW episodic index from current episode list."""
+        self.episodic_index = _make_hnsw_index(self.embedding_dim)
+        if self.episodes:
+            vecs = np.array(
+                [ep['embedding'] for ep in self.episodes],
+                dtype=np.float32,
+            )
+            faiss.normalize_L2(vecs)
+            self.episodic_index.add(vecs)
+
     def retrieve_episodes(self, query_emb: np.ndarray, k: int = 3) -> List[Dict[str, Any]]:
+        """Retrieve top-k episodes, filtering out suppressed pairs."""
         with self._lock:
             if self.episodic_index.ntotal == 0:
                 return []
@@ -121,16 +209,23 @@ class MemorySystem:
             if vector.ndim == 1:
                 vector = vector.reshape(1, -1)
             faiss.normalize_L2(vector)
-            k_search = min(k, self.episodic_index.ntotal)
+            # Fetch extra to account for suppression filtering
+            k_search = min(k + 5, self.episodic_index.ntotal)
             sims, indices = self.episodic_index.search(vector, k_search)
 
             results = []
             for sim, idx in zip(sims[0], indices[0]):
                 if idx != -1 and idx < len(self.episodes):
-                    res = self.episodes[idx].copy()
+                    ep = self.episodes[idx]
+                    # Suppression check (§7.2)
+                    if self.is_suppressed(ep.get('query', ''), ep.get('solution', '')):
+                        continue
+                    res = ep.copy()
                     res['similarity'] = float(sim)
                     res['memory_id'] = int(idx)
                     results.append(res)
+                    if len(results) >= k:
+                        break
             return results
 
     def add_semantic_rule(self, rule_data: Dict[str, Any], embedding: np.ndarray):
@@ -277,6 +372,8 @@ class MemorySystem:
                 json.dump(self.semantic_rules, f, ensure_ascii=False, indent=2)
             with open(os.path.join(self.persist_dir, "facts.json"), "w", encoding="utf-8") as f:
                 json.dump(self.facts, f, ensure_ascii=False, indent=2)
+            with open(os.path.join(self.persist_dir, "suppression.json"), "w", encoding="utf-8") as f:
+                json.dump(self.suppression_rules, f, ensure_ascii=False, indent=2)
 
     def load(self):
         ep_index = os.path.join(self.persist_dir, "episodic.faiss")
@@ -299,3 +396,8 @@ class MemorySystem:
             self.factual_index = faiss.read_index(fact_index)
             with open(fact_data, "r", encoding="utf-8") as f:
                 self.facts = json.load(f)
+
+        sup_data = os.path.join(self.persist_dir, "suppression.json")
+        if os.path.exists(sup_data):
+            with open(sup_data, "r", encoding="utf-8") as f:
+                self.suppression_rules = json.load(f)

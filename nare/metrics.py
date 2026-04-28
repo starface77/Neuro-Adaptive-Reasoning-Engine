@@ -124,12 +124,71 @@ class MetricsTracker:
             "stable": late_avg >= early_avg * 0.9,
         }
 
-    def summary(self) -> Dict[str, Any]:
+    # ------------------------------------------------------------------
+    # Metric 5: Formal Amortization α_t and C_t (theory §10.2)
+    # ------------------------------------------------------------------
+    def amortization_dynamics(
+        self,
+        memory_size: int,
+        kappa: float = 0.05,
+        c_llm: float = 2000.0,
+        c_mem: float = 0.0,
+    ) -> Dict[str, Any]:
+        """Compute formal amortization metrics per theory §10.2.
+
+        α_t = 1 - exp(-κ·|M_t|)     — coverage ratio
+        C_t = (1-α_t)·C_LLM + α_t·C_mem  — blended cost
+        dC_t/d|M_t| = -κ·exp(-κ|M_t|)·(C_LLM - C_mem) < 0
+        """
+        alpha_t = 1.0 - np.exp(-kappa * memory_size)
+        c_t = (1.0 - alpha_t) * c_llm + alpha_t * c_mem
+        dc_dm = -kappa * np.exp(-kappa * memory_size) * (c_llm - c_mem)
+
+        # Empirical α: ratio of amortized queries (FAST + REFLEX)
+        if self.history:
+            amortized_count = sum(
+                1 for e in self.history
+                if e["route"] in ("FAST", "REFLEX", "REFLEX_PROVISIONAL")
+            )
+            alpha_empirical = amortized_count / len(self.history)
+        else:
+            alpha_empirical = 0.0
+
+        # Empirical cost: average tokens per query
+        if self.history:
+            c_empirical = np.mean([e["tokens_used"] for e in self.history])
+        else:
+            c_empirical = c_llm
+
+        return {
+            "memory_size": memory_size,
+            "alpha_t_theoretical": round(float(alpha_t), 6),
+            "alpha_t_empirical": round(float(alpha_empirical), 6),
+            "cost_t_theoretical": round(float(c_t), 2),
+            "cost_t_empirical": round(float(c_empirical), 2),
+            "dCost_dMemory": round(float(dc_dm), 4),
+            "kappa": kappa,
+        }
+
+    def summary(self, memory_size: int = 0, config: "Any" = None) -> Dict[str, Any]:
+        kappa = 0.05
+        c_llm = 2000.0
+        c_mem = 0.0
+        if config is not None:
+            kappa = config.amortization.kappa
+            c_llm = config.amortization.c_llm
+            c_mem = config.amortization.c_mem
         return {
             "routing": self.routing_stats(),
             "cost": self.cost_trend(),
             "convergence": self.convergence(),
             "stability": self.stability_plasticity(),
+            "amortization": self.amortization_dynamics(
+                memory_size=memory_size,
+                kappa=kappa,
+                c_llm=c_llm,
+                c_mem=c_mem,
+            ),
         }
 
     def _save(self):
