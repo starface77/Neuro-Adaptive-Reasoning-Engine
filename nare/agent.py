@@ -1,3 +1,4 @@
+import os
 import time
 import numpy as np
 import faiss
@@ -23,16 +24,17 @@ from .sandbox import (
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 
 class HybridCritic:
-    """Pairwise-Elo critic with light rule-based and self-consistency signals.
+    """Convergent selection critic.
 
-    Removed in this revision (vs. the original):
-      * the "anti-gaming penalty" that punished length variance — that
-        signal is *backwards* for diversity-seeking critics like
-        self-consistency, where varying lengths are expected.
-      * the word-Jaccard self-consistency bonus, which produced near-noise
-        when comparing code (``def f(): return 0`` vs ``def f(): return 1``
-        gave overlap ~1.0). It is left as a hook for a future, real
-        consistency signal (e.g. answer-key extraction + exact match).
+    Combines four independent signals for robust candidate ranking:
+      1. Ground Truth Validator — compilation / sandbox execution for
+         code solutions.  Mandatory when applicable.
+      2. LLM-critic — pairwise Elo tournament as a fallback for "soft"
+         cases without a deterministic verifier.
+      3. Self-Consistency — majority-vote over extracted short answers
+         when multiple reasoning chains are available.
+      4. Rule-based heuristic — fast syntactic checks (code markers,
+         error strings).
     """
 
     def __init__(self, config: NareConfig = DEFAULT_CONFIG):
@@ -40,6 +42,27 @@ class HybridCritic:
         self.weights = (cfg.w_llm, cfg.w_rule, cfg.w_neural)
         self.elo_k = cfg.elo_k_factor
         self.elo_init = cfg.elo_initial_rating
+
+    # ---- Signal 1: Ground Truth Validator ----
+
+    def _ground_truth_validate(self, solution: str) -> Optional[float]:
+        """Attempt objective verification for code solutions.
+
+        Returns a score in [0, 1] if validation was possible, or None
+        if the solution is not code (falls back to LLM critic).
+        """
+        code = NAREProductionAgent._extract_code(solution)
+        if code is None:
+            return None
+
+        try:
+            from .sandbox import validate_code
+            validate_code(code)
+            return 0.8
+        except Exception:
+            return 0.2
+
+    # ---- Signal 2: Rule-based heuristic ----
 
     def _rule_based_check(self, solution: str) -> float:
         score = 0.5
@@ -49,6 +72,43 @@ class HybridCritic:
             score -= 0.4
         return max(0.0, min(1.0, score))
 
+    # ---- Signal 3: Self-Consistency voting ----
+
+    @staticmethod
+    def _extract_short_answer(solution: str) -> str:
+        """Extract a normalised short answer for majority voting.
+
+        Heuristic: take the last non-empty line, strip markdown fences
+        and whitespace.  For numerical answers this collapses to the
+        number; for textual answers it grabs the final conclusion.
+        """
+        lines = [ln.strip() for ln in solution.strip().splitlines() if ln.strip()]
+        if not lines:
+            return ""
+        answer = lines[-1]
+        for prefix in ("Answer:", "Result:", "Output:", "answer:", "result:"):
+            if answer.startswith(prefix):
+                answer = answer[len(prefix):].strip()
+                break
+        answer = answer.strip("`").strip("*").strip()
+        return answer.lower()
+
+    def _self_consistency_scores(self, candidates: List[Dict]) -> Dict[int, float]:
+        """Compute majority-vote score for each candidate.
+
+        Returns a dict mapping candidate index → SC score ∈ [0, 1].
+        """
+        answers = [self._extract_short_answer(c['solution']) for c in candidates]
+        if not answers:
+            return {}
+        # Count frequency of each distinct short answer
+        from collections import Counter
+        counts = Counter(answers)
+        total = len(answers)
+        return {i: counts[a] / total for i, a in enumerate(answers)}
+
+    # ---- Main evaluation ----
+
     def evaluate(self, query: str, candidates: List[Dict]) -> List[Dict]:
         if not candidates:
             return []
@@ -57,11 +117,22 @@ class HybridCritic:
             candidates[0]['rule_score'] = self._rule_based_check(
                 candidates[0]['solution']
             )
-            candidates[0]['final_score'] = 0.5
+            gt = self._ground_truth_validate(candidates[0]['solution'])
+            candidates[0]['gt_score'] = gt
+            candidates[0]['sc_score'] = 1.0  # single candidate is trivially consistent
+            candidates[0]['final_score'] = gt if gt is not None else 0.5
             return candidates
 
-        # 1. Elo tournament. Sequential adjacent pairing — known to be
-        #    high-variance for small N; documented limitation.
+        # 1. Ground Truth Validator — mandatory for code
+        for c in candidates:
+            c['gt_score'] = self._ground_truth_validate(c['solution'])
+
+        # 2. Self-Consistency voting
+        sc_scores = self._self_consistency_scores(candidates)
+        for i, c in enumerate(candidates):
+            c['sc_score'] = sc_scores.get(i, 0.0)
+
+        # 3. Elo tournament (LLM-critic backup for soft cases)
         for c in candidates:
             c['elo'] = self.elo_init
 
@@ -84,6 +155,7 @@ class HybridCritic:
         elos = [c['elo'] for c in candidates]
         e_min, e_max = min(elos), max(elos)
 
+        # 4. Combine all signals
         for c in candidates:
             if e_max == e_min:
                 c['llm_score'] = 0.5
@@ -91,11 +163,23 @@ class HybridCritic:
                 c['llm_score'] = (c['elo'] - e_min) / (e_max - e_min)
 
             c['rule_score'] = self._rule_based_check(c['solution'])
-            c['final_score'] = max(
-                0.0,
-                self.weights[0] * c['llm_score']
-                + self.weights[1] * c['rule_score'],
-            )
+
+            # Combined ranking: GT > SC > LLM > rule
+            if c['gt_score'] is not None:
+                c['final_score'] = max(
+                    0.0,
+                    0.40 * c['gt_score']
+                    + 0.25 * c['sc_score']
+                    + 0.20 * c['llm_score']
+                    + 0.15 * c['rule_score'],
+                )
+            else:
+                c['final_score'] = max(
+                    0.0,
+                    0.30 * c['sc_score']
+                    + self.weights[0] * 0.70 * c['llm_score']
+                    + self.weights[1] * 0.70 * c['rule_score'],
+                )
 
         candidates.sort(key=lambda x: x['final_score'], reverse=True)
         return candidates
@@ -175,6 +259,30 @@ class NAREProductionAgent:
                 return True
         return False
 
+    def _symbolic_lift(self, episodes: List[Dict]) -> List[Dict]:
+        """Symbolic Lifting : replace concrete constants with abstract variables.
+
+        Before LLM induction, scan solutions for hard-coded numbers, strings,
+        etc. and wrap them with placeholder tokens so that the LLM produces
+        generalised code rather than constants bound to specific examples.
+        """
+        import re as _re
+        lifted = []
+        for ep in episodes:
+            ep_copy = ep.copy()
+            solution = ep_copy.get('solution', '')
+            # Replace concrete numbers (not inside variable names) with <NUM>
+            solution_lifted = _re.sub(r'(?<![a-zA-Z_])\b\d{2,}\b(?![a-zA-Z_])', '<NUM>', solution)
+            # Replace quoted string literals with <STR>
+            solution_lifted = _re.sub(r'"[^"]{5,}"', '"<STR>"', solution_lifted)
+            solution_lifted = _re.sub(r"'[^']{5,}'", "'<STR>'", solution_lifted)
+            if solution_lifted != solution:
+                ep_copy['solution_original'] = solution
+                ep_copy['solution'] = solution_lifted
+                ep_copy['symbolic_lifted'] = True
+            lifted.append(ep_copy)
+        return lifted
+
     def _sleep_phase(self):
         logging.info("=== [SLEEP PHASE] Crystallizing Memories ===")
         sleep_cfg = self.config.sleep
@@ -203,6 +311,10 @@ class NAREProductionAgent:
         cluster_indices = np.where(sim_matrix[core_idx] > sim_threshold)[0]
         
         cluster_episodes = [self.memory.episodes[i] for i in cluster_indices]
+
+        # Symbolic Lifting : abstract concrete constants before
+        # sending cluster to LLM for induction.
+        cluster_episodes = self._symbolic_lift(cluster_episodes)
         
         # Use the normalized centroid embedding for the rule
         centroid = np.mean(vecs[cluster_indices], axis=0, keepdims=True).astype(np.float32)
@@ -259,19 +371,17 @@ class NAREProductionAgent:
                     logging.warning("[Sleep] Skill failed validation completely (robustness < 0.40). Keeping episodes.")
                     return
                 new_rule['sleep_cycles'] = 0
+                # Track source episodes for Penalty Backpropagation 
+                new_rule['source_episode_ids'] = [int(i) for i in cluster_indices]
                 self.memory.add_semantic_rule(new_rule, centroid)
                 logging.info(f"[Crystallization] New Rule: {new_rule['pattern']} (confidence: {new_rule['confidence']:.2f})")
             
-            # SUCCESS: Now compress the episodic memory
+            # SUCCESS: Now compress the episodic memory (under lock
+            # to avoid race with concurrent solve() reads).
             to_delete = set(int(i) for i in cluster_indices) - {core_idx}
-            self.memory.episodes = [ep for i, ep in enumerate(self.memory.episodes) if i not in to_delete]
-            
-            # Rebuild index with remaining episodes
-            self.memory.episodic_index = faiss.IndexFlatIP(self.memory.embedding_dim)
-            if self.memory.episodes:
-                rebuild_vecs = np.array([ep['embedding'] for ep in self.memory.episodes], dtype=np.float32)
-                rebuild_vecs = self._normalize_embeddings(rebuild_vecs)
-                self.memory.episodic_index.add(rebuild_vecs)
+            with self.memory._lock:
+                self.memory.episodes = [ep for i, ep in enumerate(self.memory.episodes) if i not in to_delete]
+                self.memory._rebuild_episodic_index()
             
             # Run pruning on weak rules and fading episodes
             self._prune_weak_rules()
@@ -398,6 +508,61 @@ class NAREProductionAgent:
         self.memory.save()
         logging.info("=== [REM SLEEP] Dreaming complete ===")
 
+    @staticmethod
+    def _extract_code(solution: str) -> Optional[str]:
+        """Extract Python code from a solution string.
+
+        Handles both raw code and markdown-fenced ```python blocks.
+        Returns None if no code detected.
+        """
+        if "```python" in solution:
+            import re
+            m = re.search(r'```python\n(.*?)\n```', solution, re.DOTALL)
+            if m:
+                return m.group(1)
+        if "def " in solution and ("return" in solution or "print" in solution):
+            return solution
+        return None
+
+    def _background_validate_episodes(self):
+        """Background Validation: periodically audit random episodes.
+
+        For code episodes, attempt compilation.  For all others, check
+        basic sanity.  Update τ_i accordingly and persist changes.
+        """
+        import random
+        count = self.config.immune.background_audit_count
+        if not self.memory.episodes:
+            return
+
+        sample_size = min(count, len(self.memory.episodes))
+        indices = random.sample(range(len(self.memory.episodes)), sample_size)
+
+        for idx in indices:
+            ep = self.memory.episodes[idx]
+            solution = ep.get('solution', '')
+            code = self._extract_code(solution)
+            try:
+                if code is not None:
+                    from .sandbox import validate_code
+                    validate_code(code)
+                    self.memory.update_episode_tau(idx, +1.0)
+                    logging.info(f"[Background Audit] Episode {idx} code valid, τ boosted")
+                else:
+                    if len(solution.strip()) > 10:
+                        self.memory.update_episode_tau(idx, +0.5)
+                    else:
+                        self.memory.update_episode_tau(idx, -0.5)
+                        logging.warning(f"[Background Audit] Episode {idx} has very short answer")
+            except Exception:
+                self.memory.update_episode_tau(idx, -1.0)
+                logging.warning(f"[Background Audit] Episode {idx} failed validation, τ penalised")
+
+        # Prune episodes that fell below immune threshold
+        self.memory.prune_untrusted_episodes()
+        # Persist tau updates even if nothing was pruned
+        self.memory.save()
+
     def _prune_weak_rules(self):
         """Garbage collect rules that are DEAD based on global_score."""
         sleep_cfg = self.config.sleep
@@ -493,40 +658,91 @@ class NAREProductionAgent:
                 break
             time.sleep(1)
             
+    def _is_cold_start(self) -> bool:
+        """Check if the system is in cold-start mode ."""
+        return len(self.memory.episodes) < self.config.bootstrap.cold_start_threshold
+
+    def _bootstrap_load_seeds(self):
+        """Load pre-warmed seed examples on first run ."""
+        import json as _json
+        path = self.config.bootstrap.seed_examples_path
+        if not path or not os.path.exists(path):
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                seeds = _json.load(f)
+            loaded = 0
+            for seed in seeds:
+                if not seed.get("query") or not seed.get("solution"):
+                    continue
+                emb = llm.get_embedding(seed["query"])
+                ep_data = {
+                    "query": seed["query"],
+                    "solution": seed["solution"],
+                    "reasoning_trace": seed.get("reasoning_trace", "seed"),
+                    "context": "bootstrap_seed",
+                    "abstract_signature": seed.get("query"),
+                    "score": 0.7,
+                    "embedding": emb,
+                    "signature_embedding": emb,
+                }
+                added = self.memory.add_episode(ep_data, np.array([emb], dtype=np.float32))
+                if added:
+                    loaded += 1
+            if loaded:
+                logging.info(f"[Bootstrap] Loaded {loaded} seed examples from {path}")
+        except Exception as e:
+            logging.warning(f"[Bootstrap] Failed to load seeds: {e}")
+
     def solve(self, query: str) -> Dict[str, Any]:
         _solve_start = time.time()
         _solve_tokens = 0
         log = []
         log.append(f"Query: {query}")
-        
+
+        # Bootstrap: load seeds on first solve if memory is empty
+        if len(self.memory.episodes) == 0:
+            self._bootstrap_load_seeds()
+
         # =====================================================
-        # LAYER 0: EXACT CACHE (O(1) Direct Lookup)
+        # LAYER 0: FAST CACHE — O(log N) via HNSW embedding search
         # =====================================================
-        # Check if we have an EXACT match in episodes with a high score
-        for ep in self.memory.episodes:
-            if ep['query'].strip() == query.strip() and ep.get('score', 0) > 0.8:
-                log.append(f"Route: FAST CACHE (Exact match found, score: {ep['score']:.2f})")
-                # Update usage metrics for forgetting logic
-                ep['last_used'] = time.time()
-                ep['strength'] = ep.get('strength', 1.0) + 0.1
-                self.memory.save()
-                # Record metrics for FAST CACHE hits
-                self.metrics.record(
-                    query=query, route="FAST",
-                    elapsed=time.time() - _solve_start,
-                    tokens_used=0,
-                    similarity=1.0,
-                    answer=ep['solution'],
-                    score=ep.get('score', 0.8),
-                )
-                return {
-                    "route_decision": "FAST",
-                    "retrieved_memories": [ep],
-                    "generated_candidates": [],
-                    "critic_evaluation_table": [],
-                    "final_answer": ep['solution'],
-                    "memory_update_log": log
-                }
+        # Theory: deterministic return when semantic similarity exceeds
+        # tau_fast.  Uses the HNSW index for O(log N) lookup instead of
+        # linear string comparison.
+        if self.memory.episodic_index.ntotal > 0:
+            fast_emb = llm.get_embedding(query)
+            fast_vec = np.array([fast_emb], dtype=np.float32)
+            faiss.normalize_L2(fast_vec)
+            sims, indices = self.memory.episodic_index.search(fast_vec, 1)
+            if sims[0][0] >= self.tau_fast:
+                idx = int(indices[0][0])
+                if 0 <= idx < len(self.memory.episodes):
+                    ep = self.memory.episodes[idx]
+                    if ep.get('score', 0) > 0.5:
+                        log.append(f"Route: FAST (HNSW hit, sim={sims[0][0]:.3f}, score={ep.get('score', 0):.2f})")
+                        ep['last_used'] = time.time()
+                        ep['strength'] = ep.get('strength', 1.0) + 0.1
+                        # Immune system: boost τ for successfully reused episodes
+                        self.memory.update_episode_tau(idx, +1.0)
+                        self.memory.save()
+                        self.metrics.record(
+                            query=query, route="FAST",
+                            elapsed=time.time() - _solve_start,
+                            tokens_used=0,
+                            similarity=float(sims[0][0]),
+                            answer=ep['solution'],
+                            score=ep.get('score', 0.8),
+                        )
+                        return {
+                            "route_decision": "FAST",
+                            "retrieved_memories": [ep],
+                            "generated_candidates": [],
+                            "critic_evaluation_table": [],
+                            "final_answer": ep['solution'],
+                            "memory_update_log": log,
+                            "alpha": float(sims[0][0]),
+                        }
 
         # =====================================================
         # LAYER 1: PROGRAMMATIC REFLEXES (AST Execution)
@@ -643,18 +859,19 @@ class NAREProductionAgent:
                 ],
             }
 
-        # Need the query embedding for LAYER 3 (Episodic Cache)
-        query_emb = llm.get_embedding(query)
+        # Reuse embedding from FAST path if available, otherwise compute
+        if self.memory.episodic_index.ntotal > 0:
+            query_emb = fast_emb          # computed earlier for FAST lookup
+        else:
+            query_emb = llm.get_embedding(query)
         query_emb_np = np.array([query_emb], dtype=np.float32)
 
-        # Auxiliary novelty signal from NeuralMemory. Currently logged
-        # only — not used to override routing — because we have no
-        # validation that it correlates with task hardness. Once a
-        # held-out study confirms correlation, this can gate τ_fast or
-        # bias the candidate budget for SLOW.
+        # Neural Memory surprise — influences candidate budget for SLOW.
+        # High surprise → more candidates (harder problem needs wider search).
+        novelty = 0.0
         try:
             novelty = self.neural_memory.compute_surprise(query_emb)
-            log.append(f"NeuralMemory novelty (aux signal, not used in routing): {novelty:.4f}")
+            log.append(f"NeuralMemory novelty: {novelty:.4f}")
         except Exception as e:
             log.append(f"NeuralMemory novelty failed: {e}")
         
@@ -698,11 +915,16 @@ class NAREProductionAgent:
             log.append(f"RAG: Retrieved {len(retrieved_facts)} relevant facts.")
         
         max_sim = retrieved_eps[0]['similarity'] if retrieved_eps else 0.0
-        
-        # (Entropy check removed as it was sabotaging high-certainty structural matches)
-        
+
+        # Dynamic α: formal amortization coefficient
+        # α_t = 1 - exp(-κ·|M_t|) — how "familiar" the task domain is.
+        kappa = self.config.amortization.kappa
+        memory_size = len(self.memory.episodes)
+        alpha_t = 1.0 - np.exp(-kappa * memory_size)
+        log.append(f"Amortization α_t={alpha_t:.4f} (|M|={memory_size})")
+
         route = "SLOW"
-        alpha = 0.0
+        alpha = alpha_t
         candidates = []
         final_answer = ""
         best_cand = None
@@ -780,9 +1002,21 @@ class NAREProductionAgent:
                     prompt_used += f"Fact: {fact.get('content', '')[:300]}\n"
                 prompt_used += "---\n"
             prompt_used += "\nSolve the new Task by synthesizing insights from the provided memories (if any) and applying deep reasoning."
-                
-            # Use Tree-of-Thoughts for SLOW path (BFS with pruning)
-            candidates, _stokens = llm.tree_of_thoughts(prompt_used, breadth=3, depth=1)
+
+            # Cold Start: simplified CoT to conserve API tokens.
+            if self._is_cold_start() and self.config.bootstrap.cold_start_use_simple_cot:
+                log.append("[Bootstrap] Cold start — using simplified CoT instead of ToT")
+                candidates, _stokens = llm.generate_samples(prompt_used, n=1, temperature=0.5, mode="SLOW")
+            else:
+                # Neural Memory surprise biases candidate budget:
+                # higher novelty → wider search (more branches in ToT).
+                base_breadth = 3
+                if novelty > 0.5:
+                    breadth = min(base_breadth + 2, 6)
+                    log.append(f"High novelty ({novelty:.3f}) → expanded ToT breadth={breadth}")
+                else:
+                    breadth = base_breadth
+                candidates, _stokens = llm.tree_of_thoughts(prompt_used, breadth=breadth, depth=1)
             _solve_tokens += _stokens
             candidates = self.critic.evaluate(query, candidates)
             
@@ -797,13 +1031,29 @@ class NAREProductionAgent:
         if best_cand:
             self._calibrate_tau(reward=best_cand.get('final_score', 0.5), fast_path_used=(route == "FAST"))
 
+        # Neural Memory: update with surprise-driven priority.
+        # High-surprise episodes get stronger weight in neural memory.
+        if best_cand and route in ("SLOW", "HYBRID"):
+            importance = max(1.0, 1.0 + novelty)
+            try:
+                target = np.array(query_emb, dtype=np.float32).flatten()[:self.neural_memory.hidden_dim]
+                self.neural_memory.update(
+                    np.array(query_emb, dtype=np.float32),
+                    target,
+                    importance=importance,
+                )
+            except Exception:
+                pass
+
         result = {
             "route_decision": route,
             "retrieved_memories": retrieved_eps + retrieved_semantics,
             "generated_candidates": candidates,
             "critic_evaluation_table": candidates if candidates else ([best_cand] if best_cand else []),
             "final_answer": final_answer,
-            "memory_update_log": log
+            "memory_update_log": log,
+            "alpha_t": float(alpha_t),
+            "novelty": float(novelty),
         }
 
         # Record metrics
@@ -834,6 +1084,8 @@ class NAREProductionAgent:
                 try:
                     self._sleep_phase()      # NREM: consolidation
                     self._rem_sleep_phase()   # REM: dreaming / stress-testing
+                    # Background Validation : random episode audit
+                    self._background_validate_episodes()
                     # Titans/MIRAS: Neural memory consolidation
                     self.neural_memory.consolidate(self.memory.episodes[-50:])
                     self.neural_memory.save()
@@ -850,28 +1102,26 @@ class NAREProductionAgent:
         return result
 
     def _record_skill_result(self, rule: dict, success: bool):
-        """Track skill execution history for lifecycle management."""
+        """Track skill execution history and apply Penalty Backpropagation .
+
+        When a skill fails, its confidence drops and the penalty is
+        propagated to all source episodes via their τ_i trust coefficients.
+        """
         history = rule.get('score_history', [])
         history.append(1.0 if success else 0.0)
-        # Keep last 20 results
         rule['score_history'] = history[-20:]
         
         rule['reuse_rate'] = rule.get('reuse_rate', 0) + 1
         
-        # Update confidence based on rolling success rate
         if len(history) >= 3:
-            recent = history[-10:]  # Last 10 executions
+            recent = history[-10:]
             rolling_success = sum(recent) / len(recent)
-            
-            # Dynamic Confidence Promotion: success breeds stability
             old_conf = rule.get('confidence', 0.5)
-            # Increase confidence by 0.01 on success, capped at 0.99
             rule['confidence'] = min(0.99, round((rolling_success * 0.7) + (old_conf * 0.3) + 0.01, 3))
             
-        # Maturity update: increment maturity after successful combat trials
         if success:
             rule['success_streak'] = rule.get('success_streak', 0) + 1
-            if rule['success_streak'] >= 5:
+            if rule['success_streak'] >= self.config.skill.success_streak_for_maturity:
                 rule['maturity'] = rule.get('maturity', 0) + 1
                 rule['success_streak'] = 0
                 logging.info(f"[Evolution] Skill '{rule['pattern']}' reached maturity level {rule['maturity']}")
@@ -879,11 +1129,37 @@ class NAREProductionAgent:
             rule['success_streak'] = 0
             rule['maturity'] = max(0, rule.get('maturity', 0) - 1)
 
-        # Global Score: mix of confidence and maturity
         maturity_bonus = min(0.3, rule.get('maturity', 0) * 0.1)
         conf = rule.get('confidence', 0.5)
         rule['global_score'] = round((conf * 0.7) + maturity_bonus, 3)
-        
+
+        # --- Penalty Backpropagation  ---
+        # If skill fails, propagate penalty to source episodes.
+        delta_v = 1.0 if success else -1.0
+        source_episode_ids = rule.get('source_episode_ids', [])
+        if source_episode_ids:
+            gamma = self.config.immune.penalty_backprop_gamma
+            for ep_id in source_episode_ids:
+                if 0 <= ep_id < len(self.memory.episodes):
+                    self.memory.update_episode_tau(ep_id, delta_v * gamma)
+            if not success:
+                logging.info(
+                    f"[Penalty Backprop] Skill '{rule.get('pattern')}' penalty "
+                    f"distributed to {len(source_episode_ids)} source episodes"
+                )
+
+        # If skill keeps failing and source episodes are toxic, add suppression
+        if not success and rule.get('confidence', 0.5) < 0.2:
+            for ep_id in source_episode_ids:
+                if 0 <= ep_id < len(self.memory.episodes):
+                    ep = self.memory.episodes[ep_id]
+                    if ep.get('tau', 1.0) < self.config.immune.theta_immune:
+                        self.memory.add_suppression_rule(
+                            ep.get('query', ''),
+                            ep.get('solution', ''),
+                            np.array(ep.get('embedding', [0.0] * self.memory.embedding_dim), dtype=np.float32),
+                        )
+
         # Find and update rule in memory
         for i, r in enumerate(self.memory.semantic_rules):
             if r.get('pattern') == rule.get('pattern'):
