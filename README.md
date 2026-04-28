@@ -3,6 +3,7 @@
 </p>
 
 <h1 align="center">NARE — Non-parametric Amortized Reasoning Evolution</h1>
+<h2 align="center">Special thanks to the first stargazers for recognizing the potential of reasoning crystallization</h2>
 
 <p align="center">
   <em>A Skill-Based Cognitive Architecture for Deterministic Routing of Logic Tasks<br/>via Semantic Compression and Executable Reflexes</em>
