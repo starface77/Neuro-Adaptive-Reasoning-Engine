@@ -141,6 +141,101 @@ def llm_yes_no_oracle(judge_fn: Callable[[str], str]) -> Oracle:
     return _oracle
 
 
+def cached_episode_oracle(
+    expected_solution: str,
+    *,
+    rel_tol: float = 1e-6,
+    abs_tol: float = 1e-9,
+) -> Oracle:
+    """Strict deterministic oracle backed by a cached, solved episode.
+
+    This is the ground-truth check that the paper's "compile-from-replay"
+    workflow actually requires: a generated skill must reproduce the
+    *exact* output of a previously-solved episode, not just share enough
+    string fragments with it.
+
+    Accept conditions, in order:
+
+      1. Normalized exact-string match (surrounding whitespace stripped,
+         internal whitespace collapsed). If the candidate ``startswith
+         "Error"`` we reject regardless.
+      2. If the expected solution contains numeric tokens:
+         a. The candidate is not an error string.
+         b. Every expected number is matched within tolerance by some
+            number extracted from the candidate.
+         c. The candidate does not introduce *additional* numeric tokens
+            that are absent from the expected solution. This is the
+            "no extra hallucinated numbers" gate that distinguishes a
+            correct answer ("7") from a verbose wrong one ("answer: 7
+            because 1+2+3+4 = 10").
+      3. Otherwise reject.
+
+    No LLM judge, no partial credit, no 20%-coverage heuristic. Use this
+    as the default fallback in :func:`nare.llm._validate_skill` when
+    validating a compiled skill against a previously-solved episode
+    whose stored solution is the verified ground truth.
+    """
+    raw_expected = (expected_solution or "").strip()
+    expected_normalized = re.sub(r"\s+", " ", raw_expected).lower()
+    expected_nums = [
+        float(m) for m in re.findall(r"-?\d+\.?\d*", raw_expected)
+    ]
+
+    def _oracle(query: str, candidate_answer: str) -> Tuple[bool, str]:
+        cand = (candidate_answer or "").strip()
+        if cand.startswith("Error"):
+            return False, f"candidate is an error string: {cand[:60]}"
+        if raw_expected == "" or raw_expected == "N/A":
+            # Episode without a verified solution cannot ground-truth a
+            # skill; treat any non-error output as inconclusive
+            # (rejected) so we never promote on missing ground truth.
+            return False, "cached episode has no verified solution"
+
+        cand_normalized = re.sub(r"\s+", " ", cand).lower()
+        if cand_normalized == expected_normalized:
+            return True, "exact normalized string match"
+
+        if expected_nums:
+            cand_nums = [
+                float(m) for m in re.findall(r"-?\d+\.?\d*", cand)
+            ]
+            if not cand_nums:
+                return False, "expected numeric answer, candidate has no numbers"
+
+            # Every expected number must appear in the candidate.
+            for expected in expected_nums:
+                if not any(
+                    math.isclose(n, expected, rel_tol=rel_tol, abs_tol=abs_tol)
+                    for n in cand_nums
+                ):
+                    return False, (
+                        f"missing expected number {expected} "
+                        f"(got {cand_nums})"
+                    )
+
+            # No extra unrelated numbers — every candidate number must
+            # also be in the expected set. This catches verbose wrong
+            # answers that happen to contain the right number.
+            for got in cand_nums:
+                if not any(
+                    math.isclose(got, e, rel_tol=rel_tol, abs_tol=abs_tol)
+                    for e in expected_nums
+                ):
+                    return False, (
+                        f"extra unrelated number {got} "
+                        f"(expected only {expected_nums})"
+                    )
+
+            return True, "strict numeric set match"
+
+        return False, (
+            f"non-numeric expected '{raw_expected[:40]}' but no string match "
+            f"with candidate '{cand[:40]}'"
+        )
+
+    return _oracle
+
+
 def heuristic_overlap_oracle(expected_solution: str) -> Oracle:
     """Default oracle reproducing the legacy string/numeric-overlap check.
 
@@ -220,6 +315,12 @@ def build_oracle_from_spec(spec: dict) -> Oracle:
         return python_assert_oracle(code)
     if kind == "heuristic_overlap":
         return heuristic_overlap_oracle(spec.get("expected_solution", ""))
+    if kind == "cached_episode":
+        return cached_episode_oracle(
+            spec.get("expected_solution", ""),
+            rel_tol=spec.get("rel_tol", 1e-6),
+            abs_tol=spec.get("abs_tol", 1e-9),
+        )
     raise ValueError(f"Unknown oracle spec type: {kind!r}")
 
 
@@ -230,5 +331,6 @@ __all__ = [
     "python_assert_oracle",
     "llm_yes_no_oracle",
     "heuristic_overlap_oracle",
+    "cached_episode_oracle",
     "build_oracle_from_spec",
 ]

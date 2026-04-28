@@ -15,6 +15,11 @@ from .graph_memory import EpisodeGraph
 from .rl_retriever import RLRetriever
 from .neural_memory import NeuralMemory
 from .meta_abduction import MetaAbductionEngine
+from .query_fingerprint import (
+    average_pairwise_jaccard,
+    query_fingerprint,
+)
+from . import sandbox
 from .sandbox import (
     SecurityError,
     safe_call_execute_in_namespace,
@@ -220,6 +225,61 @@ class NAREProductionAgent:
         elif not fast_path_used and reward > 0.8:
             self.tau_fast = max(self.tau_min, self.tau_fast - (lr / 2))
 
+    def calibrate_tau_fast_from_replay(
+        self,
+        target_precision: float = 0.95,
+        *,
+        apply: bool = True,
+        embedding_key: str = "embedding",
+        tau_min: Optional[float] = None,
+        tau_max: Optional[float] = None,
+        tau_step: float = 0.005,
+    ) -> Dict[str, Any]:
+        """Replay-driven calibration of ``tau_fast`` over cached episodes.
+
+        Sweeps a range of candidate ``tau`` values, computes precision /
+        coverage of the FAST path on actual cached pairs (judged by the
+        strict ``cached_episode_oracle``), and optionally applies the
+        smallest ``tau`` whose precision meets ``target_precision``.
+
+        This is **offline only** — no LLM calls — and is intended to be
+        run after warm-up of the episode store. The online per-call
+        ``_calibrate_tau`` continues to handle drift after this is set.
+
+        Returns the full calibration report (see
+        :func:`nare.tau_calibration.calibrate_tau_fast`). When ``apply``
+        is True and a precision-passing tau is found, ``self.tau_fast``
+        is updated (clamped into the existing ``[tau_min, tau_max]``
+        config band) and the change is logged.
+        """
+        from .tau_calibration import calibrate_tau_fast
+
+        with self.memory._lock:
+            episodes_snapshot = list(self.memory.episodes)
+
+        sweep_min = tau_min if tau_min is not None else max(0.50, self.tau_min - 0.05)
+        sweep_max = tau_max if tau_max is not None else min(0.999, self.tau_max + 0.005)
+
+        report = calibrate_tau_fast(
+            episodes_snapshot,
+            tau_min=sweep_min,
+            tau_max=sweep_max,
+            tau_step=tau_step,
+            target_precision=target_precision,
+            embedding_key=embedding_key,
+        )
+        if apply and report.get("recommended_tau") is not None:
+            new_tau = float(report["recommended_tau"])
+            clamped = max(self.tau_min, min(self.tau_max, new_tau))
+            old = self.tau_fast
+            self.tau_fast = clamped
+            logging.info(
+                f"[Replay Calibration] tau_fast {old:.3f} -> {clamped:.3f} "
+                f"(unclamped recommendation {new_tau:.3f}, target precision "
+                f"{target_precision:.2f}, n_episodes={report['n_episodes']})"
+            )
+        return report
+
     def _normalize_embeddings(self, vecs: np.ndarray) -> np.ndarray:
         """Utility: L2-normalize a batch of vectors for cosine similarity."""
         v = vecs.copy().astype(np.float32)
@@ -250,7 +310,46 @@ class NAREProductionAgent:
                 sim_matrix > sleep_cfg.cluster_similarity_threshold, axis=1
             )
             min_neighbours = max(1, sleep_cfg.cluster_density_threshold - 1)
-            if np.any(density_above >= min_neighbours):
+            dense_idx = np.where(density_above >= min_neighbours)[0]
+            for core_idx in dense_idx:
+                cluster_indices = np.where(
+                    sim_matrix[core_idx] > sleep_cfg.cluster_similarity_threshold
+                )[0].tolist()
+                cluster_indices.append(int(core_idx))
+                # Optional secondary gate: query structural fingerprint
+                # Jaccard among cluster members must also exceed a
+                # threshold. This catches cases where embeddings group
+                # surface-similar but structurally different queries.
+                if sleep_cfg.use_query_fingerprint_gate:
+                    fps = [
+                        self.memory.episodes[i].get('query_fingerprint')
+                        for i in cluster_indices
+                    ]
+                    # Backward compatibility: episodes saved before this
+                    # PR have no ``query_fingerprint`` field. If fewer
+                    # than 2 cluster members carry fingerprint data the
+                    # gate cannot be evaluated; default to *passing*
+                    # (preserve legacy embedding-only behaviour) and
+                    # log distinctly so the operator can tell the gate
+                    # is inert from missing data, not from a structural
+                    # mismatch.
+                    non_none_fps = [fp for fp in fps if fp]
+                    if len(non_none_fps) < 2:
+                        logging.info(
+                            f"[Sleep Trigger] Fingerprint gate skipped: "
+                            f"only {len(non_none_fps)}/{len(fps)} cluster "
+                            f"members carry query_fingerprint data "
+                            f"(likely a pre-Tier-B episode store)."
+                        )
+                    else:
+                        avg_jacc = average_pairwise_jaccard(fps)
+                        if avg_jacc < sleep_cfg.query_fingerprint_threshold:
+                            logging.info(
+                                f"[Sleep Trigger] Embedding cluster rejected: "
+                                f"query fingerprint Jaccard {avg_jacc:.2f} < "
+                                f"{sleep_cfg.query_fingerprint_threshold:.2f}"
+                            )
+                            continue
                 logging.info(
                     "[Sleep Trigger] Dense cluster detected "
                     f"(>= {min_neighbours} neighbours @ sim > "
@@ -330,11 +429,22 @@ class NAREProductionAgent:
                 rule_idx = int(existing_rule.get('memory_id', 0))
                 existing_conf = existing_rule.get('confidence', 0.5)
                 
-                if existing_conf < 0.95:
+                # Quarantined rules are not refined at all — they have
+                # repeatedly failed REM dream-tests and resetting their
+                # confidence on every sleep cycle is what produced the
+                # 0.45 ↔ 0.23 oscillation seen in the benchmark log.
+                if existing_rule.get('quarantined'):
+                    logging.info(
+                        f"[Refinement] Skipping quarantined rule "
+                        f"'{existing_rule.get('pattern')}' "
+                        f"(rem_penalty_count={existing_rule.get('rem_penalty_count', 0)}, "
+                        f"peak_confidence={existing_rule.get('peak_confidence', existing_conf):.2f})"
+                    )
+                elif existing_conf < 0.95:
                     # GRADED REFINEMENT: Weak/Hybrid skill needs more training
                     logging.info(f"=== [GRADED REFINEMENT] Upgrading rule '{existing_rule.get('pattern')}' (conf: {existing_conf:.2f}) ===")
                     updated_rule = llm.merge_heuristic_rules(existing_rule, cluster_episodes)
-                    
+
                     # Re-validate the merged rule with stress tests
                     from nare.llm import generate_stress_tests, _validate_skill
                     stress_tests = generate_stress_tests(cluster_episodes)
@@ -345,13 +455,42 @@ class NAREProductionAgent:
                         oracle=self.oracle,
                         config=self.config,
                     )
-                    
-                    updated_rule['confidence'] = scores['overall']
+
+                    # --- Confidence-bounce hysteresis ---
+                    # If this rule has been REM-penalised at least once,
+                    # clamp the bump so the next REM cycle does not
+                    # restart the 0.45 ↔ 0.23 oscillation seen in the
+                    # benchmark log.  See SkillConfig.skill_refinement_-
+                    # max_bump_after_penalty for tuning.
+                    raw_score = scores['overall']
+                    rem_penalties = existing_rule.get('rem_penalty_count', 0)
+                    if rem_penalties > 0:
+                        max_bump = self.config.skill.skill_refinement_max_bump_after_penalty
+                        clamped = min(raw_score, existing_conf + max_bump)
+                        if clamped < raw_score:
+                            logging.info(
+                                f"[Refinement Hysteresis] '{updated_rule['pattern']}' "
+                                f"raw={raw_score:.2f} -> clamped={clamped:.2f} "
+                                f"(rem_penalty_count={rem_penalties})"
+                            )
+                        applied_conf = clamped
+                    else:
+                        applied_conf = raw_score
+
+                    updated_rule['confidence'] = applied_conf
                     updated_rule['trigger_accuracy'] = scores['trigger_accuracy']
                     updated_rule['execute_accuracy'] = scores['execute_accuracy']
                     updated_rule['sleep_cycles'] = existing_rule.get('sleep_cycles', 0) + 1
+                    # Track best-ever confidence for quarantine decisions.
+                    updated_rule['peak_confidence'] = max(
+                        existing_rule.get('peak_confidence', existing_conf),
+                        applied_conf,
+                    )
+                    # Carry over penalty/quarantine state.
+                    updated_rule['rem_penalty_count'] = rem_penalties
+                    updated_rule['quarantined'] = existing_rule.get('quarantined', False)
                     self.memory.update_semantic_rule(rule_idx, updated_rule, new_embedding=centroid)
-                    logging.info(f"[Refinement] '{updated_rule['pattern']}' conf: {existing_conf:.2f} -> {scores['overall']:.2f} (trigger={scores['trigger_accuracy']:.2f}, exec={scores['execute_accuracy']:.2f})")
+                    logging.info(f"[Refinement] '{updated_rule['pattern']}' conf: {existing_conf:.2f} -> {applied_conf:.2f} (trigger={scores['trigger_accuracy']:.2f}, exec={scores['execute_accuracy']:.2f})")
                 else:
                     # Already strong rule, just merge for broader coverage
                     logging.info(f"=== [SEMANTIC CONSOLIDATION] Merging into rule: {existing_rule['pattern']} ===")
@@ -371,7 +510,25 @@ class NAREProductionAgent:
                     logging.warning("[Sleep] Skill failed validation completely (robustness < 0.40). Keeping episodes.")
                     return
                 new_rule['sleep_cycles'] = 0
-                # Track source episodes for Penalty Backpropagation 
+                # Track source episodes for Penalty Backpropagation. We
+                # store CONTENT KEYS (sha1(query+solution)) rather than
+                # positional indices because the next few lines delete
+                # the cluster episodes from memory.episodes — positional
+                # indices become stale immediately, which silently
+                # corrupted the immune system's τ updates (Devin Review
+                # finding on PR #5).
+                from .memory import episode_content_key  # local import to avoid cycle
+                source_keys = []
+                for i in cluster_indices:
+                    ep = self.memory.episodes[int(i)]
+                    key = ep.get('episode_key') or episode_content_key(
+                        ep.get('query', ''), ep.get('solution', ''),
+                    )
+                    source_keys.append(key)
+                new_rule['source_episode_keys'] = source_keys
+                # Keep legacy field for one release so older serialised
+                # rules still load — but mark it as best-effort. Newer
+                # code paths must read source_episode_keys.
                 new_rule['source_episode_ids'] = [int(i) for i in cluster_indices]
                 self.memory.add_semantic_rule(new_rule, centroid)
                 logging.info(f"[Crystallization] New Rule: {new_rule['pattern']} (confidence: {new_rule['confidence']:.2f})")
@@ -393,16 +550,141 @@ class NAREProductionAgent:
         except Exception as e:
             logging.error(f"[Sleep Phase] Failed: {e}")
 
+    def _rem_cached_replay(self, rule: dict):
+        """Run a rule against every cached episode it triggers on.
+
+        The "cached-replay" REM signal is the paper's intended ground
+        truth: a skill must reproduce the verified solution stored on
+        a prior episode, judged by the strict ``cached_episode_oracle``
+        (or a per-episode ``oracle_spec`` / global oracle when present).
+
+        Returns ``(scores_dict, failing_episodes, n_triggered)``. When
+        ``n_triggered == 0`` the rule never fires on the cache and we
+        return ``(None, [], 0)`` so the caller can fall back to the
+        legacy LLM-stress path.
+
+        ``scores_dict`` mirrors the keys produced by
+        :func:`nare.llm._validate_skill` so REM can feed it directly
+        into the existing repair loop.
+        """
+        from nare.sandbox import safe_load_module, SecurityError
+        from nare.oracle import (
+            build_oracle_from_spec,
+            cached_episode_oracle,
+        )
+
+        python_code = rule.get("python_code", "") or ""
+        if not python_code:
+            return None, [], 0
+
+        try:
+            ns = safe_load_module(python_code)
+        except SecurityError as e:
+            logging.warning(
+                f"[REM Replay] Rule '{rule.get('pattern')}' rejected by "
+                f"AST validator: {e}"
+            )
+            return None, [], 0
+        except Exception as e:  # noqa: BLE001
+            logging.warning(
+                f"[REM Replay] Rule '{rule.get('pattern')}' failed to load: {e}"
+            )
+            return None, [], 0
+
+        trigger_fn = ns.get("trigger")
+        execute_fn = ns.get("execute")
+        if trigger_fn is None or execute_fn is None:
+            return None, [], 0
+
+        # Snapshot under lock so we never iterate while sleep mutates the
+        # episode list.
+        with self.memory._lock:
+            episodes_snapshot = list(self.memory.episodes)
+
+        n_triggered = 0
+        n_correct = 0
+        failing: list = []
+
+        for ep in episodes_snapshot:
+            query = ep.get("query", "")
+            try:
+                if not trigger_fn(query):
+                    continue
+            except Exception:  # noqa: BLE001 - trigger crash counts as triggered+failed
+                n_triggered += 1
+                failing.append({
+                    "query": query,
+                    "solution": ep.get("solution", ""),
+                    "type": "POSITIVE",
+                    "info": "trigger() crashed on cached episode",
+                })
+                continue
+
+            n_triggered += 1
+
+            try:
+                output = str(execute_fn(query))
+            except Exception as e:  # noqa: BLE001
+                failing.append({
+                    "query": query,
+                    "solution": ep.get("solution", ""),
+                    "type": "POSITIVE",
+                    "info": f"execute() crashed: {type(e).__name__}: {e}",
+                })
+                continue
+
+            spec = ep.get("oracle_spec")
+            if spec:
+                try:
+                    ep_oracle = build_oracle_from_spec(spec)
+                except Exception:  # noqa: BLE001
+                    ep_oracle = cached_episode_oracle(ep.get("solution", ""))
+            elif self.oracle is not None:
+                ep_oracle = self.oracle
+            else:
+                ep_oracle = cached_episode_oracle(ep.get("solution", ""))
+
+            ok, info = ep_oracle(query, output)
+            if ok:
+                n_correct += 1
+            else:
+                failing.append({
+                    "query": query,
+                    "solution": ep.get("solution", ""),
+                    "type": "POSITIVE",
+                    "info": info,
+                    "got": output[:120],
+                })
+
+        if n_triggered == 0:
+            return None, [], 0
+
+        score = n_correct / n_triggered if n_triggered > 0 else 0.0
+        scores_dict = {
+            "trigger_accuracy": 1.0,
+            "execute_accuracy": score,
+            "negative_trap_accuracy": 1.0,
+            "positive_no_crash_rate": 1.0,
+            "overall": score,
+            "replay_n_triggered": n_triggered,
+            "replay_n_correct": n_correct,
+        }
+        return scores_dict, failing, n_triggered
+
     def _rem_sleep_phase(self):
-        """REM Sleep: Generative modeling / dreaming.
-        
-        Stochastically recombines concepts, generates edge-case scenarios,
-        and stress-tests existing compiled reflexes.  Rules that fail are
-        iteratively corrected via LLM; rules that pass gain confidence.
-        
-        Per theory doc: "If compiled code fails in a simulated situation,
-        its structure is corrected, ensuring exceptional reliability of
-        the skill registry."
+        """REM Sleep: cached-replay validation + iterative repair.
+
+        Order of validation (Tier A revision):
+          1. **Cached-replay first.** Run the skill against every cached
+             episode it triggers on; score with the strict
+             ``cached_episode_oracle``. This is the paper's intended
+             ground-truth signal: real solved tasks, deterministic
+             match. No LLM judging itself.
+          2. **LLM-generated stress tests fall back** only when the
+             cache cannot produce ``rem_min_replay_episodes`` triggered
+             episodes (e.g. for very new skills with little history).
+          3. Repair loop runs against the failing real episodes when
+             they exist, otherwise against LLM stress tests.
         """
         logging.info("=== [REM SLEEP] Dreaming — stress-testing existing skills ===")
         if not self.memory.semantic_rules:
@@ -415,6 +697,10 @@ class NAREProductionAgent:
             min(3, len(self.memory.semantic_rules)),
         )
 
+        skill_cfg = self.config.skill
+        replay_threshold = skill_cfg.rem_replay_pass_threshold
+        min_replay = skill_cfg.rem_min_replay_episodes
+
         for rule in rules_to_test:
             pattern = rule.get("pattern", "Unknown")
             python_code = rule.get("python_code", "")
@@ -423,56 +709,145 @@ class NAREProductionAgent:
 
             logging.info(f"[REM] Dreaming about rule '{pattern}' ...")
 
-            # Generate adversarial edge-cases using existing episodes as seed
-            related_episodes = [
-                ep for ep in self.memory.episodes
-                if any(w in ep.get("query", "").lower() for w in pattern.lower().split()[:3])
-            ][:3]
-            if not related_episodes:
-                related_episodes = self.memory.episodes[:3]
-            if not related_episodes:
-                continue
-
             try:
                 from nare.llm import generate_stress_tests, _validate_skill, repair_skill
-                dream_tests = generate_stress_tests(related_episodes)
-                if not dream_tests:
-                    continue
 
-                scores, error_msg = _validate_skill(
-                    python_code, dream_tests,
-                    oracle=self.oracle, config=self.config,
+                # 1. Cached-replay first (paper's ground-truth signal).
+                replay_scores, replay_failing, n_triggered = (
+                    self._rem_cached_replay(rule)
                 )
-                old_conf = rule.get("confidence", 0.5)
+                used_replay = (
+                    replay_scores is not None
+                    and n_triggered >= min_replay
+                )
 
-                if scores["overall"] >= 0.80:
-                    boost = min(0.05, (scores["overall"] - 0.80) * 0.25)
-                    rule["confidence"] = min(0.99, old_conf + boost)
+                if used_replay:
+                    scores = replay_scores
+                    error_msg = (
+                        f"[CACHED REPLAY] {scores['replay_n_correct']}/"
+                        f"{scores['replay_n_triggered']} cached episodes "
+                        f"reproduced under strict oracle "
+                        f"(score={scores['execute_accuracy']:.2f})."
+                    )
+                    dream_tests = replay_failing  # repair loop sees real failures
                     logging.info(
-                        f"[REM] '{pattern}' passed dream test "
-                        f"(overall={scores['overall']:.2f}). "
+                        f"[REM] '{pattern}' cached-replay: "
+                        f"{scores['replay_n_correct']}/{scores['replay_n_triggered']} "
+                        f"(score={scores['execute_accuracy']:.2f})"
+                    )
+                else:
+                    # 2. Fallback: LLM-generated stress tests when the
+                    # cache cannot give us enough triggered episodes.
+                    related_episodes = [
+                        ep for ep in self.memory.episodes
+                        if any(
+                            w in ep.get("query", "").lower()
+                            for w in pattern.lower().split()[:3]
+                        )
+                    ][:3]
+                    if not related_episodes:
+                        related_episodes = self.memory.episodes[:3]
+                    if not related_episodes:
+                        continue
+
+                    dream_tests = generate_stress_tests(related_episodes)
+                    if not dream_tests:
+                        continue
+
+                    scores, error_msg = _validate_skill(
+                        python_code, dream_tests,
+                        oracle=self.oracle, config=self.config,
+                    )
+                old_conf = rule.get("confidence", 0.5)
+                # In cached-replay mode use the configured threshold
+                # (paper's "≥80% real reproductions"); fall back to the
+                # historical 0.80 in LLM-stress mode.
+                pass_threshold = (
+                    replay_threshold if used_replay else 0.80
+                )
+
+                if scores["overall"] >= pass_threshold:
+                    boost = min(0.05, (scores["overall"] - pass_threshold) * 0.25)
+                    rule["confidence"] = min(0.99, old_conf + boost)
+                    if used_replay:
+                        rule["rem_replay_passes"] = (
+                            rule.get("rem_replay_passes", 0) + 1
+                        )
+                    logging.info(
+                        f"[REM] '{pattern}' passed "
+                        f"({'cached-replay' if used_replay else 'LLM-stress'}, "
+                        f"overall={scores['overall']:.2f}). "
                         f"conf: {old_conf:.2f} -> {rule['confidence']:.2f}"
                     )
                 else:
                     # Iterative code correction: attempt to repair the skill
                     logging.warning(
-                        f"[REM] '{pattern}' FAILED dream test "
-                        f"(overall={scores['overall']:.2f}). "
+                        f"[REM] '{pattern}' FAILED "
+                        f"({'cached-replay' if used_replay else 'LLM-stress'}, "
+                        f"overall={scores['overall']:.2f}). "
                         f"Attempting iterative repair..."
                     )
+                    # Build a validator closure so repair_skill can iterate
+                    # internally and pick the best candidate, instead of
+                    # returning the first generation regardless of quality.
+                    if used_replay:
+                        def _validate_candidate(code: str) -> float:
+                            patched = dict(rule)
+                            patched["python_code"] = code
+                            cand_scores, _failing, _n = (
+                                self._rem_cached_replay(patched)
+                            )
+                            if cand_scores is None:
+                                return 0.0
+                            return float(cand_scores.get("overall", 0.0))
+                    else:
+                        def _validate_candidate(code: str) -> float:
+                            cand_scores, _err = _validate_skill(
+                                code, dream_tests,
+                                oracle=self.oracle, config=self.config,
+                            )
+                            return float(cand_scores.get("overall", 0.0))
+
                     repaired_code = repair_skill(
                         python_code, pattern, dream_tests,
-                        error_msg, scores, max_attempts=2,
+                        error_msg, scores, max_attempts=3,
+                        validator=_validate_candidate,
+                        baseline_score=scores.get("overall", 0.0),
                     )
                     if repaired_code and repaired_code != python_code:
-                        new_scores, new_err = _validate_skill(
-                            repaired_code, dream_tests,
-                            oracle=self.oracle, config=self.config,
-                        )
+                        # Re-validate the repaired code against the SAME
+                        # signal we used to flag it (cached-replay or
+                        # LLM-stress) so the comparison is apples-to-apples.
+                        if used_replay:
+                            patched_rule = dict(rule)
+                            patched_rule["python_code"] = repaired_code
+                            new_scores, _failing_after, n_after = (
+                                self._rem_cached_replay(patched_rule)
+                            )
+                            if new_scores is None:
+                                # Repaired code no longer triggers on the
+                                # cache — treat as regression.
+                                new_scores = {
+                                    "overall": 0.0,
+                                    "execute_accuracy": 0.0,
+                                }
+                            new_err = (
+                                f"[CACHED REPLAY] post-repair "
+                                f"score={new_scores.get('execute_accuracy', 0.0):.2f}"
+                            )
+                        else:
+                            new_scores, new_err = _validate_skill(
+                                repaired_code, dream_tests,
+                                oracle=self.oracle, config=self.config,
+                            )
                         if new_scores["overall"] > scores["overall"]:
                             rule["python_code"] = repaired_code
                             rule["confidence"] = max(old_conf * 0.9, new_scores["overall"])
                             rule["rem_repairs"] = rule.get("rem_repairs", 0) + 1
+                            rule["peak_confidence"] = max(
+                                rule.get("peak_confidence", old_conf),
+                                rule["confidence"],
+                            )
                             logging.info(
                                 f"[REM] '{pattern}' REPAIRED successfully! "
                                 f"score: {scores['overall']:.2f} -> {new_scores['overall']:.2f}, "
@@ -480,23 +855,10 @@ class NAREProductionAgent:
                             )
                         else:
                             # Repair didn't improve; apply penalty
-                            penalty = max(0.05, (0.80 - scores["overall"]) * 0.3)
-                            rule["confidence"] = max(0.10, old_conf - penalty)
-                            rule["maturity"] = max(0, rule.get("maturity", 0) - 1)
-                            logging.warning(
-                                f"[REM] '{pattern}' repair did not improve "
-                                f"(old={scores['overall']:.2f}, new={new_scores['overall']:.2f}). "
-                                f"Penalizing: conf {old_conf:.2f} -> {rule['confidence']:.2f}"
-                            )
+                            self._apply_rem_penalty(rule, scores, pass_threshold, old_conf, pattern)
                     else:
                         # Repair failed or returned same code; apply penalty
-                        penalty = max(0.05, (0.80 - scores["overall"]) * 0.3)
-                        rule["confidence"] = max(0.10, old_conf - penalty)
-                        rule["maturity"] = max(0, rule.get("maturity", 0) - 1)
-                        logging.warning(
-                            f"[REM] '{pattern}' could not be repaired. "
-                            f"conf: {old_conf:.2f} -> {rule['confidence']:.2f}"
-                        )
+                        self._apply_rem_penalty(rule, scores, pass_threshold, old_conf, pattern)
 
             except Exception as e:
                 logging.error(f"[REM] Dream failed for '{pattern}': {e}")
@@ -590,6 +952,42 @@ class NAREProductionAgent:
                     faiss.normalize_L2(v)
                     self.memory.semantic_index.add(v)
 
+    def _post_process_answer(self, raw: str, route: str, log: list) -> str:
+        """If the answer is a fenced ``\u200b```python ...\u200b``` block, execute it
+        in the sandbox and substitute the captured stdout/result.
+
+        This is what stops FAST / HYBRID / SLOW from echoing back the
+        LLM's verbatim code block (the user's last benchmark log showed
+        Tasks 5, 14, 15, 20, 21, 22 all returning fenced code instead of
+        the executed value, regressing accuracy from 91.7% to 83.3%).
+
+        Behaviour is deliberately conservative: if extraction yields no
+        block, if the sandbox rejects the code, or if execution returns
+        nothing useful, the original answer is returned unchanged so we
+        never *lose* a correct plain-text answer to a failed exec attempt.
+        """
+        if not raw:
+            return raw
+        py_block = sandbox.extract_python_block(raw)
+        if not py_block.strip():
+            return raw
+        try:
+            executed = sandbox.safe_execute_freeform(py_block)
+        except sandbox.SecurityError as exc:
+            log.append(f"[{route}] Inline code blocked by sandbox: {exc}")
+            return raw
+        except Exception as exc:  # noqa: BLE001 — sandbox surface is broad
+            log.append(f"[{route}] Inline code raised: {exc}")
+            return raw
+        if not executed or executed.startswith("Error:"):
+            log.append(f"[{route}] Inline code produced no usable output")
+            return raw
+        log.append(
+            f"[{route}] Executed inline code block ({len(py_block)} chars) "
+            f"-> '{executed[:60]}'"
+        )
+        return executed
+
     def _save_episode(self, query: str, query_emb: list, best_cand: Dict, prompt: str):
         """Unified episode saving for ALL paths that generate new content."""
         score = best_cand.get('final_score', 0.5)
@@ -605,6 +1003,7 @@ class NAREProductionAgent:
             "abstract_signature": best_cand.get('abstract_signature', query),
             "score": score,
             "embedding": query_emb,
+            "query_fingerprint": query_fingerprint(query),
         }
         
         # Structure embedding for sleep clustering
@@ -726,12 +1125,19 @@ class NAREProductionAgent:
                         # Immune system: boost τ for successfully reused episodes
                         self.memory.update_episode_tau(idx, +1.0)
                         self.memory.save()
+                        # If the cached episode's stored solution is itself a
+                        # fenced ```python``` block (likely because the
+                        # original SLOW path saved the raw LLM response),
+                        # execute it now so FAST never echoes back code.
+                        fast_answer = self._post_process_answer(
+                            ep.get('solution', '') or '', "FAST", log
+                        )
                         self.metrics.record(
                             query=query, route="FAST",
                             elapsed=time.time() - _solve_start,
                             tokens_used=0,
                             similarity=float(sims[0][0]),
-                            answer=ep['solution'],
+                            answer=fast_answer,
                             score=ep.get('score', 0.8),
                         )
                         return {
@@ -739,7 +1145,7 @@ class NAREProductionAgent:
                             "retrieved_memories": [ep],
                             "generated_candidates": [],
                             "critic_evaluation_table": [],
-                            "final_answer": ep['solution'],
+                            "final_answer": fast_answer,
                             "memory_update_log": log,
                             "alpha": float(sims[0][0]),
                         }
@@ -756,6 +1162,10 @@ class NAREProductionAgent:
             key=lambda x: x.get('confidence', 0.5),
             reverse=True,
         ):
+            if sem.get('quarantined'):
+                # Quarantined rules are explicitly excluded from REFLEX
+                # matching to break the conf-oscillation loop.
+                continue
             conf = sem.get('confidence', 0.5)
             if conf < skill_min_conf:
                 continue
@@ -914,7 +1324,16 @@ class NAREProductionAgent:
         if retrieved_facts:
             log.append(f"RAG: Retrieved {len(retrieved_facts)} relevant facts.")
         
-        max_sim = retrieved_eps[0]['similarity'] if retrieved_eps else 0.0
+        # FAST gate uses RAW similarity (matches Layer-0 HNSW gate). The
+        # ``retrieved_eps`` pool is sorted by trust-weighted (effective)
+        # similarity, so ``retrieved_eps[0]['similarity']`` is the raw sim
+        # of the top *trust-weighted* episode — not necessarily the highest
+        # raw sim. Take the actual max to keep the gate consistent with
+        # Layer-0 and with how ``self.tau_fast`` was calibrated.
+        max_sim = (
+            max((float(r.get('similarity', 0.0)) for r in retrieved_eps), default=0.0)
+            if retrieved_eps else 0.0
+        )
 
         # Dynamic α: formal amortization coefficient
         # α_t = 1 - exp(-κ·|M_t|) — how "familiar" the task domain is.
@@ -934,11 +1353,20 @@ class NAREProductionAgent:
             route = "FAST"
             alpha = max_sim
             log.append(f"Route: FAST PATH (sim: {max_sim:.3f} >= {self.tau_fast})")
-            
-            best_cand = retrieved_eps[0].copy()
+
+            # Pick the actual highest-raw-sim episode (the pool was
+            # trust-reranked, so retrieved_eps[0] may not be the
+            # top-raw-sim one — see comment above on max_sim).
+            best_cand = max(
+                retrieved_eps,
+                key=lambda r: float(r.get('similarity', 0.0)),
+            ).copy()
             best_cand['final_score'] = alpha
+            best_cand['solution'] = self._post_process_answer(
+                best_cand.get('solution', '') or '', "FAST", log
+            )
             final_answer = best_cand['solution']
-            
+
             if self._save_episode(query, query_emb, best_cand, "FAST PATH"):
                 log.append("Saved FAST episode to memory.")
                 
@@ -963,12 +1391,22 @@ class NAREProductionAgent:
             _solve_tokens += _htokens
             candidates = self.critic.evaluate(query, candidates)
             best_cand = candidates[0] if candidates else None
-            
+
             if best_cand:
                 hybrid_score = (alpha * 1.0) + ((1 - alpha) * best_cand['final_score'])
                 best_cand['final_score'] = hybrid_score
+
+                # If the LLM emitted a fenced ```python``` block instead
+                # of a direct answer, execute it in the sandbox and use
+                # the captured stdout. Centralised in _post_process_answer
+                # so FAST/HYBRID/SLOW behave consistently.
+                raw_solution = best_cand.get('solution', '') or ''
+                executed = self._post_process_answer(raw_solution, "HYBRID", log)
+                if executed != raw_solution:
+                    best_cand['hybrid_executed_code'] = True
+                best_cand['solution'] = executed
                 final_answer = best_cand['solution']
-                
+
                 if self._save_episode(query, query_emb, best_cand, prompt_used):
                     log.append("Saved HYBRID episode to memory.")
                     
@@ -1005,24 +1443,35 @@ class NAREProductionAgent:
 
             # Cold Start: simplified CoT to conserve API tokens.
             if self._is_cold_start() and self.config.bootstrap.cold_start_use_simple_cot:
-                log.append("[Bootstrap] Cold start — using simplified CoT instead of ToT")
+                log.append("[Bootstrap] Cold start — using simplified CoT instead of best-of-N")
                 candidates, _stokens = llm.generate_samples(prompt_used, n=1, temperature=0.5, mode="SLOW")
             else:
                 # Neural Memory surprise biases candidate budget:
-                # higher novelty → wider search (more branches in ToT).
+                # higher novelty → wider search (more branches in best-of-N).
                 base_breadth = 3
                 if novelty > 0.5:
                     breadth = min(base_breadth + 2, 6)
-                    log.append(f"High novelty ({novelty:.3f}) → expanded ToT breadth={breadth}")
+                    log.append(f"High novelty ({novelty:.3f}) → expanded best-of-N breadth={breadth}")
                 else:
                     breadth = base_breadth
-                candidates, _stokens = llm.tree_of_thoughts(prompt_used, breadth=breadth, depth=1)
+                # SLOW path: best-of-N with LLM pre-scoring (depth=1).
+                # Historical name `tree_of_thoughts` aliased to be honest about
+                # what the function actually does — see nare.llm.
+                candidates, _stokens = llm.best_of_n_with_prescore(prompt_used, breadth=breadth)
             _solve_tokens += _stokens
             candidates = self.critic.evaluate(query, candidates)
             
             best_cand = candidates[0] if candidates else None
             
             if best_cand:
+                # Same centralised code-block executor as FAST/HYBRID:
+                # if the SLOW best candidate is a fenced ```python``` block
+                # (Tasks 14/15/22 in the user's last benchmark log), run
+                # it and substitute the executed value as the answer.
+                raw_solution = best_cand.get('solution', '') or ''
+                best_cand['solution'] = self._post_process_answer(
+                    raw_solution, "SLOW", log
+                )
                 final_answer = best_cand['solution']
                 if best_cand.get('final_score', 0.5) >= max(0.70, mem_avg) and self._save_episode(query, query_emb, best_cand, prompt_used):
                     log.append(f"Saved SLOW episode to memory (score {best_cand.get('final_score', 0.5):.2f} >= mem_avg {mem_avg:.2f}).")
@@ -1101,6 +1550,52 @@ class NAREProductionAgent:
 
         return result
 
+    def _apply_rem_penalty(self, rule: dict, scores: dict, pass_threshold: float,
+                           old_conf: float, pattern: str) -> None:
+        """Apply REM-cycle penalty + track oscillation for quarantine.
+
+        Replaces the in-place penalty block that used to be duplicated in the
+        REM dream-test handler. Crucially this also:
+        - increments ``rem_penalty_count`` so the next sleep-refinement can
+          apply hysteresis instead of resetting confidence to a fresh score;
+        - quarantines rules that have been REM-penalised repeatedly with no
+          peak above ``skill.skill_quarantine_peak_threshold``, so we stop
+          burning sleep budget on structurally unfixable skills.
+        """
+        penalty = max(0.05, (pass_threshold - scores["overall"]) * 0.3)
+        rule["confidence"] = max(0.10, old_conf - penalty)
+        rule["maturity"] = max(0, rule.get("maturity", 0) - 1)
+        rule["rem_penalty_count"] = rule.get("rem_penalty_count", 0) + 1
+
+        # Track best-ever confidence so quarantine logic can distinguish
+        # "never worked" from "worked once and then regressed".
+        rule["peak_confidence"] = max(
+            rule.get("peak_confidence", old_conf),
+            old_conf,
+        )
+
+        cfg = self.config.skill
+        if (
+            not rule.get("quarantined", False)
+            and rule["rem_penalty_count"] >= cfg.skill_quarantine_after_penalties
+            and rule["peak_confidence"] < cfg.skill_quarantine_peak_threshold
+        ):
+            rule["quarantined"] = True
+            logging.warning(
+                f"[REM Quarantine] '{pattern}' quarantined after "
+                f"{rule['rem_penalty_count']} REM penalties "
+                f"(peak_confidence={rule['peak_confidence']:.2f} < "
+                f"{cfg.skill_quarantine_peak_threshold:.2f}). "
+                f"Excluded from REFLEX matching and refinement."
+            )
+
+        logging.warning(
+            f"[REM] '{pattern}' repair did not improve "
+            f"(score={scores['overall']:.2f}). "
+            f"Penalizing: conf {old_conf:.2f} -> {rule['confidence']:.2f} "
+            f"(rem_penalty_count={rule['rem_penalty_count']})"
+        )
+
     def _record_skill_result(self, rule: dict, success: bool):
         """Track skill execution history and apply Penalty Backpropagation .
 
@@ -1134,31 +1629,45 @@ class NAREProductionAgent:
         rule['global_score'] = round((conf * 0.7) + maturity_bonus, 3)
 
         # --- Penalty Backpropagation  ---
-        # If skill fails, propagate penalty to source episodes.
+        # If skill fails, propagate penalty to source episodes. We
+        # resolve indices lazily through stable content keys: positional
+        # ids stored at crystallisation time become stale the moment
+        # _sleep_phase deletes the cluster episodes (Devin Review #1).
         delta_v = 1.0 if success else -1.0
-        source_episode_ids = rule.get('source_episode_ids', [])
-        if source_episode_ids:
+        source_keys = rule.get('source_episode_keys') or []
+        if source_keys:
+            ep_indices = self.memory.find_episode_indices_by_keys(source_keys)
+        else:
+            # Backwards-compat for rules created before content keys
+            # existed: trust the legacy positional ids only when the
+            # episodes list hasn't shrunk below them.
+            legacy_ids = rule.get('source_episode_ids', [])
+            ep_indices = [
+                int(i) for i in legacy_ids
+                if 0 <= int(i) < len(self.memory.episodes)
+            ]
+
+        if ep_indices:
             gamma = self.config.immune.penalty_backprop_gamma
-            for ep_id in source_episode_ids:
-                if 0 <= ep_id < len(self.memory.episodes):
-                    self.memory.update_episode_tau(ep_id, delta_v * gamma)
+            for ep_id in ep_indices:
+                self.memory.update_episode_tau(ep_id, delta_v * gamma)
             if not success:
                 logging.info(
                     f"[Penalty Backprop] Skill '{rule.get('pattern')}' penalty "
-                    f"distributed to {len(source_episode_ids)} source episodes"
+                    f"distributed to {len(ep_indices)} source episodes "
+                    f"(of {len(source_keys) or len(rule.get('source_episode_ids', []))} originally)"
                 )
 
         # If skill keeps failing and source episodes are toxic, add suppression
         if not success and rule.get('confidence', 0.5) < 0.2:
-            for ep_id in source_episode_ids:
-                if 0 <= ep_id < len(self.memory.episodes):
-                    ep = self.memory.episodes[ep_id]
-                    if ep.get('tau', 1.0) < self.config.immune.theta_immune:
-                        self.memory.add_suppression_rule(
-                            ep.get('query', ''),
-                            ep.get('solution', ''),
-                            np.array(ep.get('embedding', [0.0] * self.memory.embedding_dim), dtype=np.float32),
-                        )
+            for ep_id in ep_indices:
+                ep = self.memory.episodes[ep_id]
+                if ep.get('tau', 1.0) < self.config.immune.theta_immune:
+                    self.memory.add_suppression_rule(
+                        ep.get('query', ''),
+                        ep.get('solution', ''),
+                        np.array(ep.get('embedding', [0.0] * self.memory.embedding_dim), dtype=np.float32),
+                    )
 
         # Find and update rule in memory
         for i, r in enumerate(self.memory.semantic_rules):

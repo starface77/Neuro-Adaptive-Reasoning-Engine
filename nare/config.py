@@ -117,6 +117,16 @@ class SleepConfig:
     # Below this retention, the episode is dropped at the next sleep cycle.
     fading_retention_threshold: float = 0.05
 
+    # Secondary cluster gate via deterministic query structural
+    # fingerprint (numbers, operations, intent tags). When enabled, a
+    # candidate dense embedding cluster only fires the sleep trigger
+    # if the average pairwise multiset Jaccard over its members'
+    # query fingerprints also exceeds ``query_fingerprint_threshold``.
+    # Off by default to preserve previous behaviour; opt in via
+    # NareConfig override.
+    use_query_fingerprint_gate: bool = False
+    query_fingerprint_threshold: float = 0.50
+
 
 @dataclass(frozen=True)
 class CriticConfig:
@@ -144,9 +154,35 @@ class SkillLifecycleConfig:
     # Repair-loop: how many times to ask the LLM to fix a failing skill.
     repair_max_attempts: int = 2
 
+    # Hysteresis: maximum bump that GRADED REFINEMENT may apply to a rule
+    # which has been REM-penalised at least once. Without this clamp, a
+    # rule that fails REM (conf 0.45 -> 0.23) gets fully reset back to its
+    # fresh-validation score on the next sleep cycle, oscillating forever
+    # — see the benchmark log "Email Extraction" 0.45 ↔ 0.23 cycle.
+    skill_refinement_max_bump_after_penalty: float = 0.10
+
+    # After this many REM-penalty events with peak confidence still below
+    # ``skill_quarantine_peak_threshold``, the rule is quarantined: it is
+    # excluded from REFLEX matching and refinement. This stops the system
+    # from spending sleep budget on structurally unfixable skills.
+    skill_quarantine_after_penalties: int = 3
+    skill_quarantine_peak_threshold: float = 0.50
+
     # Population size during initial extract_heuristic_rule attempts.
     extract_population_temps: Tuple[float, ...] = (0.2, 0.8)
     extract_max_outer_attempts: int = 3
+
+    # REM: cached-replay parameters. REM first runs the skill against
+    # every cached episode whose ``trigger()`` fires; if at least
+    # ``rem_min_replay_episodes`` episodes triggered, the cached-replay
+    # score is used as the primary REM signal (instead of LLM-generated
+    # stress tests, whose POSITIVE labels are self-referential).
+    rem_min_replay_episodes: int = 2
+    # Below this replay score (fraction of triggered cached episodes
+    # whose output matches the verified solution under the strict
+    # oracle), the skill is considered to have regressed and goes
+    # through the repair loop.
+    rem_replay_pass_threshold: float = 0.80
 
 
 @dataclass(frozen=True)
@@ -213,6 +249,14 @@ class SkillValidationConfig:
     # regardless of stress signal.
     minimum_trigger_accuracy: float = 0.50
     minimum_execute_accuracy: float = 0.40
+
+    # When neither an episode oracle_spec nor a caller-provided oracle
+    # is supplied, the validator needs *some* fallback. Default since
+    # this PR: ``cached_episode_oracle`` — strict normalized-exact /
+    # strict numeric-set match against the cached solution. The old
+    # ``heuristic_overlap_oracle`` (20% numeric overlap) is leaky and
+    # is now opt-in only.
+    use_heuristic_overlap_fallback: bool = False
 
 
 @dataclass(frozen=True)

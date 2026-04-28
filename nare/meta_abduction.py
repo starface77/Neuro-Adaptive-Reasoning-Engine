@@ -13,6 +13,8 @@ It should discover the meta-rule: "Graph optimization via shortest-path algorith
 that unifies all three into a single, more abstract pattern.
 """
 
+import ast
+import collections
 import json
 import os
 import re
@@ -21,6 +23,116 @@ import numpy as np
 from typing import Dict, Any, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# AST fingerprinting (Tier A3): structural signatures over compiled skills.
+# ---------------------------------------------------------------------------
+#
+# Replaces the legacy 9-boolean ``has_regex / has_loop / has_math`` Jaccard
+# with a real structural signature: a *multiset* of AST node types appearing
+# in the body of the skill's primary function (``solve`` if present, else
+# ``execute``). Two skills are clustered together when the multiset Jaccard
+# of their fingerprints exceeds a threshold — this is the cheap, well-known
+# proxy for structural isomorphism (full anti-unification / e-graph
+# matching is out of scope for this prototype).
+#
+# Why this matters for the paper alignment: the legacy keyword-Jaccard
+# happily merges two skills that share ``for``/``if`` even when they
+# compute completely unrelated things. The AST signature counts e.g.
+# ``BinOp.Add`` separately from ``BinOp.Sub``, so "x = a + b in a loop"
+# does NOT collapse with "x = max(a, b) in a loop".
+
+
+# Nodes whose presence carries no structural information (we ignore them
+# so two skills don't get spuriously similar through scaffolding).
+_AST_IGNORE_NODES = {
+    "Module",
+    "Load",
+    "Store",
+    "Del",
+    "Param",
+    "FunctionDef",
+    "arguments",
+    "arg",
+    "Expression",
+    "Index",
+    "alias",
+    "ImportFrom",
+    "Import",
+}
+
+# For BinOp / Compare / UnaryOp / BoolOp we want the operator type to
+# count too, so "a + b" fingerprints differently from "a - b".
+_OP_BEARING_NODES = {"BinOp", "UnaryOp", "Compare", "BoolOp", "AugAssign"}
+
+
+def _primary_function_body(tree: ast.AST) -> Optional[List[ast.AST]]:
+    """Return the body of ``solve`` if defined, else ``execute``, else None."""
+    solve_body = None
+    execute_body = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef):
+            if node.name == "solve" and solve_body is None:
+                solve_body = node.body
+            elif node.name == "execute" and execute_body is None:
+                execute_body = node.body
+    return solve_body or execute_body
+
+
+def ast_fingerprint(python_code: str) -> Optional[Dict[str, int]]:
+    """Compute a multiset of structural tokens for a skill's primary fn.
+
+    Returns ``None`` if the code does not parse or has no
+    ``solve``/``execute``. Returns a dict mapping token -> count
+    otherwise. Tokens are AST node names ("If", "For", "Call", "Return"
+    etc.) plus operator-tagged variants for op-bearing nodes
+    ("BinOp.Add", "Compare.Lt", "BoolOp.Or", ...).
+    """
+    if not python_code or not isinstance(python_code, str):
+        return None
+    try:
+        tree = ast.parse(python_code)
+    except SyntaxError:
+        return None
+
+    body = _primary_function_body(tree)
+    if body is None:
+        return None
+
+    counts: Dict[str, int] = collections.Counter()
+    for stmt in body:
+        for node in ast.walk(stmt):
+            name = type(node).__name__
+            if name in _AST_IGNORE_NODES:
+                continue
+            counts[name] += 1
+            if name in _OP_BEARING_NODES:
+                op = getattr(node, "op", None)
+                if op is not None:
+                    counts[f"{name}.{type(op).__name__}"] += 1
+                ops = getattr(node, "ops", None)
+                if ops:
+                    for o in ops:
+                        counts[f"{name}.{type(o).__name__}"] += 1
+
+    return dict(counts)
+
+
+def ast_jaccard(a: Optional[Dict[str, int]], b: Optional[Dict[str, int]]) -> float:
+    """Multiset Jaccard between two AST fingerprints.
+
+    Defined as ``sum(min(a[k], b[k])) / sum(max(a[k], b[k]))`` over the
+    union of keys. Returns 0.0 if either argument is None or empty.
+    """
+    if not a or not b:
+        return 0.0
+    keys = set(a) | set(b)
+    inter = sum(min(a.get(k, 0), b.get(k, 0)) for k in keys)
+    union = sum(max(a.get(k, 0), b.get(k, 0)) for k in keys)
+    if union == 0:
+        return 0.0
+    return inter / union
 
 
 class MetaAbductionEngine:
@@ -89,13 +201,31 @@ class MetaAbductionEngine:
         return applicable
 
     def _extract_structural_features(self, rule: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Extract structural features from a skill's code for comparison."""
+        """Extract structural features from a skill's code for comparison.
+
+        Tier A3: the primary signal is now the AST fingerprint of the
+        skill's ``solve``/``execute`` body — a multiset of AST node
+        types (with operator tags) — rather than a handful of
+        ``"for"`` / ``"if"`` substring booleans. The legacy keyword
+        booleans are kept as auxiliary metadata so the meta-rule
+        generation step can still produce human-readable descriptions
+        ("involves loops + math").
+        """
         code = rule.get('python_code', '')
         if not code:
             return None
 
+        fingerprint = ast_fingerprint(code)
+        if fingerprint is None:
+            # Skill that doesn't parse or has no solve/execute is not
+            # eligible for structural meta-abduction.
+            return None
+
         features = {
             'pattern': rule.get('pattern', ''),
+            'ast_fingerprint': fingerprint,
+            # Auxiliary keyword flags (kept for human-readable meta-rule
+            # generation only; NOT used in clustering).
             'has_regex': 're.' in code or 'regex' in code.lower(),
             'has_math': 'math.' in code or any(op in code for op in ['+', '-', '*', '/', '**']),
             'has_loop': 'for ' in code or 'while ' in code,
@@ -140,33 +270,44 @@ class MetaAbductionEngine:
             return max(scores, key=scores.get)
         return 'general'
 
-    def _cluster_by_structure(self, 
-                               skill_features: List[Tuple[Dict, Dict]]) -> List[List[Tuple[Dict, Dict]]]:
-        """Cluster skills by structural feature similarity."""
+    # Threshold for AST-fingerprint Jaccard above which two skills are
+    # considered structurally isomorphic enough to share a meta-rule.
+    # 0.55 was chosen so that two arithmetic skills with the same
+    # operator mix cluster, but a string-processing skill that happens
+    # to share Call/Return nodes does not.
+    AST_CLUSTER_THRESHOLD: float = 0.55
+
+    def _cluster_by_structure(
+        self,
+        skill_features: List[Tuple[Dict, Dict]],
+    ) -> List[List[Tuple[Dict, Dict]]]:
+        """Cluster skills by AST-fingerprint Jaccard similarity.
+
+        Tier A3: replaces the legacy 9-boolean Jaccard. Two skills end
+        up in the same cluster when the multiset Jaccard of their AST
+        fingerprints (in the body of ``solve``/``execute``) is at
+        least :pyattr:`AST_CLUSTER_THRESHOLD`. Domain agreement adds
+        a small bonus but is no longer the dominant signal — domain is
+        a string label that only exists at meta-rule annotation time.
+        """
         if not skill_features:
             return []
 
-        # Simple agglomerative clustering based on feature overlap
-        clusters = [[sf] for sf in skill_features]
-        
-        def feature_similarity(f1: Dict, f2: Dict) -> float:
-            """Compute Jaccard-like similarity between feature sets."""
-            bool_keys = ['has_regex', 'has_math', 'has_loop', 'has_recursion',
-                        'has_string_ops', 'has_list_ops', 'has_dict_ops',
-                        'has_conditionals', 'uses_numbers']
-            matches = sum(1 for k in bool_keys if f1.get(k) == f2.get(k))
-            total = len(bool_keys)
-            
-            # Bonus for same domain
-            if f1.get('abstract_class') == f2.get('abstract_class'):
-                matches += 2
-                total += 2
-            else:
-                total += 2
-            
-            return matches / total if total > 0 else 0.0
+        clusters: List[List[Tuple[Dict, Dict]]] = [[sf] for sf in skill_features]
 
-        # Merge clusters with similarity > 0.7
+        def structural_similarity(f1: Dict, f2: Dict) -> float:
+            fp1 = f1.get('ast_fingerprint')
+            fp2 = f2.get('ast_fingerprint')
+            sim = ast_jaccard(fp1, fp2)
+            # Same-domain bonus capped at +0.05 so it can break ties
+            # but cannot rescue structurally dissimilar skills.
+            if (
+                f1.get('abstract_class')
+                and f1.get('abstract_class') == f2.get('abstract_class')
+            ):
+                sim = min(1.0, sim + 0.05)
+            return sim
+
         changed = True
         while changed:
             changed = False
@@ -174,11 +315,10 @@ class MetaAbductionEngine:
                 for j in range(i + 1, len(clusters)):
                     if not clusters[i] or not clusters[j]:
                         continue
-                    # Compare representative elements
-                    sim = feature_similarity(
+                    sim = structural_similarity(
                         clusters[i][0][1], clusters[j][0][1]
                     )
-                    if sim >= 0.7:
+                    if sim >= self.AST_CLUSTER_THRESHOLD:
                         clusters[i].extend(clusters[j])
                         clusters[j] = []
                         changed = True

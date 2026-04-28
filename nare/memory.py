@@ -1,3 +1,4 @@
+import hashlib
 import time
 import faiss
 import numpy as np
@@ -8,6 +9,22 @@ import threading
 from typing import List, Dict, Tuple, Any, Optional
 
 from .config import DEFAULT_CONFIG, NareConfig
+
+
+def episode_content_key(query: str, solution: str = "") -> str:
+    """Stable content-derived identifier for an episode.
+
+    We deliberately avoid using the positional index in
+    ``MemorySystem.episodes`` as an identifier across operations that
+    may shrink/reorder the list (sleep crystallisation deletes source
+    episodes, immune pruning drops untrusted ones, etc). A SHA1 over
+    the (normalised) query + first 256 chars of the solution survives
+    those mutations and uniquely keys the episode by content.
+    """
+    q = (query or "").strip().lower()
+    s = (solution or "").strip()[:256]
+    h = hashlib.sha1(f"{q}\n--\n{s}".encode("utf-8")).hexdigest()
+    return h[:16]
 
 
 def _make_hnsw_index(dim: int, max_elements: int = 1000) -> faiss.Index:
@@ -99,10 +116,45 @@ class MemorySystem:
             episode_data['strength'] = 1.0
             # Immune system : initial trust coefficient
             episode_data.setdefault('tau', self.config.immune.initial_tau)
+            # Stable content-derived key — survives episode deletion /
+            # reordering, so semantic rules can reference source episodes
+            # without risk of stale positional indices.
+            episode_data.setdefault(
+                'episode_key',
+                episode_content_key(
+                    episode_data.get('query', ''),
+                    episode_data.get('solution', ''),
+                ),
+            )
             self.episodic_index.add(vector)
             self.episodes.append(episode_data)
             self.save()
             return True
+
+    # ------------------------------------------------------------------
+    # Stable-key episode lookup
+    # ------------------------------------------------------------------
+
+    def find_episode_indices_by_keys(self, keys: List[str]) -> List[int]:
+        """Return current positional indices of episodes whose
+        ``episode_key`` is in ``keys``.
+
+        Backwards compatibility: episodes saved before content keys
+        existed will be matched by recomputing the key on the fly so
+        the lookup degrades gracefully on mixed stores.
+        """
+        if not keys:
+            return []
+        wanted = set(keys)
+        out: List[int] = []
+        with self._lock:
+            for idx, ep in enumerate(self.episodes):
+                key = ep.get('episode_key') or episode_content_key(
+                    ep.get('query', ''), ep.get('solution', ''),
+                )
+                if key in wanted:
+                    out.append(idx)
+        return out
 
     # ------------------------------------------------------------------
     # Immune system helpers 
@@ -263,18 +315,29 @@ class MemorySystem:
                     new_conf = rule_data.get('confidence', 0.5)
                     old_conf = existing_rule.get('confidence', 0.5)
 
-                    # Merge source_episode_ids for penalty backpropagation
-                    old_sources = set(existing_rule.get('source_episode_ids', []))
-                    new_sources = set(rule_data.get('source_episode_ids', []))
-                    merged_sources = list(old_sources | new_sources)
+                    # Merge source episode references for penalty
+                    # backpropagation. Stable content keys (sha1) are
+                    # the canonical identifier; the legacy positional
+                    # ids field is kept in lockstep purely for
+                    # backwards-compat with serialised rules.
+                    merged_keys = list(
+                        set(existing_rule.get('source_episode_keys', []))
+                        | set(rule_data.get('source_episode_keys', []))
+                    )
+                    merged_sources = list(
+                        set(existing_rule.get('source_episode_ids', []))
+                        | set(rule_data.get('source_episode_ids', []))
+                    )
 
                     if new_conf > old_conf:
                         rule_data['sleep_cycles'] = existing_rule.get('sleep_cycles', 0)
                         rule_data['score_history'] = existing_rule.get('score_history', [])
+                        rule_data['source_episode_keys'] = merged_keys
                         rule_data['source_episode_ids'] = merged_sources
                         self.update_semantic_rule(idx, rule_data, new_embedding=embedding)
                     else:
                         existing_rule['sleep_cycles'] = existing_rule.get('sleep_cycles', 0) + 1
+                        existing_rule['source_episode_keys'] = merged_keys
                         existing_rule['source_episode_ids'] = merged_sources
                         self.update_semantic_rule(idx, existing_rule)
                     return True

@@ -174,6 +174,68 @@ def safe_load_module(python_code: str) -> Dict[str, Any]:
     return safe_globals
 
 
+_CODE_BLOCK_RE = re.compile(r"```(?:python)?\n(.*?)\n```", re.DOTALL)
+
+
+def extract_python_block(text: str) -> str:
+    """Pull the first ```python ... ``` block out of an LLM response.
+
+    Returns "" if no fenced block is present.  Used by HYBRID to detect
+    when the LLM has emitted code instead of a direct answer.
+    """
+    if not text:
+        return ""
+    m = _CODE_BLOCK_RE.search(text)
+    return m.group(1) if m else ""
+
+
+def safe_execute_freeform(python_code: str, max_output_chars: int = 4096) -> str:
+    """Run free-form Python code in the sandbox, capturing stdout.
+
+    Unlike :func:`safe_execute`, this does *not* require ``trigger`` /
+    ``execute`` functions. It is meant for HYBRID-path code blocks emitted
+    by the LLM — short scripts that compute a value and ``print()`` it.
+
+    Returns:
+        * If the script printed anything, the captured stdout (trimmed).
+        * Else, the value of a ``result`` variable if the script defined one.
+        * Else, "" (caller should fall back to the original LLM text).
+
+    Returns "Error: ..." on controlled failures (validation or runtime).
+    Raises SecurityError on policy violations (caller must handle).
+    """
+    import io
+    import contextlib
+
+    validate_code(python_code)
+    safe_globals = _build_safe_globals()
+
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf):
+            exec(python_code, safe_globals)  # noqa: S102 - intentional, after validation
+    except Exception as exc:  # noqa: BLE001 - intentional broad catch in sandbox
+        return f"Error: {type(exc).__name__}: {exc}"
+
+    out = buf.getvalue().strip()
+    if out:
+        # Take the last non-empty line as the answer, trimmed.
+        lines = [ln for ln in out.splitlines() if ln.strip()]
+        if lines:
+            answer = lines[-1].strip()
+            return answer[:max_output_chars]
+        return out[:max_output_chars]
+
+    # Fallback: explicit `result` variable.
+    if "result" in safe_globals:
+        try:
+            return str(safe_globals["result"])[:max_output_chars]
+        except Exception:  # noqa: BLE001
+            pass
+
+    return ""
+
+
 def safe_execute(python_code: str, query: str) -> str:
     """Validate, load, and run a skill against a single query string.
 

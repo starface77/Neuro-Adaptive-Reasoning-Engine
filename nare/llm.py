@@ -139,15 +139,26 @@ REQUIRED FORMAT:
     return samples, total_tokens
 
 def tree_of_thoughts(prompt: str, breadth: int = 3, depth: int = 2) -> tuple:
-    """Tree-of-Thoughts: BFS with evaluation and backtracking.
-    
-    Generates a tree of reasoning paths by:
-    1. Generating `breadth` initial thought branches
-    2. Evaluating each branch for promise (0-10 score)
-    3. Expanding only the top branches to next depth level
-    4. Backtracking (pruning) branches that score below threshold
-    
-    Returns (best_candidates, total_tokens).
+    """Best-of-N reasoning with pre-scoring and (optional) shallow re-expansion.
+
+    Honest naming: this is **not** a real Tree-of-Thoughts search. There is
+    no DFS/BFS with backtracking, no per-step branching, and pruned
+    branches stay pruned. The default ``depth=1`` mode is exactly
+    ``best-of-N`` with a learned (LLM-judged) ranker. ``depth>=2`` only
+    re-expands the *same* selected approaches into additional full
+    solutions; it does not develop new branches per step. Prefer the
+    explicit alias :func:`best_of_n_with_prescore` for the common case;
+    this name is preserved for backward compatibility.
+
+    Algorithm:
+
+    1. Generate ``breadth`` initial thought branches (one LLM call).
+    2. Score each branch 0-10 (one LLM call).
+    3. Keep top ``ceil(breadth/2)`` branches; prune the rest.
+    4. For each kept branch, expand into a full solution (``depth`` LLM
+       calls per branch).
+
+    Returns ``(candidates, total_tokens)``.
     """
     _ensure_api_key()
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemma-3-27b-it:generateContent?key={API_KEY}"
@@ -299,6 +310,21 @@ REQUIRED FORMAT:
     
     logging.info(f"[ToT] Generated {len(candidates)} candidates, used {total_tokens} tokens")
     return candidates, total_tokens
+
+
+def best_of_n_with_prescore(prompt: str, breadth: int = 3) -> tuple:
+    """Best-of-N candidate generation with LLM pre-scoring.
+
+    Honest name for the SLOW-path strategy actually used by the agent
+    (``tree_of_thoughts(..., depth=1)``). See :func:`tree_of_thoughts`
+    for the full algorithm description.
+
+    Returns ``(candidates, total_tokens)`` where each candidate carries
+    ``solution``, ``reasoning``, ``abstract_signature`` and a
+    ``tot_score`` (kept under the same key for backward compatibility
+    with the critic and metrics layers).
+    """
+    return tree_of_thoughts(prompt, breadth=breadth, depth=1)
 
 
 def llm_pairwise_judge(query: str, sol_a: str, sol_b: str) -> int:
@@ -575,7 +601,7 @@ Here are the solved examples to learn from:
     return None
 
 
-from typing import Tuple, TYPE_CHECKING
+from typing import Optional, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .oracle import Oracle  # noqa: F401
@@ -583,18 +609,36 @@ if TYPE_CHECKING:
 
 
 def repair_skill(python_code: str, pattern: str, failing_tests: list,
-                 error_msg: str, scores: dict, max_attempts: int = 2) -> str:
+                 error_msg: str, scores: dict, max_attempts: int = 2,
+                 validator=None, baseline_score: Optional[float] = None) -> str:
     """REM Sleep: Iteratively repair a skill that failed dream stress-tests.
-    
-    Uses LLM to analyze the failure diagnostics and generate a corrected
-    version of the skill code.  Returns the repaired code, or the original
-    code if repair fails.
+
+    Uses the LLM to analyze failure diagnostics and generate a corrected
+    version of the skill code.
+
+    Behavior:
+        * Without ``validator``: returns the **first** successfully-generated
+          repair (legacy behaviour). The caller is responsible for re-validating.
+        * With ``validator(code) -> overall_score``: actually iterates
+          ``max_attempts`` times with progressively higher temperature for
+          diversity, validates each candidate, and returns the **best** one
+          (or the original code if no candidate strictly beats
+          ``baseline_score``).
+
+    The validator-aware path closes the well-known REM-repair stuck-loop bug
+    where successive repairs scored identically because the function returned
+    on first generation regardless of validation outcome.
     """
     _ensure_api_key()
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemma-3-27b-it:generateContent?key={API_KEY}"
-    
+
     current_code = python_code
-    
+    best_code = python_code
+    best_score = baseline_score if baseline_score is not None else scores.get("overall", 0.0)
+
+    # Temperature progression: cool → warmer for more diverse later attempts.
+    temperatures = [0.3, 0.6, 0.9]
+
     for attempt in range(1, max_attempts + 1):
         # Build the failing test cases summary
         failing_summary = ""
@@ -602,7 +646,7 @@ def repair_skill(python_code: str, pattern: str, failing_tests: list,
             failing_summary += f"  Q: {t.get('query', '')[:150]}\n"
             failing_summary += f"  Expected: {t.get('solution', '')[:100]}\n"
             failing_summary += f"  Type: {t.get('type', 'POSITIVE')}\n\n"
-        
+
         prompt = f"""You are a code repair specialist. A compiled skill named '{pattern}' failed stress-testing during REM sleep.
 
 CURRENT CODE:
@@ -628,23 +672,60 @@ REPAIR INSTRUCTIONS:
 
 Output ONLY the corrected Python code inside ```python ... ``` tags. Nothing else."""
 
+        temp = temperatures[min(attempt - 1, len(temperatures) - 1)]
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"temperature": 0.3}
+            "generationConfig": {"temperature": temp}
         }
-        
+
         try:
             res = _post(url, payload)
             content = res.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '')
-            
+
             code_match = re.search(r'```python\n(.*?)\n```', content, re.DOTALL)
             if code_match:
                 repaired = code_match.group(1)
-                logging.info(f"[REM Repair] Attempt {attempt}: generated repaired code ({len(repaired)} chars)")
-                return repaired
+                logging.info(
+                    f"[REM Repair] Attempt {attempt}/{max_attempts} "
+                    f"(temp={temp}): generated repaired code ({len(repaired)} chars)"
+                )
+
+                # Legacy path: no validator → return first non-empty repair.
+                if validator is None:
+                    return repaired
+
+                # Validator path: score this candidate and keep the best.
+                try:
+                    cand_score = float(validator(repaired))
+                except Exception as e:
+                    logging.warning(f"[REM Repair] Validator raised on attempt {attempt}: {e}")
+                    cand_score = -1.0
+
+                logging.info(
+                    f"[REM Repair] Attempt {attempt} validation: "
+                    f"score={cand_score:.3f} (baseline={best_score:.3f})"
+                )
+
+                if cand_score > best_score:
+                    best_code = repaired
+                    best_score = cand_score
+                    # Use as base for next attempt — incremental improvement.
+                    current_code = repaired
+
+                # Early-stop: a repair that already passes a high bar is
+                # unlikely to be beaten by spending more LLM budget.
+                if cand_score >= 0.80:
+                    logging.info(
+                        f"[REM Repair] Early-stop: attempt {attempt} reached "
+                        f"score {cand_score:.3f} >= 0.80"
+                    )
+                    return best_code
         except Exception as e:
             logging.warning(f"[REM Repair] Attempt {attempt} failed: {e}")
-    
+
+    # Validator path: only return repaired code if it strictly beat baseline.
+    if validator is not None and best_code != python_code:
+        return best_code
     return python_code
 
 
@@ -687,6 +768,7 @@ def _validate_skill(
     from nare.sandbox import SecurityError, safe_load_module
     from nare.oracle import (
         build_oracle_from_spec,
+        cached_episode_oracle,
         heuristic_overlap_oracle,
     )
     from nare.config import DEFAULT_CONFIG as _DEFAULT_CONFIG
@@ -741,9 +823,20 @@ def _validate_skill(
                 )
         if oracle is not None:
             return oracle, 'caller-provided oracle'
+        # Default fallback is now the strict cached-episode oracle: a
+        # generated skill must reproduce the verified solution stored on
+        # the episode (normalized exact-match OR strict numeric set).
+        # The legacy heuristic overlap (20% number coverage) is still
+        # available via ``heuristic_overlap`` oracle_spec for backward
+        # compatibility but is no longer the default.
+        if vcfg.use_heuristic_overlap_fallback:
+            return (
+                heuristic_overlap_oracle(ep.get('solution', '')),
+                'heuristic overlap (legacy fallback)',
+            )
         return (
-            heuristic_overlap_oracle(ep.get('solution', '')),
-            'heuristic overlap (fallback)',
+            cached_episode_oracle(ep.get('solution', '')),
+            'cached episode (strict default)',
         )
 
     # --- TRIGGER ACCURACY (on original episodes only) ---
