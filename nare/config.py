@@ -13,7 +13,7 @@ from typing import Tuple
 
 @dataclass(frozen=True)
 class BootstrapConfig:
-    """Cold-start / bootstrap strategy (theory §4.5).
+    """Cold-start / bootstrap strategy.
 
     When memory is empty (α ≈ 0), every query goes through expensive
     SLOW path.  Bootstrap pre-warms the cache with seed examples and
@@ -33,7 +33,7 @@ class BootstrapConfig:
 
 @dataclass(frozen=True)
 class ImmuneSystemConfig:
-    """Immune system for memory quality (theory §7.2).
+    """Immune system for memory quality.
 
     Each episode carries a trust coefficient τ_i ∈ [0,1].  After each
     use the coefficient is updated: τ_i ← τ_i + γ·ΔV.  Episodes whose
@@ -217,7 +217,7 @@ class SkillValidationConfig:
 
 @dataclass(frozen=True)
 class AmortizationConfig:
-    """Formal amortization metrics (theory §10).
+    """Formal amortization metrics.
 
     α_t = 1 - exp(-κ·|M_t|)   — coverage ratio
     C_t = (1-α_t)·C_LLM + α_t·C_mem  — blended cost

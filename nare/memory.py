@@ -13,7 +13,7 @@ from .config import DEFAULT_CONFIG, NareConfig
 def _make_hnsw_index(dim: int, max_elements: int = 1000) -> faiss.Index:
     """Create an HNSW index for O(log N) approximate nearest neighbour.
 
-    Theory §5: FAST cache should use HNSW/FAISS for O(log N) retrieval,
+    FAST cache uses HNSW/FAISS for O(log N) retrieval,
     not brute-force O(N).  IndexHNSWFlat wraps a flat storage with an
     HNSW graph that provides logarithmic search complexity.
     """
@@ -35,11 +35,11 @@ class MemorySystem:
 
     Changes vs previous revision:
       * Episodic index uses HNSW (O(log N)) instead of IndexFlatIP (O(N))
-        per theory §5.  Semantic/factual remain brute-force (small N).
+        Semantic/factual remain brute-force (small N).
       * Each episode now carries a trust coefficient ``tau`` ∈ [0,1]
-        (immune system, §7.2).
+        (immune system).
       * Suppression dictionary blocks known-bad (query, answer) pairs
-        (§7.2 suppression rules).
+        (suppression rules).
     """
 
     def __init__(
@@ -53,7 +53,7 @@ class MemorySystem:
         self.config = config
         self._lock = threading.RLock()
 
-        # Episodic Memory — HNSW index for O(log N) retrieval (§5)
+        # Episodic Memory — HNSW index for O(log N) retrieval 
         self.episodic_index = _make_hnsw_index(embedding_dim)
         self.episodes: List[Dict[str, Any]] = []
 
@@ -65,7 +65,7 @@ class MemorySystem:
         self.factual_index = faiss.IndexFlatIP(embedding_dim)
         self.facts: List[Dict[str, Any]] = []
 
-        # Suppression dictionary (§7.2): list of {query_hash, answer_hash,
+        # Suppression dictionary : list of {query_hash, answer_hash,
         # embedding} entries.  When a retrieval hit matches a suppressed
         # pair, it is filtered out.
         self.suppression_rules: List[Dict[str, Any]] = []
@@ -77,7 +77,7 @@ class MemorySystem:
         """Episode Schema: {query, context, solution, reasoning_trace, score, timestamp}.
 
         Deduplicates if similarity > config.sleep.episode_dedup_threshold.
-        Initialises immune-system trust coefficient τ (§7.2).
+        Initialises immune-system trust coefficient τ .
         """
         vector = np.array(embedding, dtype=np.float32)
         if vector.ndim == 1:
@@ -97,7 +97,7 @@ class MemorySystem:
             episode_data['timestamp'] = time.time()
             episode_data['last_used'] = time.time()
             episode_data['strength'] = 1.0
-            # Immune system (§7.2): initial trust coefficient
+            # Immune system : initial trust coefficient
             episode_data.setdefault('tau', self.config.immune.initial_tau)
             self.episodic_index.add(vector)
             self.episodes.append(episode_data)
@@ -105,7 +105,7 @@ class MemorySystem:
             return True
 
     # ------------------------------------------------------------------
-    # Immune system helpers (§7.2)
+    # Immune system helpers 
     # ------------------------------------------------------------------
 
     def update_episode_tau(self, idx: int, delta_v: float):
@@ -118,7 +118,7 @@ class MemorySystem:
                 self.episodes[idx]['tau'] = new_tau
 
     def prune_untrusted_episodes(self):
-        """Remove episodes whose τ fell below θ_immune (§7.2)."""
+        """Remove episodes whose τ fell below θ_immune ."""
         theta = self.config.immune.theta_immune
         with self._lock:
             before = len(self.episodes)
@@ -130,7 +130,7 @@ class MemorySystem:
                 self.save()
 
     def add_suppression_rule(self, query: str, answer: str, embedding: np.ndarray):
-        """Block a specific (query, answer) pair from future retrieval (§7.2)."""
+        """Block a specific (query, answer) pair from future retrieval ."""
         rule = {
             'query_hash': hash(query.strip().lower()),
             'answer_hash': hash(answer.strip().lower()),
@@ -200,7 +200,13 @@ class MemorySystem:
             self.episodic_index.add(vecs)
 
     def retrieve_episodes(self, query_emb: np.ndarray, k: int = 3) -> List[Dict[str, Any]]:
-        """Retrieve top-k episodes, filtering out suppressed pairs."""
+        """Retrieve top-k episodes, filtering suppressed pairs.
+
+        Results are ranked by *trust-weighted similarity*:
+            effective_sim = raw_similarity × τ_i
+        so that high-trust episodes rank above low-trust ones even if
+        their raw embedding distance is slightly worse.
+        """
         with self._lock:
             if self.episodic_index.ntotal == 0:
                 return []
@@ -209,24 +215,28 @@ class MemorySystem:
             if vector.ndim == 1:
                 vector = vector.reshape(1, -1)
             faiss.normalize_L2(vector)
-            # Fetch extra to account for suppression filtering
-            k_search = min(k + 5, self.episodic_index.ntotal)
+            # Fetch extra to account for suppression filtering + τ re-ranking
+            k_search = min(k + 10, self.episodic_index.ntotal)
             sims, indices = self.episodic_index.search(vector, k_search)
 
-            results = []
+            pool = []
             for sim, idx in zip(sims[0], indices[0]):
                 if idx != -1 and idx < len(self.episodes):
                     ep = self.episodes[idx]
-                    # Suppression check (§7.2)
+                    # Suppression check
                     if self.is_suppressed(ep.get('query', ''), ep.get('solution', '')):
                         continue
+                    tau = ep.get('tau', self.config.immune.initial_tau)
                     res = ep.copy()
                     res['similarity'] = float(sim)
+                    res['tau'] = tau
+                    res['effective_similarity'] = float(sim) * tau
                     res['memory_id'] = int(idx)
-                    results.append(res)
-                    if len(results) >= k:
-                        break
-            return results
+                    pool.append(res)
+
+            # Re-rank by trust-weighted similarity
+            pool.sort(key=lambda x: x['effective_similarity'], reverse=True)
+            return pool[:k]
 
     def add_semantic_rule(self, rule_data: Dict[str, Any], embedding: np.ndarray):
         """Rule Schema: {pattern, python_code, confidence, success_count}.
@@ -253,12 +263,19 @@ class MemorySystem:
                     new_conf = rule_data.get('confidence', 0.5)
                     old_conf = existing_rule.get('confidence', 0.5)
 
+                    # Merge source_episode_ids for penalty backpropagation
+                    old_sources = set(existing_rule.get('source_episode_ids', []))
+                    new_sources = set(rule_data.get('source_episode_ids', []))
+                    merged_sources = list(old_sources | new_sources)
+
                     if new_conf > old_conf:
                         rule_data['sleep_cycles'] = existing_rule.get('sleep_cycles', 0)
                         rule_data['score_history'] = existing_rule.get('score_history', [])
+                        rule_data['source_episode_ids'] = merged_sources
                         self.update_semantic_rule(idx, rule_data, new_embedding=embedding)
                     else:
                         existing_rule['sleep_cycles'] = existing_rule.get('sleep_cycles', 0) + 1
+                        existing_rule['source_episode_ids'] = merged_sources
                         self.update_semantic_rule(idx, existing_rule)
                     return True
 

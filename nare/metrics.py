@@ -125,7 +125,7 @@ class MetricsTracker:
         }
 
     # ------------------------------------------------------------------
-    # Metric 5: Formal Amortization α_t and C_t (theory §10.2)
+    # Metric 5: Formal Amortization α_t and C_t
     # ------------------------------------------------------------------
     def amortization_dynamics(
         self,
@@ -134,7 +134,7 @@ class MetricsTracker:
         c_llm: float = 2000.0,
         c_mem: float = 0.0,
     ) -> Dict[str, Any]:
-        """Compute formal amortization metrics per theory §10.2.
+        """Compute formal amortization metrics.
 
         α_t = 1 - exp(-κ·|M_t|)     — coverage ratio
         C_t = (1-α_t)·C_LLM + α_t·C_mem  — blended cost
