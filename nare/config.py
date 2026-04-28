@@ -66,10 +66,10 @@ class RoutingConfig:
     """Thresholds for the 4-way router (FAST / HYBRID / SLOW / REFLEX)."""
 
     # Cosine-similarity thresholds against the episodic FAISS index.
-    tau_fast: float = 0.98          # >= this -> FAST path (return cached solution)
-    tau_hybrid: float = 0.75        # >= this -> HYBRID path (delta-reasoning)
-    tau_min: float = 0.95           # lower bound for tau_fast during calibration
-    tau_max: float = 0.99           # upper bound for tau_fast during calibration
+    tau_fast: float = 0.92          # >= this -> FAST path (return cached solution)
+    tau_hybrid: float = 0.70        # >= this -> HYBRID path (delta-reasoning)
+    tau_min: float = 0.88           # lower bound for tau_fast during calibration
+    tau_max: float = 0.96           # upper bound for tau_fast during calibration
 
     # Calibration step: how aggressively tau_fast moves on feedback.
     calibration_lr: float = 0.02
@@ -109,7 +109,7 @@ class SleepConfig:
     weak_rule_min_cycles: int = 2
 
     # Episode dedup threshold (cosine).
-    episode_dedup_threshold: float = 0.95
+    episode_dedup_threshold: float = 0.97
     semantic_dedup_threshold: float = 0.90
     fact_dedup_threshold: float = 0.92
 

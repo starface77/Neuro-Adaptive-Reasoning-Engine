@@ -930,19 +930,7 @@ class NAREProductionAgent:
         best_cand = None
         prompt_used = ""
         
-        if max_sim >= self.tau_fast:
-            route = "FAST"
-            alpha = max_sim
-            log.append(f"Route: FAST PATH (sim: {max_sim:.3f} >= {self.tau_fast})")
-            
-            best_cand = retrieved_eps[0].copy()
-            best_cand['final_score'] = alpha
-            final_answer = best_cand['solution']
-            
-            if self._save_episode(query, query_emb, best_cand, "FAST PATH"):
-                log.append("Saved FAST episode to memory.")
-                
-        elif max_sim >= self.tau_hybrid and retrieved_eps:
+        if max_sim >= self.tau_hybrid and retrieved_eps:
             route = "HYBRID"
             alpha = max_sim
             log.append(f"Route: HYBRID PATH (sim: {max_sim:.3f})")
@@ -1024,8 +1012,11 @@ class NAREProductionAgent:
             
             if best_cand:
                 final_answer = best_cand['solution']
-                if best_cand.get('final_score', 0.5) >= max(0.70, mem_avg) and self._save_episode(query, query_emb, best_cand, prompt_used):
-                    log.append(f"Saved SLOW episode to memory (score {best_cand.get('final_score', 0.5):.2f} >= mem_avg {mem_avg:.2f}).")
+                # Save if score passes minimum bar (0.50 is in _save_episode).
+                # Removed the mem_avg gate — it prevented memory growth when
+                # early episodes had high scores, blocking amortization.
+                if self._save_episode(query, query_emb, best_cand, prompt_used):
+                    log.append(f"Saved SLOW episode to memory (score {best_cand.get('final_score', 0.5):.2f}).")
 
         # 3. Calibration
         if best_cand:
