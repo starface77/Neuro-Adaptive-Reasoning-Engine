@@ -30,6 +30,9 @@ class BootstrapConfig:
     # Each entry: {"query": str, "solution": str, "reasoning_trace": str}
     seed_examples_path: str = ""
 
+    # When True, bootstrap seeds are loaded during Agent initialization.
+    load_seeds_on_init: bool = True
+
 
 @dataclass(frozen=True)
 class ImmuneSystemConfig:
