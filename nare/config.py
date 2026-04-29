@@ -127,6 +127,22 @@ class SleepConfig:
     use_query_fingerprint_gate: bool = False
     query_fingerprint_threshold: float = 0.50
 
+    # Phase 6: held-out validation for newly-crystallized skills.
+    # Split the cluster into ``cluster_size - holdout_n`` train + ``holdout_n``
+    # held-out episodes. Induct the skill on train; validate on held-out
+    # via the rule's own ``execute()`` + the same oracle the validator
+    # uses. If the held-out execute_accuracy < ``holdout_min_accuracy``
+    # the rule is REJECTED — episodes stay alive and crystallization is
+    # retried on the next sleep cycle (possibly with a larger cluster).
+    #
+    # Active only when cluster_size >= ``holdout_min_cluster_size``.
+    # With cluster_size below that, the held-out gate is silently
+    # skipped (you can't hold one out of a 2-episode cluster).
+    use_holdout_validation: bool = True
+    holdout_n: int = 1
+    holdout_min_cluster_size: int = 3
+    holdout_min_accuracy: float = 0.5
+
 
 @dataclass(frozen=True)
 class CriticConfig:
@@ -278,6 +294,18 @@ class AmortizationConfig:
 
 
 @dataclass(frozen=True)
+class SynthesisConfig:
+    """Verified Synthesis loop tuning.
+
+    The cap on attempts trades latency vs probability of convergence.
+    Empirical sweet spot for Gemma-3-27B on the user's 15-task A/B
+    suite: 5 attempts. 1 collapses to vanilla; >8 wastes tokens once
+    the LLM is in a fixed point.
+    """
+    max_attempts: int = 5
+
+
+@dataclass(frozen=True)
 class NareConfig:
     routing: RoutingConfig = field(default_factory=RoutingConfig)
     sleep: SleepConfig = field(default_factory=SleepConfig)
@@ -290,6 +318,7 @@ class NareConfig:
     bootstrap: BootstrapConfig = field(default_factory=BootstrapConfig)
     immune: ImmuneSystemConfig = field(default_factory=ImmuneSystemConfig)
     amortization: AmortizationConfig = field(default_factory=AmortizationConfig)
+    synthesis: SynthesisConfig = field(default_factory=SynthesisConfig)
 
 
 # Singleton — modules import this directly. Override per-test by passing

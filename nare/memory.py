@@ -62,11 +62,22 @@ class MemorySystem:
     def __init__(
         self,
         embedding_dim: int = 3072,
-        persist_dir: str = "memory_store",
+        persist_dir: Optional[str] = None,
         config: NareConfig = DEFAULT_CONFIG,
     ):
         self.embedding_dim = embedding_dim
-        self.persist_dir = persist_dir
+        # Resolution order:
+        #   1. explicit ``persist_dir`` argument (highest priority)
+        #   2. ``NARE_MEMORY_DIR`` environment variable
+        #   3. default ``"memory_store"`` (CWD-relative)
+        # Benchmarks set the env var to isolate runs from the global
+        # store; without env-var support that contract was silently
+        # broken (Devin Review on commit ac8ab52).
+        self.persist_dir = (
+            persist_dir
+            or os.environ.get("NARE_MEMORY_DIR")
+            or "memory_store"
+        )
         self.config = config
         self._lock = threading.RLock()
 
@@ -181,11 +192,23 @@ class MemorySystem:
                 self._rebuild_episodic_index()
                 self.save()
 
+    @staticmethod
+    def _suppression_hash(text: str) -> str:
+        """Deterministic hash for suppression keys.
+
+        ``hash()`` is randomised per-process via PYTHONHASHSEED (CPython
+        3.3+), so suppression rules saved with ``hash()`` keys silently
+        stop matching after a process restart — every rule becomes a
+        dead entry. Use SHA1 (truncated to 16 hex chars, same convention
+        as ``episode_content_key``) so saved rules survive load.
+        """
+        return hashlib.sha1((text or "").strip().lower().encode("utf-8")).hexdigest()[:16]
+
     def add_suppression_rule(self, query: str, answer: str, embedding: np.ndarray):
         """Block a specific (query, answer) pair from future retrieval ."""
         rule = {
-            'query_hash': hash(query.strip().lower()),
-            'answer_hash': hash(answer.strip().lower()),
+            'query_hash': self._suppression_hash(query),
+            'answer_hash': self._suppression_hash(answer),
             'query_snippet': query[:100],
             'answer_snippet': answer[:100],
             'timestamp': time.time(),
@@ -199,11 +222,23 @@ class MemorySystem:
         logging.info(f"[Immune] Suppression rule added for query: {query[:60]}")
 
     def is_suppressed(self, query: str, answer: str) -> bool:
-        """Check if a (query, answer) pair is suppressed."""
-        qh = hash(query.strip().lower())
-        ah = hash(answer.strip().lower())
+        """Check if a (query, answer) pair is suppressed.
+
+        Tolerates legacy rules that stored Python ``hash()`` ints by
+        also recomputing ``hash()`` in the lookup — those legacy rules
+        are dead after the process that wrote them, but won't crash.
+        """
+        qh = self._suppression_hash(query)
+        ah = self._suppression_hash(answer)
+        legacy_qh = hash((query or "").strip().lower())
+        legacy_ah = hash((answer or "").strip().lower())
         for rule in self.suppression_rules:
-            if rule['query_hash'] == qh and rule['answer_hash'] == ah:
+            rqh = rule.get('query_hash')
+            rah = rule.get('answer_hash')
+            if rqh == qh and rah == ah:
+                return True
+            # Best-effort check for any in-process legacy rules.
+            if rqh == legacy_qh and rah == legacy_ah:
                 return True
         return False
 

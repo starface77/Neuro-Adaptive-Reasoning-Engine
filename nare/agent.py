@@ -3,7 +3,7 @@ import time
 import numpy as np
 import faiss
 import logging
-from typing import List, Dict, Any, Optional, TYPE_CHECKING
+from typing import List, Dict, Any, Callable, Optional, Tuple, TYPE_CHECKING
 from . import llm
 
 if TYPE_CHECKING:
@@ -114,7 +114,9 @@ class HybridCritic:
 
     # ---- Main evaluation ----
 
-    def evaluate(self, query: str, candidates: List[Dict]) -> List[Dict]:
+    def evaluate(
+        self, query: str, candidates: List[Dict], oracle: Optional[Any] = None
+    ) -> List[Dict]:
         if not candidates:
             return []
         if len(candidates) == 1:
@@ -122,7 +124,14 @@ class HybridCritic:
             candidates[0]['rule_score'] = self._rule_based_check(
                 candidates[0]['solution']
             )
-            gt = self._ground_truth_validate(candidates[0]['solution'])
+            if oracle:
+                try:
+                    passed, _ = oracle(query, candidates[0]['solution'])
+                    gt = 1.0 if passed else 0.0
+                except:
+                    gt = 0.0
+            else:
+                gt = self._ground_truth_validate(candidates[0]['solution'])
             candidates[0]['gt_score'] = gt
             candidates[0]['sc_score'] = 1.0  # single candidate is trivially consistent
             candidates[0]['final_score'] = gt if gt is not None else 0.5
@@ -130,7 +139,14 @@ class HybridCritic:
 
         # 1. Ground Truth Validator — mandatory for code
         for c in candidates:
-            c['gt_score'] = self._ground_truth_validate(c['solution'])
+            if oracle:
+                try:
+                    passed, _ = oracle(query, c['solution'])
+                    c['gt_score'] = 1.0 if passed else 0.0
+                except:
+                    c['gt_score'] = 0.0
+            else:
+                c['gt_score'] = self._ground_truth_validate(c['solution'])
 
         # 2. Self-Consistency voting
         sc_scores = self._self_consistency_scores(candidates)
@@ -501,14 +517,72 @@ class NAREProductionAgent:
                     logging.info(f"[Consolidation] Refined: {updated_rule['pattern']}")
             else:
                 logging.info("=== [SLEEP PHASE] Crystallizing New Rule ===")
+
+                # ─── Phase 6: held-out validation ─────────────────
+                # Reserve ``holdout_n`` episodes from the cluster, induct
+                # on the rest, then validate the resulting rule's
+                # execute() on the held-out set. This is the FIRST
+                # honest transfer test in the sleep pipeline — pre-
+                # Phase-6 the same episodes were used for both
+                # training and validation (self-referential), which
+                # is exactly why skills overfitted to seen examples
+                # and failed on paraphrases.
+                sleep_cfg = self.config.sleep
+                use_holdout = (
+                    sleep_cfg.use_holdout_validation
+                    and len(cluster_episodes) >= sleep_cfg.holdout_min_cluster_size
+                )
+                if use_holdout:
+                    h = max(1, int(sleep_cfg.holdout_n))
+                    train_eps = cluster_episodes[:-h]
+                    holdout_eps = cluster_episodes[-h:]
+                    logging.info(
+                        f"[Holdout] {len(train_eps)} train + "
+                        f"{len(holdout_eps)} held-out from "
+                        f"{len(cluster_episodes)} cluster episodes"
+                    )
+                else:
+                    train_eps = cluster_episodes
+                    holdout_eps = []
+
                 new_rule = llm.extract_heuristic_rule(
-                    cluster_episodes,
+                    train_eps,
                     oracle=self.oracle,
                     config=self.config,
                 )
                 if new_rule is None:
                     logging.warning("[Sleep] Skill failed validation completely (robustness < 0.40). Keeping episodes.")
                     return
+
+                if holdout_eps:
+                    from nare.llm import _validate_skill
+                    h_scores, h_report = _validate_skill(
+                        new_rule.get('python_code', ''),
+                        holdout_eps,
+                        oracle=self.oracle,
+                        config=self.config,
+                    )
+                    h_acc = h_scores.get('execute_accuracy', 0.0)
+                    h_min = sleep_cfg.holdout_min_accuracy
+                    logging.info(
+                        f"[Holdout] '{new_rule.get('pattern')}' "
+                        f"execute_acc={h_acc:.2f} (min={h_min:.2f})"
+                    )
+                    if h_acc < h_min:
+                        logging.warning(
+                            f"[Holdout] REJECTING '{new_rule.get('pattern')}' "
+                            f"— failed transfer test "
+                            f"(execute_acc={h_acc:.2f} < {h_min:.2f}). "
+                            f"Keeping {len(cluster_episodes)} episodes for "
+                            f"a future sleep cycle. Report: {h_report[:200]}"
+                        )
+                        return
+                    # Honest transfer signal goes into the rule's
+                    # confidence floor — mark it so downstream code
+                    # can distinguish "passed held-out" from "trained
+                    # only".
+                    new_rule['holdout_accuracy'] = float(h_acc)
+                    new_rule['holdout_n'] = len(holdout_eps)
                 new_rule['sleep_cycles'] = 0
                 # Track source episodes for Penalty Backpropagation. We
                 # store CONTENT KEYS (sha1(query+solution)) rather than
@@ -518,9 +592,17 @@ class NAREProductionAgent:
                 # corrupted the immune system's τ updates (Devin Review
                 # finding on PR #5).
                 from .memory import episode_content_key  # local import to avoid cycle
+                # Build the full set of cluster member positions:
+                # ``cluster_indices`` excludes ``core_idx`` because the
+                # similarity matrix diagonal was zeroed at line 400, so
+                # without this we'd record only the soon-to-be-deleted
+                # episodes and the *surviving* representative would
+                # never be in source_keys — making penalty backprop a
+                # no-op on every new rule (Devin Review on 20c3fa3).
+                all_member_indices = list({int(i) for i in cluster_indices} | {core_idx})
                 source_keys = []
-                for i in cluster_indices:
-                    ep = self.memory.episodes[int(i)]
+                for i in all_member_indices:
+                    ep = self.memory.episodes[i]
                     key = ep.get('episode_key') or episode_content_key(
                         ep.get('query', ''), ep.get('solution', ''),
                     )
@@ -529,7 +611,7 @@ class NAREProductionAgent:
                 # Keep legacy field for one release so older serialised
                 # rules still load — but mark it as best-effort. Newer
                 # code paths must read source_episode_keys.
-                new_rule['source_episode_ids'] = [int(i) for i in cluster_indices]
+                new_rule['source_episode_ids'] = list(all_member_indices)
                 self.memory.add_semantic_rule(new_rule, centroid)
                 logging.info(f"[Crystallization] New Rule: {new_rule['pattern']} (confidence: {new_rule['confidence']:.2f})")
             
@@ -1093,7 +1175,38 @@ class NAREProductionAgent:
         except Exception as e:
             logging.warning(f"[Bootstrap] Failed to load seeds: {e}")
 
-    def solve(self, query: str) -> Dict[str, Any]:
+    def solve(
+        self,
+        query: str,
+        oracle: Optional[Callable[[str, str], Tuple[bool, dict]]] = None,
+        expected_hint: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Solve a query.
+
+        Parameters
+        ----------
+        query
+            Natural-language input.
+        oracle
+            Optional ``(query, candidate_answer) -> (passed, info)``
+            judge. When provided, the SLOW path runs Verified
+            Synthesis (execution-feedback loop) instead of plain
+            best-of-N — this is the first lever NARE has over vanilla
+            CoT, since the LLM gets to see its own code's output and
+            self-correct. With ``oracle=None`` SLOW behaves identically
+            to the pre-Phase-6 implementation, which is provably no
+            worse than vanilla.
+        expected_hint
+            Optional ground-truth hint passed verbatim into VS feedback
+            prompts. Only set this when the caller actually has the
+            answer (LEARN phase, hold-out validation, REM replay,
+            A/B benchmark with ``oracle_spec``).
+        """
+        # Stash on instance so the SLOW path branch can read them
+        # without threading through every helper. They live for the
+        # duration of this single solve() call.
+        self._current_oracle = oracle
+        self._current_expected_hint = expected_hint
         _solve_start = time.time()
         _solve_tokens = 0
         log = []
@@ -1132,23 +1245,49 @@ class NAREProductionAgent:
                         fast_answer = self._post_process_answer(
                             ep.get('solution', '') or '', "FAST", log
                         )
-                        self.metrics.record(
-                            query=query, route="FAST",
-                            elapsed=time.time() - _solve_start,
-                            tokens_used=0,
-                            similarity=float(sims[0][0]),
-                            answer=fast_answer,
-                            score=ep.get('score', 0.8),
-                        )
-                        return {
-                            "route_decision": "FAST",
-                            "retrieved_memories": [ep],
-                            "generated_candidates": [],
-                            "critic_evaluation_table": [],
-                            "final_answer": fast_answer,
-                            "memory_update_log": log,
-                            "alpha": float(sims[0][0]),
-                        }
+                        # ─── Phase 6: oracle-gated cache hit ─────────
+                        # If the caller supplied an oracle and the
+                        # cached answer fails it, fall through to SLOW
+                        # so Verified Synthesis can self-correct. This
+                        # prevents stale cache from poisoning A/B
+                        # benchmarks. Without an oracle, behaviour is
+                        # unchanged from pre-Phase-6.
+                        cur_oracle = getattr(self, '_current_oracle', None)
+                        oracle_rejected_cache = False
+                        if cur_oracle is not None:
+                            try:
+                                ok, _info = cur_oracle(query, fast_answer)
+                            except Exception:  # noqa: BLE001
+                                ok = False
+                            if not ok:
+                                log.append(
+                                    "[FAST] cached answer failed oracle "
+                                    "→ falling through to SLOW (VS)"
+                                )
+                                oracle_rejected_cache = True
+                        if not oracle_rejected_cache:
+                            self.metrics.record(
+                                query=query, route="FAST",
+                                elapsed=time.time() - _solve_start,
+                                tokens_used=0,
+                                similarity=float(sims[0][0]),
+                                answer=fast_answer,
+                                score=ep.get('score', 0.8),
+                            )
+                            return {
+                                "route_decision": "FAST",
+                                "retrieved_memories": [ep],
+                                "generated_candidates": [],
+                                "critic_evaluation_table": [],
+                                "final_answer": fast_answer,
+                                "memory_update_log": log,
+                                "alpha": float(sims[0][0]),
+                                # Schema-parity with the main solve() return
+                                # path: downstream consumers can always read
+                                # alpha_t / novelty without checking route.
+                                "alpha_t": 0.0,
+                                "novelty": 0.0,
+                            }
 
         # =====================================================
         # LAYER 1: PROGRAMMATIC REFLEXES (AST Execution)
@@ -1243,6 +1382,21 @@ class NAREProductionAgent:
 
                 logging.info(f"[Shadow Mode] ACCEPTED '{sem['pattern']}'")
                 log.append(f"Shadow Check PASSED for '{sem['pattern']}'.")
+                # Phase 6: oracle-gated REFLEX. If the caller supplied
+                # an oracle and this skill's output fails it, treat
+                # the shadow check as a miss and fall through to SLOW.
+                cur_oracle = getattr(self, '_current_oracle', None)
+                if cur_oracle is not None:
+                    try:
+                        ok, _info = cur_oracle(query, final_answer)
+                    except Exception:  # noqa: BLE001
+                        ok = False
+                    if not ok:
+                        log.append(
+                            f"[REFLEX_PROVISIONAL] '{sem['pattern']}' "
+                            f"failed oracle \u2192 falling through to SLOW (VS)"
+                        )
+                        continue
                 self._record_skill_result(sem, success=True)
                 return {
                     "route_decision": "REFLEX_PROVISIONAL",
@@ -1254,9 +1408,25 @@ class NAREProductionAgent:
                         f"Route: REFLEX_PROVISIONAL (conf={conf:.2f}, "
                         f"maturity={maturity})"
                     ],
+                    # Schema parity with FAST and the main return path.
+                    "alpha": 1.0,
+                    "alpha_t": 0.0,
+                    "novelty": 0.0,
                 }
 
-            # MATURE skill: trust it.
+            # MATURE skill: trust it (unless an oracle vetoes).
+            cur_oracle = getattr(self, '_current_oracle', None)
+            if cur_oracle is not None:
+                try:
+                    ok, _info = cur_oracle(query, final_answer)
+                except Exception:  # noqa: BLE001
+                    ok = False
+                if not ok:
+                    log.append(
+                        f"[REFLEX] mature '{sem['pattern']}' failed "
+                        f"oracle \u2192 falling through to SLOW (VS)"
+                    )
+                    continue
             self._record_skill_result(sem, success=True)
             return {
                 "route_decision": "REFLEX",
@@ -1267,6 +1437,10 @@ class NAREProductionAgent:
                 "memory_update_log": log + [
                     f"Route: REFLEX (mature, conf={conf:.2f})"
                 ],
+                # Schema parity with FAST and the main return path.
+                "alpha": 1.0,
+                "alpha_t": 0.0,
+                "novelty": 0.0,
             }
 
         # Reuse embedding from FAST path if available, otherwise compute
@@ -1389,7 +1563,7 @@ class NAREProductionAgent:
             
             candidates, _htokens = llm.generate_samples(prompt_used, n=1, mode="HYBRID")
             _solve_tokens += _htokens
-            candidates = self.critic.evaluate(query, candidates)
+            candidates = self.critic.evaluate(query, candidates, oracle=getattr(self, '_current_oracle', None))
             best_cand = candidates[0] if candidates else None
 
             if best_cand:
@@ -1441,10 +1615,77 @@ class NAREProductionAgent:
                 prompt_used += "---\n"
             prompt_used += "\nSolve the new Task by synthesizing insights from the provided memories (if any) and applying deep reasoning."
 
-            # Cold Start: simplified CoT to conserve API tokens.
-            if self._is_cold_start() and self.config.bootstrap.cold_start_use_simple_cot:
+            # ─── Phase 6: Verified Synthesis branch ──────────────
+            # If the caller supplied an oracle, switch SLOW from blind
+            # best-of-N to a closed execution-feedback loop. This is
+            # the first NARE capability vanilla CoT cannot replicate:
+            # the LLM gets to see what its own code printed, plus the
+            # oracle's diagnostic, and try again.
+            #
+            # Without an oracle we degrade to pre-Phase-6 best-of-N,
+            # which is provably no worse than vanilla.
+            current_oracle = getattr(self, '_current_oracle', None)
+            if current_oracle is not None:
+                from .synthesis import verified_synthesis
+                vs_max = self.config.synthesis.max_attempts
+                expected = getattr(self, '_current_expected_hint', None)
+                _stokens = 0
+
+                def _propose(prompt_text, prior_attempts):
+                    nonlocal _stokens
+                    # Attempt 1 is greedy (temperature=0) so it matches
+                    # what a deterministic vanilla CoT call would
+                    # produce given the same prompt — this lets us
+                    # measure VS's value cleanly: any Δ vs vanilla on
+                    # attempt 1 is sampling noise, on retries is the
+                    # feedback loop. Retries ramp temperature aggressively
+                    # (0.5 / 0.7 / 0.9 / 1.0) to break out of bad
+                    # fixed-points like "kept printing factorial(30)".
+                    n_prior = len(prior_attempts)
+                    if n_prior == 0:
+                        temp = 0.0
+                    else:
+                        temp = min(0.3 + 0.2 * n_prior, 1.0)
+                    cands, st = llm.generate_samples(
+                        prompt_text, n=1,
+                        temperature=temp,
+                        mode="SLOW",
+                    )
+                    _stokens += st
+                    if cands:
+                        return cands[0].get('solution', '') or ''
+                    return ''
+
+                vs_result = verified_synthesis(
+                    query=query,
+                    propose_fn=_propose,
+                    oracle=current_oracle,
+                    max_attempts=vs_max,
+                    expected_hint=expected,
+                )
+                _solve_tokens += _stokens
+                log.append(
+                    f"[VS] attempts={vs_result.total_attempts} "
+                    f"converged={vs_result.converged}"
+                )
+                # Materialise as a single candidate so the rest of the
+                # SLOW path (critic, post-process, save) keeps working.
+                candidates = [{
+                    'solution': vs_result.final_answer,
+                    'reasoning_trace': (
+                        f"VS converged in {vs_result.total_attempts} attempts"
+                        if vs_result.converged
+                        else f"VS exhausted {vs_result.total_attempts} attempts"
+                    ),
+                    'final_score': 0.95 if vs_result.converged else 0.30,
+                    'critic_passed': vs_result.converged,
+                }]
+            elif self._is_cold_start() and self.config.bootstrap.cold_start_use_simple_cot:
+                # Cold Start: simplified CoT to conserve API tokens.
                 log.append("[Bootstrap] Cold start — using simplified CoT instead of best-of-N")
                 candidates, _stokens = llm.generate_samples(prompt_used, n=1, temperature=0.5, mode="SLOW")
+                _solve_tokens += _stokens
+                candidates = self.critic.evaluate(query, candidates, oracle=getattr(self, '_current_oracle', None))
             else:
                 # Neural Memory surprise biases candidate budget:
                 # higher novelty → wider search (more branches in best-of-N).
@@ -1458,8 +1699,8 @@ class NAREProductionAgent:
                 # Historical name `tree_of_thoughts` aliased to be honest about
                 # what the function actually does — see nare.llm.
                 candidates, _stokens = llm.best_of_n_with_prescore(prompt_used, breadth=breadth)
-            _solve_tokens += _stokens
-            candidates = self.critic.evaluate(query, candidates)
+                _solve_tokens += _stokens
+                candidates = self.critic.evaluate(query, candidates, oracle=getattr(self, '_current_oracle', None))
             
             best_cand = candidates[0] if candidates else None
             
@@ -1501,6 +1742,11 @@ class NAREProductionAgent:
             "critic_evaluation_table": candidates if candidates else ([best_cand] if best_cand else []),
             "final_answer": final_answer,
             "memory_update_log": log,
+            # Schema-parity with the Layer-0 FAST early return: the same
+            # set of keys is returned regardless of which path solve()
+            # took. ``alpha`` is the route's chosen weighting (sim or
+            # alpha_t depending on path).
+            "alpha": float(alpha),
             "alpha_t": float(alpha_t),
             "novelty": float(novelty),
         }
@@ -1649,6 +1895,8 @@ class NAREProductionAgent:
 
         if ep_indices:
             gamma = self.config.immune.penalty_backprop_gamma
+            # update_episode_tau already takes _lock + does its own bounds
+            # check, so we don't need to wrap this loop.
             for ep_id in ep_indices:
                 self.memory.update_episode_tau(ep_id, delta_v * gamma)
             if not success:
@@ -1658,16 +1906,34 @@ class NAREProductionAgent:
                     f"(of {len(source_keys) or len(rule.get('source_episode_ids', []))} originally)"
                 )
 
-        # If skill keeps failing and source episodes are toxic, add suppression
-        if not success and rule.get('confidence', 0.5) < 0.2:
-            for ep_id in ep_indices:
-                ep = self.memory.episodes[ep_id]
-                if ep.get('tau', 1.0) < self.config.immune.theta_immune:
-                    self.memory.add_suppression_rule(
+        # If skill keeps failing and source episodes are toxic, add
+        # suppression. Snapshot the relevant episodes UNDER THE LOCK to
+        # avoid an IndexError race with the background sleep thread,
+        # which may delete episodes between our index resolution and the
+        # direct ``self.memory.episodes[ep_id]`` access (Devin Review on
+        # commit 436b060). add_suppression_rule itself takes the lock so
+        # we release before calling it.
+        if not success and rule.get('confidence', 0.5) < 0.2 and ep_indices:
+            theta = self.config.immune.theta_immune
+            emb_dim = self.memory.embedding_dim
+            to_suppress: List[Tuple[str, str, np.ndarray]] = []
+            with self.memory._lock:
+                for ep_id in ep_indices:
+                    if not (0 <= ep_id < len(self.memory.episodes)):
+                        continue
+                    ep = self.memory.episodes[ep_id]
+                    if ep.get('tau', 1.0) >= theta:
+                        continue
+                    to_suppress.append((
                         ep.get('query', ''),
                         ep.get('solution', ''),
-                        np.array(ep.get('embedding', [0.0] * self.memory.embedding_dim), dtype=np.float32),
-                    )
+                        np.array(
+                            ep.get('embedding', [0.0] * emb_dim),
+                            dtype=np.float32,
+                        ),
+                    ))
+            for q, s, emb in to_suppress:
+                self.memory.add_suppression_rule(q, s, emb)
 
         # Find and update rule in memory
         for i, r in enumerate(self.memory.semantic_rules):
