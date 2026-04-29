@@ -57,7 +57,7 @@ NARE is built as a modular, stateless-by-design orchestrator:
 - A Google Gemini API Key (`GEMINI_API_KEY`)
 
 ```bash
-git clone https://github.com/your-username/Neuro-Adaptive-Reasoning-Engine.git
+git clone https://github.com/starface77/Neuro-Adaptive-Reasoning-Engine.git
 cd Neuro-Adaptive-Reasoning-Engine
 pip install -r requirements.txt
 ```
