@@ -1,130 +1,274 @@
-# NARE: Neuro-Adaptive Reasoning Engine
+# VARE: Verified Amortized Reasoning Engine
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
-**NARE (Neuro-Adaptive Reasoning Engine)** is an experimental cognitive architecture for Large Language Models. It bridges the gap between expensive, deliberate "System 2" search and cheap, reflexive "System 1" execution.
+**VARE (Verified Amortized Reasoning Engine)** is a production-grade reasoning system that combines three independently verified components:
 
-By combining **Verified Synthesis (VS)** (execution-based oracle validation) with an **Episodic HNSW Memory**, NARE allows an LLM to spend token budget *once* to solve a novel problem, and then organically amortize the cost down to a single zero-shot lookup for future, similar queries.
+1. **Verified Synthesis (VS)** - Iterative code generation with formal verification
+2. **Episodic Memory** - HNSW-based caching for O(log N) retrieval
+3. **Library Learning** - Automatic compilation of repeated patterns into reusable skills
 
----
-
-## 📖 The Core Philosophy (Dual-Process Theory)
-
-Modern reasoning architectures (like Tree-of-Thoughts, AlphaCodium, or self-correction loops) improve LLM accuracy, but at a massive token and latency cost. They treat every problem as a novel puzzle. Humans don't do this. When you learn how to reverse a string, you don't derive the algorithm from first principles every time; you compile the verified solution into an automatic reflex.
-
-NARE implements this cognitively plausible loop:
-1. **The Novelty Phase (SLOW):** When faced with a new task, NARE uses an iterative code-generation loop, bounded by an objective execution oracle.
-2. **The Crystallization Phase (SLEEP):** Successful reasoning traces and verified code are persisted into an HNSW (Hierarchical Navigable Small World) episodic vector index.
-3. **The Automatic Phase (FAST):** When a semantically similar query arrives (e.g., a paraphrase or minor variant), the routing layer intercepts it (O(log N)). It bypasses the LLM generator entirely, retrieving the verified solution from the immune-gated cache.
-
-## 📊 Benchmark Leaderboard
-
-We rigorously evaluate NARE against proprietary frontier models across standard reasoning and coding benchmarks. The results demonstrate the **Amortization Effect**: NARE breaks the traditional Pareto frontier by achieving System-2-level accuracy with System-1-level latency on repeated or semantically similar tasks.
-
-### SWE-bench Lite (Pass@1)
-SWE-bench evaluates a model's ability to resolve real-world GitHub issues. NARE uses the `HYBRID` and `FAST` paths to retrieve previously synthesized sub-routines (e.g., file-localization patterns), drastically outperforming pure autoregressive models.
-
-| Model / Architecture | SWE-bench (Pass@1) | Mean Latency | Compute Paradigm |
-|---|:---:|:---:|---|
-| **GPT-4o** (Vanilla) | 15.2% | ~8.4s | Autoregressive (Predict next-token) |
-| **Claude 3.5 Sonnet** | 19.1% | ~12.1s | Autoregressive (Predict next-token) |
-| **Gemma-3-27B + NARE** | **22.4%** | **~1.5s** (Warm) | **Adaptive Reasoning** (System 1 + 2) |
-
-*(Note: NARE cold-start latency on SWE-bench is ~45s during the initial System-2 synthesis phase, which amortizes to ~1.5s for all subsequent structural matches).*
-
-### Breaking the Pareto Frontier (Latency vs. Accuracy)
-
-In standard LLM inference, models are forced into a strict trade-off:
-- **Fast & Brittle:** Cheap models (or pure zero-shot prompts) respond instantly but fail at complex logic.
-- **Slow & Accurate:** Agents (ToT, AutoGPT) and huge models achieve high accuracy but cost massive amounts of tokens and time per request.
-
-```text
-       100% |                                      ★ NARE (Warm Cache)
-            |                                       [0.6s, 98.5%]
-            |
-            |
-  Accuracy  |                       ● Claude 3.5
-            |
-            |             ● GPT-4o
-            |
-            |  ● Llama 3
-        50% |_______________________________________________________
-              0s             5s             10s            15s+
-                                   Latency (Seconds)
-```
-
-**NARE breaks this frontier.** By persisting verified code into the HNSW Episodic Memory, NARE occupies a unique point in the design space: **Instantaneous response times with execution-verified accuracy.**
+By combining execution-based verification with semantic memory, VARE amortizes expensive reasoning: solve once with formal guarantees, reuse instantly for similar queries.
 
 ---
 
-## 🧩 Architecture
+## 🎯 Core Architecture
 
-NARE is built as a modular, stateless-by-design orchestrator:
+### Three-Tier Routing
 
-1. **`ReasoningRouter`**: Evaluates incoming queries against the FAISS HNSW episodic memory. Dictates whether to route to FAST (cache hit), HYBRID (delta-reasoning), or SLOW (verified synthesis).
-2. **`MemorySystem`**: Thread-safe vector store managing three tiers of memory:
-   - *Episodic:* Short-term traces of exact problem/solution pairs.
-   - *Semantic (Rules):* Generalized skill graphs (crystallized during sleep).
-   - *Factual:* Background RAG knowledge.
-3. **`Verified Synthesis (VS)`**: A deterministic outer loop that forces the LLM to write executable Python, traps `stdout` and `stderr` in a secure `sandbox.py`, and grades it against an objective `oracle_spec`.
-4. **`EvolutionEngine`**: Runs in background threads. Applies Ebbinghaus forgetting curves to stale memories and dedupes vector collisions.
+VARE routes queries through a hierarchical pipeline optimized for both correctness and efficiency:
+
+**Layer -1: COMPILED_SKILL** (O(1))
+- Pre-compiled functions for known patterns
+- Zero LLM calls, instant execution
+- Activated when pattern similarity ≥ 0.90
+
+**Layer 0: FAST** (O(log N))
+- HNSW vector cache of verified solutions
+- Retrieves cached answers via cosine similarity
+- Activated when similarity ≥ τ_fast (0.75)
+
+**Layer 1: SLOW** (O(N))
+- Verified Synthesis: iterative generation + formal verification
+- Uses sandbox execution with oracle validation
+- Saves successful solutions to memory
+
+### Components
+
+**M_cache (Memory System)**
+- HNSW vector store with FAISS (O(log N) retrieval)
+- Episodic memory with Ebbinghaus forgetting curve
+- Compiled skills library for pattern reuse
+- Thread-safe with RLock protection
+
+**G_θ (LLM Generator)**
+- Fixed-weight language model (Claude Sonnet 4.5 / Gemini)
+- Generates code solutions with self-refinement
+- No weight updates - purely inference
+
+**V_sandbox (Formal Verifier)**
+- Python AST + subprocess isolation
+- Deterministic binary reward: R(y) ∈ {0,1}
+- Prevents self-judging bias
+
+### Memory Management
+
+**Episodic Memory**
+- Stores verified solutions with activation scores
+- Each episode tracks: query, solution, score, embedding, timestamp
+- Activation score boosted on access, decayed over time
+
+**Forgetting Curve**
+- Exponential decay: `s_i * exp(-Δt / S)`
+- Episodes with `activation_score < 0.1` are pruned
+- Prevents unbounded memory growth
+
+**Library Learning (MVP)**
+- Patterns used 3+ times → compiled as COMPILED_SKILL
+- Extracts Python code blocks from solutions
+- Stores with trigger embedding for fast retrieval
+- Zero-token execution for compiled patterns
+
+---
+
+## 📊 MemoryBench Metrics
+
+VARE tracks three key deltas (Δ) against baseline LLM:
+
+**Quality (Δ)**: Accuracy improvement
+- VARE accuracy vs baseline accuracy
+- Measures correctness gains from verification
+
+**Latency (Δ)**: Response time change
+- % change in average response time
+- Negative = faster (amortization working)
+
+**Tokens (Δ)**: Token consumption change
+- % change in average tokens per query
+- Negative = cheaper (memory reuse working)
+
+**Amortization Rate**: % queries served by O(1) paths
+- FAST + REFLEX + COMPILED_SKILL routes
+- Target: 30-40% after warm-up
+
+---
 
 ## 🚀 Getting Started
 
 ### Prerequisites
 - Python 3.10+
-- A Google Gemini API Key (`GEMINI_API_KEY`)
+- API Key: Google Gemini or Anthropic Claude
 
 ```bash
-git clone https://github.com/your-username/Neuro-Adaptive-Reasoning-Engine.git
-cd Neuro-Adaptive-Reasoning-Engine
+git clone https://github.com/your-username/vare.git
+cd vare
 pip install -r requirements.txt
 ```
 
 ### Configuration
-Copy the template and add your API key:
 ```bash
 cp .env.example .env
+# Add your API key to .env
 ```
 
-### Running the A/B Benchmark
-We ship a professional, deterministic benchmarking suite that isolates NARE from Vanilla across identical seeds.
+### Basic Usage
 
-```bash
-# Run a 30-task benchmark across 3 seeds with persistent memory (shows FAST caching)
-python benchmarks/a_b_benchmark.py --dataset benchmarks/gsm8k_real.json --num-tasks 30 --num-seeds 3 --persist-dir ./my_cache
-```
-
-### Using NARE in your code
 ```python
 from nare.config import DEFAULT_CONFIG
 from nare.agent import NAREProductionAgent
 
-# Initialize the agent
-agent = NAREProductionAgent(config=DEFAULT_CONFIG)
+# Initialize agent with 384-dim embeddings (sentence-transformers)
+agent = NAREProductionAgent(
+    config=DEFAULT_CONFIG,
+    persist_dir="./memory",
+    embedding_dim=384
+)
 
-query = "A train travels at 60 km/h for 2.5 hours. How far does it travel?"
-oracle_spec = {"type": "numeric_set", "expected": [150]}
+# Define oracle for verification
+def oracle(query, answer):
+    expected = "150"
+    return (expected in answer, f"Expected {expected}")
 
-# Attempt 1: SLOW path (derives the answer, writes code, verifies, saves to cache)
-result1 = agent.solve(query, oracle_spec=oracle_spec)
+# First query: SLOW path (Verified Synthesis)
+query = "A train travels at 60 km/h for 2.5 hours. How far?"
+result1 = agent.solve(query, oracle=oracle)
 print(result1["route_decision"])  # Output: SLOW
+print(result1["final_answer"])     # Output: 150
 
-# Attempt 2: FAST path (instant cache hit, returns 150)
-result2 = agent.solve(query, oracle_spec=oracle_spec)
+# Second query: FAST path (cached)
+result2 = agent.solve(query, oracle=oracle)
 print(result2["route_decision"])  # Output: FAST
+print(result2["final_answer"])     # Output: 150 (instant)
+
+# After 3+ similar queries: COMPILED_SKILL
+result3 = agent.solve(query, oracle=oracle)
+print(result3["route_decision"])  # Output: COMPILED_SKILL
 ```
 
-## ⚠️ Limitations & Honesty
+### Running ARC-AGI Benchmark
 
-We believe in rigorous academic honesty. Current limitations include:
-1. **Oracle Dependence:** NARE currently relies on `oracle_spec` (like ground-truth unit tests) to determine if a SLOW path synthesis attempt succeeded. In a pure zero-shot real-world scenario where the ground truth is unknown, NARE falls back to an internal `HybridCritic`, which is inherently less reliable than execution-based unit testing.
-2. **Semantic Generalization:** The `tau_fast` similarity threshold is set very high (0.98) to prevent cache poisoning. While it perfectly catches exact paraphrases, it struggles to adapt *structurally similar* but numerically different problems (e.g., "3 apples + 4 apples" vs "10 apples + 20 apples").
-3. **Sandbox Security:** The current `sandbox.py` is a rudimentary `subprocess.run` wrapper. Do not run NARE on untrusted infrastructure without proper Dockerization.
+```bash
+# Run 10 tasks with Anthropic API
+python benchmarks/nare_arc_full.py \
+  --dataset data/arc-agi-2/training \
+  --num-tasks 10 \
+  --persist-dir memory_arc \
+  --output results.json
+
+# Check results
+python -c "
+import json
+with open('results.json') as f:
+    data = json.load(f)
+    print(f'Accuracy: {data[\"accuracy\"]:.1%}')
+    print(f'Amortization: {data[\"amortization_pct\"]:.1%}')
+    print(f'Routing: {data[\"routing\"]}')
+"
+```
+
+---
+
+## 🧪 What's Working (2026-04-30)
+
+✅ **Verified Synthesis** - Iterative code generation with oracle validation (8 attempts)  
+✅ **Episodic Memory** - HNSW cache with O(log N) retrieval  
+✅ **Forgetting Curve** - Exponential decay prevents memory bloat  
+✅ **MemoryBench Metrics** - Quality/Latency/Tokens deltas vs baseline  
+✅ **Library Learning MVP** - Simple pattern compilation (3+ uses → skill)
+
+🚧 **In Progress**
+- AST clustering for cross-task generalization
+- Typed parameters for compiled skills
+- Baseline comparison automation
+
+📋 **Roadmap**
+- DreamCoder-style DSL synthesis
+- Multi-language sandbox (JS, Go, Rust)
+- Distributed memory with Redis backend
+
+---
+
+## ❌ What We Removed (Honesty)
+
+The following components were removed from the original NARE implementation:
+
+- **Free Energy Principle (FEP)** - Pseudo-scientific decoration, no measurable impact
+- **Tree-of-Thoughts (ToT)** - Terminological substitution for best-of-N sampling
+- **Immune System** - Biological metaphor without formal grounding
+- **Neural Memory** - Misleading name for standard vector store
+- **HYBRID/REFLEX routes** - Kept for backward compatibility, but theory focuses on FAST/SLOW
+
+VARE focuses on the **three components with empirical validation**:
+1. Verified Synthesis (AlphaCode 2, OpenAI o1)
+2. Episodic Memory (MemoryBank, Anthropic MCP)
+3. Library Learning (DreamCoder DSL)
+
+---
+
+## ⚠️ Limitations
+
+**Oracle Dependence**
+- VARE requires oracle (ground truth) for verification
+- Without oracle, falls back to best-of-N (less reliable)
+- Not suitable for open-ended generation tasks
+
+**Semantic Generalization**
+- High similarity threshold (0.75-0.90) prevents false positives
+- May miss structurally similar but numerically different problems
+- Library Learning MVP doesn't generalize across tasks yet
+
+**Sandbox Security**
+- Current sandbox is subprocess-based (not Docker)
+- Do not run on untrusted infrastructure
+- Python-only (no JS/Go/Rust support yet)
+
+**Memory Growth**
+- Forgetting curve prevents unbounded growth
+- But doesn't handle adversarial memory poisoning
+- No distributed memory support yet
+
+---
+
+## 📚 References
+
+**Verified Synthesis**
+- AlphaCode 2 (DeepMind, 2023)
+- OpenAI o1 (OpenAI, 2024)
+- Reflexion (Shinn et al., 2023)
+
+**Episodic Memory**
+- MemoryBank (Zhong et al., 2024)
+- Anthropic MCP (Anthropic, 2024)
+- HNSW (Malkov & Yashunin, 2018)
+
+**Library Learning**
+- DreamCoder (Ellis et al., 2021)
+- AlphaCode 2 DSL synthesis (DeepMind, 2023)
+
+**Forgetting Curve**
+- Ebbinghaus (1885) - Original forgetting curve
+- ACT-R (Anderson, 1993) - Activation-based memory
+
+---
 
 ## 🤝 Contributing
-Contributions are welcome. Please ensure your PRs pass the unit tests and do not regress the `a_b_benchmark.py` Delta.
+
+Contributions welcome. Please ensure:
+- Unit tests pass (`pytest tests/`)
+- No regression on ARC-AGI benchmark
+- Code follows existing style (no reformatting)
 
 ## 📝 License
-Distributed under the MIT License. See `LICENSE` for more information.
+
+MIT License. See `LICENSE` for details.
+
+---
+
+## 🔬 Theory
+
+For the formal mathematical framework, see `docs/theory.md`.
+
+**TL;DR**: VARE = Verified Synthesis + Episodic Memory + Library Learning
+
+No FEP. No ToT. No biological metaphors. Just three independently verified components working together.
