@@ -4,13 +4,13 @@ import logging
 import numpy as np
 from typing import List, Dict, Any, Callable, Optional, Tuple
 
-from .config import DEFAULT_CONFIG, NareConfig
-from .memory import MemorySystem
-from .metrics import MetricsTracker
-from .critic import Critic
-from .core.router import ReasoningRouter
-from .core.evolution import EvolutionEngine
-from . import llm
+from ..config import DEFAULT_CONFIG, NareConfig
+from ..memory.memory import MemorySystem
+from ..memory.metrics import MetricsTracker
+from ..reasoning.critic import Critic
+from .router import ReasoningRouter
+from .evolution import EvolutionEngine
+from ..reasoning import llm
 
 class NAREProductionAgent:
     """The production-grade NARE Agent.

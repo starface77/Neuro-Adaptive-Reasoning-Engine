@@ -3,14 +3,14 @@ import logging
 import numpy as np
 import faiss
 from typing import List, Dict, Any, Callable, Optional, Tuple
-from .. import llm
-from ..memory import MemorySystem
-from ..critic import Critic
-from ..sandbox import SecurityError, safe_call_trigger, safe_call_execute_in_namespace, safe_execute_freeform, extract_python_block
+from ..reasoning import llm
+from ..memory.memory import MemorySystem
+from ..reasoning.critic import Critic
+from ..execution.sandbox import SecurityError, safe_call_trigger, safe_call_execute_in_namespace, safe_execute_freeform, extract_python_block
 from ..config import NareConfig
-from ..synthesis import verified_synthesis
-from ..solve_context import SolveContext
-from ..domain_detector import get_adaptive_tau_fast
+from .synthesis import verified_synthesis
+from ..tools.solve_context import SolveContext
+from ..tools.domain_detector import get_adaptive_tau_fast
 
 class ReasoningRouter:
     """The central routing engine for NARE.
@@ -156,7 +156,7 @@ class ReasoningRouter:
             log.append(f"Route: HYBRID PATH (sim: {max_sim:.3f})")
             prompt = self._build_hybrid_prompt(query, retrieved_eps[0])
             logging.info(f"[HYBRID] Full prompt:\n{prompt}\n---END PROMPT---")
-            candidates, h_tokens = llm.generate_samples(prompt, n=1, mode="HYBRID")
+            candidates, h_tokens = llm.generate_samples(prompt, n=1, mode="ADAPTIVE")
             logging.info(f"[HYBRID] LLM returned {len(candidates)} candidates, {h_tokens} tokens")
             if candidates:
                 logging.info(f"[HYBRID] LLM solution: {candidates[0].get('solution', '')[:300]}")
@@ -184,6 +184,13 @@ class ReasoningRouter:
         # Only on first encounter (max_sim < 0.3 = truly novel task)
         adaptive_params = self._assess_task_complexity(query) if max_sim < 0.3 else {}
 
+        # CRITICAL: Override temperature for SWE-bench precision
+        # Adaptive assessment suggests 0.5-0.9 for complexity, but for code generation
+        # we need surgical precision (0.1-0.2), not creativity
+        if 'temperature' in adaptive_params:
+            adaptive_params['temperature'] = 0.1
+            logging.info(f"[ROUTER] Overriding temperature to 0.1 for code precision")
+
         prompt = self._build_slow_prompt(query, retrieved_eps)
 
         # Use Verified Synthesis when oracle is available (theory.md requirement)
@@ -193,8 +200,12 @@ class ReasoningRouter:
             # Create SolveContext for component coordination
             solve_ctx = SolveContext(query=query, oracle=oracle)
 
+            # For SWE-bench: use the full prompt (already formatted with File: instructions)
+            # instead of letting VS create code-execution prompt
+            vs_query = prompt  # Use the formatted SLOW prompt, not raw query
+
             vs_result = verified_synthesis(
-                query=query,
+                query=vs_query,
                 propose_fn=lambda p, priors: self._propose_for_vs(p, priors, llm, adaptive_params),
                 oracle=oracle,
                 max_attempts=max_attempts,
@@ -232,10 +243,18 @@ class ReasoningRouter:
             best['solution'] = self._post_process_answer(best['solution'], "SLOW", log)
 
             # CRITICAL: Path Validation (prevent hallucinated paths)
+            # NOTE: Disabled for SWE-bench - validation happens in swe_bench_official.py
+            # because each task has different repo_path
             from ..path_validator import check_solution_paths, suggest_corrections
-            path_check = check_solution_paths(best['solution'])
 
-            if path_check['hallucination_detected']:
+            # Only validate if project_root is current directory (not SWE-bench)
+            import os
+            if os.path.exists('.git'):  # We're in a real project
+                path_check = check_solution_paths(best['solution'])
+            else:
+                path_check = {'hallucination_detected': False}
+
+            if path_check.get('hallucination_detected', False):
                 invalid = path_check['invalid_paths']
                 logging.warning(f"[ROUTER] Hallucinated paths detected: {invalid}")
                 log.append(f"Path Validation: Found {len(invalid)} invalid paths")
@@ -267,7 +286,7 @@ Check if the file should be:
 Provide your corrected answer with ONLY valid paths."""
 
                 # Single retry with path correction
-                retry_candidates, retry_tokens = llm.generate_samples(correction_prompt, n=1, temperature=0.5, mode="SLOW")
+                retry_candidates, retry_tokens = llm.generate_samples(correction_prompt, n=1, temperature=0.5, mode="ANALYTIC")
                 _solve_tokens += retry_tokens
 
                 if retry_candidates:
@@ -314,7 +333,7 @@ Please provide a CORRECTED solution. Think carefully about:
 Provide your corrected answer."""
 
                     # Single retry attempt
-                    retry_candidates, retry_tokens = llm.generate_samples(correction_prompt, n=1, temperature=0.7, mode="SLOW")
+                    retry_candidates, retry_tokens = llm.generate_samples(correction_prompt, n=1, temperature=0.7, mode="ANALYTIC")
                     _solve_tokens += retry_tokens
 
                     if retry_candidates:
@@ -371,8 +390,11 @@ Provide your corrected answer."""
 
     def _propose_for_vs(self, prompt, priors, llm_mod, adaptive_params=None):
         adaptive_params = adaptive_params or {}
-        temp = adaptive_params.get('temperature', 0.0 if not priors else min(0.3 + 0.2 * len(priors), 1.0))
-        cands, _ = llm_mod.generate_samples(prompt, n=1, temperature=temp, mode="SLOW")
+        # Use temperature from adaptive_params (already overridden to 0.1 in router)
+        # Default to 0.1 if not set
+        temp = adaptive_params.get('temperature', 0.1)
+        # Use SWE mode for file generation (not ANALYTIC mode with <solution> tags)
+        cands, _ = llm_mod.generate_samples(prompt, n=1, temperature=temp, mode="SYNTHESIS")
         return cands[0]['solution'] if cands else ""
 
     def _assess_task_complexity(self, query: str) -> Dict[str, Any]:
@@ -405,7 +427,7 @@ Extreme: novel patterns, 12 attempts, breadth 8, temp 0.9"""
 
         try:
             # Quick assessment with low temperature
-            cands, _ = llm.generate_samples(assessment_prompt, n=1, temperature=0.3, mode="FAST")
+            cands, _ = llm.generate_samples(assessment_prompt, n=1, temperature=0.3, mode="DIRECT")
             if not cands:
                 return {}
 

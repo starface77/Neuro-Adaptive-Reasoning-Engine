@@ -32,8 +32,8 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Callable, List, Optional, Tuple
 
-from .sandbox import extract_python_block, safe_execute_freeform
-from .solve_context import SolveContext
+from ..execution.sandbox import extract_python_block, safe_execute_freeform
+from ..tools.solve_context import SolveContext
 
 
 # A judge takes (query, answer_string) and returns (correct, info_dict).
@@ -246,19 +246,11 @@ def verified_synthesis(
     """
     log = logger or logging.getLogger(__name__)
     attempts: List[SynthesisAttempt] = []
-    # Initial prompt explicitly steers the LLM to emit runnable Python
-    # so the sandbox actually has something to execute. Without this
-    # nudge, Gemma-3-27B often replies with prose-only ("String
-    # manipulation. Reversal algorithm.") and VS has nothing to grade.
-    # Vanilla CoT cannot use this nudge productively because it has
-    # no executor, so this is only a Δ vs vanilla, never a regression.
-    prompt = (
-        f"Task: {query}\n\n"
-        "Output ONLY a single fenced ```python``` block that computes the\n"
-        "answer and ends with `print(answer)`.  Do not hardcode the\n"
-        "expected value — compute it from the query.  No prose outside\n"
-        "the code block."
-    )
+
+    # Use query as initial prompt directly
+    # For SWE-bench, query is already the formatted prompt with File: instructions
+    # For code execution tasks, query contains the code-execution prompt
+    prompt = query
 
     for i in range(max_attempts):
         raw = propose_fn(prompt, attempts)
@@ -276,13 +268,18 @@ def verified_synthesis(
 
         if oracle is not None:
             try:
-                # Pass executed output if available, otherwise raw response
-                # This allows oracle to extract and execute code from markdown
-                oracle_input = out if out.strip() else raw
+                # For SWE-bench style tasks, always pass raw response
+                # (contains File: path formatting, not executable code)
+                # For code execution tasks, prefer executed output
+                oracle_input = raw  # Changed: always use raw for file-based tasks
                 verdict = oracle(query, oracle_input)
                 # Tolerate non-tuple returns or wrong arity — a misbehaving
                 # external oracle should never crash the loop.
-                if isinstance(verdict, tuple) and len(verdict) >= 2:
+                if verdict is None:
+                    # Oracle unavailable (e.g., test patch couldn't be applied)
+                    # Treat as "no signal" - continue without oracle validation
+                    passed, info = None, None
+                elif isinstance(verdict, tuple) and len(verdict) >= 2:
                     passed, info = verdict[0], verdict[1]
                 elif isinstance(verdict, tuple) and len(verdict) == 1:
                     passed, info = verdict[0], None
@@ -292,11 +289,18 @@ def verified_synthesis(
                 # Oracle errored — treat as "no signal" rather than
                 # blowing up the entire synthesis.
                 passed, info = False, {"oracle_error": repr(oracle_exc)}
-            attempt.oracle_passed = bool(passed)
-            attempt.oracle_info = _normalise_oracle_info(info)
+
+            # Only set oracle_passed if we got a real verdict
+            if passed is not None:
+                attempt.oracle_passed = bool(passed)
+                attempt.oracle_info = _normalise_oracle_info(info)
+            else:
+                # Oracle unavailable - mark as None (not False)
+                attempt.oracle_passed = None
+                attempt.oracle_info = _normalise_oracle_info(info) if info else {}
 
             # Track IoU in context if available
-            if context is not None:
+            if context is not None and passed is not None:
                 iou = info.get('iou', 0.0) if isinstance(info, dict) else 0.0
                 context.add_attempt(
                     solution=out,
@@ -307,7 +311,7 @@ def verified_synthesis(
 
         attempts.append(attempt)
 
-        if attempt.oracle_passed:
+        if attempt.oracle_passed is True:
             log.info(
                 "[VS] '%s' converged on attempt %d (oracle passed)",
                 query[:60],
@@ -320,6 +324,21 @@ def verified_synthesis(
                 attempts=attempts,
                 converged=True,
                 oracle_used=True,
+            )
+
+        # Check if oracle is unavailable (None) - return first attempt without retrying
+        if attempt.oracle_passed is None:
+            log.info(
+                "[VS] '%s' oracle unavailable, returning attempt %d without validation",
+                query[:60],
+                attempt.attempt,
+            )
+            final_answer = out if out.strip() else raw
+            return SynthesisResult(
+                final_answer=final_answer,
+                attempts=attempts,
+                converged=False,
+                oracle_used=False,
             )
 
         # Check if we should extend attempts based on IoU progress

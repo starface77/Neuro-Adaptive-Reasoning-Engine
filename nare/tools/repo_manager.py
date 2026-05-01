@@ -205,22 +205,25 @@ class RepoManager:
         changes = {}
         import re
 
-        # Pattern 1: File: <path> followed by code block
-        pattern1 = r'File:\s*([^\n]+)\s*```(?:python|py)?\s*\n(.*?)\n```'
+        # Pattern 1: File: <path> followed by code block (more flexible)
+        # Matches: "File: path" with optional newlines before code block
+        pattern1 = r'File:\s*([^\n]+?)(?:\s*\n+\s*)?```(?:python|py)?\s*\n(.*?)```'
         matches = re.findall(pattern1, solution, re.DOTALL | re.IGNORECASE)
 
         for file_path, content in matches:
             file_path = file_path.strip()
-            changes[file_path] = content
+            # Remove trailing content after actual path
+            file_path = file_path.split()[0] if file_path else file_path
+            changes[file_path] = content.strip()
 
         # Pattern 2: File path in text followed by code block
         # e.g., "The file astropy/modeling/separable.py should be modified:"
-        pattern2 = r'([a-zA-Z0-9_/\-\.]+\.py)[:\s]*```(?:python|py)?\s*\n(.*?)\n```'
+        pattern2 = r'([a-zA-Z0-9_/\-\.]+\.py)(?:[:\s]+)?```(?:python|py)?\s*\n(.*?)```'
         matches2 = re.findall(pattern2, solution, re.DOTALL | re.IGNORECASE)
 
         for file_path, content in matches2:
             if file_path not in changes:
-                changes[file_path] = content
+                changes[file_path] = content.strip()
 
         # Pattern 3: Just extract all code blocks and try to infer file from context
         # Look for file paths mentioned before code blocks
@@ -250,6 +253,11 @@ class RepoManager:
                 code_lines.append(line)
 
         logging.info(f"[RepoManager] Parsed {len(changes)} file changes from solution")
+
+        # Debug: log first 500 chars if parsing failed
+        if not changes:
+            logging.warning(f"[RepoManager] Parsing failed. Solution preview:\n{solution[:500]}")
+
         return changes
 
     def run_tests(self, task_id: str, test_command: str, timeout: int = 300) -> Tuple[bool, str]:

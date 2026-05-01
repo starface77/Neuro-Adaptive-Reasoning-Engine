@@ -1,7 +1,7 @@
-from .agent import NAREProductionAgent
-from .memory import MemorySystem
-from .llm import *
-from .metrics import MetricsTracker
+from .core.agent import NAREProductionAgent
+from .memory.memory import MemorySystem
+from .reasoning.llm import *
+from .memory.metrics import MetricsTracker
 from .config import (
     NareConfig,
     DEFAULT_CONFIG,
@@ -12,7 +12,7 @@ from .config import (
     RetrievalConfig,
     SkillValidationConfig,
 )
-from .oracle import (
+from .reasoning.oracle import (
     Oracle,
     numeric_set_oracle,
     string_contains_oracle,

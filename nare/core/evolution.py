@@ -4,10 +4,11 @@ import threading
 import numpy as np
 import faiss
 from typing import List, Dict, Any, Optional, Tuple
-from .. import llm
-from ..memory import MemorySystem, episode_content_key
+from ..reasoning import llm
+from ..memory.memory import MemorySystem, episode_content_key
 from ..config import NareConfig
-from ..sandbox import safe_call_execute_in_namespace, safe_call_trigger
+from ..execution.sandbox import safe_call_execute_in_namespace, safe_call_trigger
+from .library_learning import discover_rule
 
 class EvolutionEngine:
     """Handles offline Library Learning and Skill Compilation.
@@ -56,33 +57,36 @@ class EvolutionEngine:
     def _compile_skills(self):
         """Compile reusable skills from clustered episodes.
 
-        Renamed from _sleep_phase. Removes biological metaphors
-        like "consolidating knowledge", "synaptic scaling", etc.
-
         Process:
         1. Cluster similar successful episodes
-        2. Extract generalized pattern via LLM
-        3. Validate and store as executable skill
+        2. Discover generalizing rule through SEARCH (not extraction)
+        3. Validate on holdout data
+        4. Store as executable skill
         """
         logging.info("=== [LIBRARY LEARNING] Compiling Skills ===")
-        # 1. Cluster episodes (simple approach: take successful recent episodes)
+        # 1. Cluster episodes (take successful recent episodes)
         episodes_to_cluster = [ep for ep in self.memory.episodes if ep.get('score', 0) >= 0.80]
-        if len(episodes_to_cluster) < 2:
-            logging.info("[LIBRARY LEARNING] Not enough verified episodes to cluster.")
+        if len(episodes_to_cluster) < 3:
+            logging.info("[LIBRARY LEARNING] Need ≥3 verified episodes for rule discovery.")
             return
 
-        # 2. Extract heuristics (LLM)
-        logging.info(f"[LIBRARY LEARNING] Extracting skill from {len(episodes_to_cluster)} episodes...")
-        rule = llm.extract_heuristic_rule(episodes_to_cluster, oracle=self.oracle, config=self.config)
+        # 2. Discover rule through search (NOT extraction)
+        logging.info(f"[LIBRARY LEARNING] Discovering rule from {len(episodes_to_cluster)} episodes...")
+        rule = discover_rule(
+            episodes=episodes_to_cluster,
+            oracle=self.oracle,
+            n_candidates=5,
+            holdout_ratio=0.3
+        )
 
-        # 3 & 4. Save skills
+        # 3. Save discovered rule
         if rule:
             text_to_embed = f"Pattern: {rule['pattern']}\nCode: {rule['python_code']}"
             embedding = llm.get_embedding(text_to_embed)
             self.memory.add_semantic_rule(rule, np.array(embedding, dtype=np.float32))
-            logging.info(f"[LIBRARY LEARNING] Successfully compiled skill: {rule['pattern']}")
+            logging.info(f"[LIBRARY LEARNING] Successfully compiled skill: {rule['pattern']} (confidence: {rule['confidence']:.2f})")
         else:
-            logging.warning("[LIBRARY LEARNING] Failed to compile skill.")
+            logging.warning("[LIBRARY LEARNING] Failed to discover generalizing rule.")
 
     def _validate_skills(self):
         """Validate existing skills through stress testing.

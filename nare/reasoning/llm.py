@@ -9,12 +9,12 @@ from typing import Tuple, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .oracle import Oracle
-    from .config import NareConfig
+    from ..config import NareConfig
 
 # Anthropic API configuration via environment variables
-ANTHROPIC_BASE_URL = os.getenv("ANTHROPIC_BASE_URL", "http://localhost:20128/v1")
-ANTHROPIC_AUTH_TOKEN = os.getenv("ANTHROPIC_API_KEY", "sk-1703362f337860d0-684d06-26299dc8")
-ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "kr/claude-sonnet-4.5")
+ANTHROPIC_BASE_URL = os.getenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
+ANTHROPIC_AUTH_TOKEN = os.getenv("ANTHROPIC_API_KEY")
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")
 
 def _ensure_api_key():
     """Ensure API key is configured."""
@@ -111,11 +111,19 @@ def get_embedding(text: str) -> list:
 
     return emb.tolist()
 
-def generate_samples(prompt: str, n: int = 3, temperature: float = 0.8, mode: str = "SLOW"):
-    """Generate N candidates using Anthropic API."""
+def generate_samples(prompt: str, n: int = 3, temperature: float = 0.8, mode: str = "ANALYTIC"):
+    """Generate N candidates using Anthropic API.
+
+    Modes:
+    - DIRECT: Zero-shot direct answer without reasoning
+    - ANALYTIC: Deep reasoning with step-by-step analysis (Chain-of-Thought)
+    - ADAPTIVE: Delta reasoning - adapt previous solution to new context
+    - REACTIVE: Execute triggered rule without reasoning
+    - SYNTHESIS: Program synthesis for file/code generation
+    """
     _ensure_api_key()
 
-    if mode == "SLOW":
+    if mode == "ANALYTIC":
         system_prompt = """You are an advanced reasoning engine.
 REQUIRED FORMAT:
 <abstract_signature>
@@ -127,7 +135,36 @@ REQUIRED FORMAT:
 <solution>
 [Your final actionable answer or code]
 </solution>"""
-    elif mode == "HYBRID":
+    elif mode == "SYNTHESIS":
+        # Program synthesis mode: file generation with exact format
+        system_prompt = """You are a software engineering assistant that generates complete file contents.
+
+CRITICAL OUTPUT FORMAT:
+You MUST respond with EXACTLY this format (no other text):
+
+File: <exact_file_path>
+```python
+[complete file content here]
+```
+
+RULES:
+1. Start with "File: " followed by the exact path
+2. Use the EXACT path provided in the user's message
+3. Follow immediately with a Python code block
+4. Include the COMPLETE file content (not snippets)
+5. Do NOT add explanations before or after
+6. Do NOT use relative paths or shortened paths
+
+EXAMPLE:
+File: django/conf/global_settings.py
+```python
+# Complete file content here
+import os
+DEBUG = False
+```
+
+Follow the user's instructions EXACTLY."""
+    elif mode == "ADAPTIVE":
         system_prompt = """You are an advanced reasoning engine performing DELTA REASONING.
 You have been provided with a past solution. DO NOT reason from scratch.
 REQUIRED FORMAT:
@@ -137,7 +174,7 @@ REQUIRED FORMAT:
 <solution>
 [Your final actionable answer or code, adapted for the new task]
 </solution>"""
-    elif mode == "REFLEX":
+    elif mode == "REACTIVE":
         system_prompt = """You are an advanced execution engine.
 A specific semantic rule/skill has been triggered. DO NOT PERFORM DEDUCTIVE REASONING.
 REQUIRED FORMAT:
@@ -147,8 +184,8 @@ REQUIRED FORMAT:
 <solution>
 [Immediate actionable answer or code following the rule exactly]
 </solution>"""
-    else:  # FAST or any other mode
-        system_prompt = """You are a fast reasoning engine. Provide a direct answer.
+    else:  # DIRECT or any other mode
+        system_prompt = """You are a direct answer engine. Provide concise, accurate answers.
 REQUIRED FORMAT:
 <solution>
 [Your answer]
@@ -183,11 +220,11 @@ REQUIRED FORMAT:
             reasoning, solution = "No trace provided.", content
             r_match = None
 
-            if mode == "SLOW":
+            if mode == "ANALYTIC":
                 r_match = re.search(r'<reasoning>(.*?)</reasoning>', content, re.DOTALL)
-            elif mode == "HYBRID":
+            elif mode == "ADAPTIVE":
                 r_match = re.search(r'<delta_reasoning>(.*?)</delta_reasoning>', content, re.DOTALL)
-            elif mode == "REFLEX":
+            elif mode == "REACTIVE":
                 r_match = re.search(r'<rule_activation>(.*?)</rule_activation>', content, re.DOTALL)
 
             if r_match:
@@ -220,7 +257,7 @@ def tree_of_thoughts(prompt: str, breadth: int = 1, depth: int = 2) -> tuple:
 
     temps = [0.5][:breadth]  # Single temperature for speed
     for temp in temps:
-        candidates, tokens = generate_samples(prompt, n=1, temperature=temp, mode="SLOW")
+        candidates, tokens = generate_samples(prompt, n=1, temperature=temp, mode="ANALYTIC")
         all_candidates.extend(candidates)
         total_tokens += tokens
         time.sleep(2)

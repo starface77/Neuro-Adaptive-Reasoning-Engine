@@ -8,7 +8,7 @@ import logging
 import threading
 from typing import List, Dict, Tuple, Any, Optional
 
-from .config import DEFAULT_CONFIG, NareConfig
+from ..config import DEFAULT_CONFIG, NareConfig
 
 
 def episode_content_key(query: str, solution: str = "") -> str:
