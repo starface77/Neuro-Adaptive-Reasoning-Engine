@@ -52,7 +52,7 @@ _FORBIDDEN_BARE_CALLS = frozenset({
 class ASTValidator(ast.NodeVisitor):
     """Validates Python AST against a strict whitelist."""
 
-    ALLOWED_IMPORTS = frozenset({"re", "math"})
+    ALLOWED_IMPORTS = frozenset({"re", "math", "copy", "collections", "numpy"})
 
     # Builtins the skill is allowed to reference.
     #
@@ -134,11 +134,24 @@ def _build_safe_globals() -> Dict[str, Any]:
         for name in ASTValidator.ALLOWED_BUILTINS
         if name in builtins_dict
     }
-    return {
+
+    try:
+        import numpy as np
+        numpy_module = np
+    except ImportError:
+        numpy_module = None
+
+    safe_globals = {
         "__builtins__": safe_builtins,
         "re": re,
         "math": math,
     }
+
+    if numpy_module is not None:
+        safe_globals["numpy"] = numpy_module
+        safe_globals["np"] = numpy_module
+
+    return safe_globals
 
 
 def validate_code(python_code: str) -> ast.AST:

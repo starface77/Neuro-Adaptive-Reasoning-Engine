@@ -7,7 +7,7 @@ from typing import List, Dict, Any, Callable, Optional, Tuple
 from .config import DEFAULT_CONFIG, NareConfig
 from .memory import MemorySystem
 from .metrics import MetricsTracker
-from .critic import HybridCritic
+from .critic import Critic
 from .core.router import ReasoningRouter
 from .core.evolution import EvolutionEngine
 from . import llm
@@ -25,13 +25,15 @@ class NAREProductionAgent:
         self,
         config: NareConfig = DEFAULT_CONFIG,
         persist_dir: Optional[str] = None,
+        embedding_dim: int = 3072,
     ):
         self.config = config
         self.memory = MemorySystem(
             config=config,
             persist_dir=persist_dir,
+            embedding_dim=embedding_dim,
         )
-        self.critic = HybridCritic(config=config)
+        self.critic = Critic()
         self.metrics = MetricsTracker(persist_dir=self.memory.persist_dir)
         
         # Core components
@@ -60,7 +62,7 @@ class NAREProductionAgent:
         self.metrics = MetricsTracker(persist_dir=memory.persist_dir)
         self.router.metrics = self.metrics
 
-        if config.bootstrap.load_seeds_on_init:
+        if self.config.bootstrap.load_seeds_on_init:
             self._bootstrap_load_seeds()
 
     def solve(
@@ -82,32 +84,50 @@ class NAREProductionAgent:
         
         # Post-solve actions
         self._after_solve(query, result)
-        
+
         return result
 
     def _after_solve(self, query: str, result: Dict[str, Any]):
-        """Perform background updates after a solve call."""
         route = result.get("route_decision")
         final_answer = result.get("final_answer")
-        
-        # 1. Save new episodes for SLOW/HYBRID paths
+
         if route in ("SLOW", "HYBRID") and result.get("generated_candidates"):
             best = result["generated_candidates"][0]
-            if best.get("final_score", 0) > 0.5:
+            solve_ctx = best.get("solve_context")
+
+            # Save high-quality solutions (80%+) to main memory
+            if best.get("final_score", 0) >= 0.80:
                 self._save_episode(query, best)
 
-        # 2. Trigger sleep cycle if needed
-        if self.evolution.check_sleep_trigger():
-            self.evolution.run_sleep_cycle()
+                # Check if this pattern should be compiled as a skill
+                query_emb = llm.get_embedding(query)
+                similar_eps = self.memory.retrieve_episodes(np.array([query_emb], dtype=np.float32), k=5)
+
+                # Count episodes with high similarity (>0.85)
+                high_sim_count = sum(1 for ep in similar_eps if ep.get('similarity', 0) > 0.85)
+
+                if high_sim_count >= 3:
+                    # Compile as skill
+                    self._compile_skill(query, best['solution'], query_emb)
+
+            # Save partial solutions (95%+ IoU but didn't fully converge)
+            elif solve_ctx is not None and solve_ctx.partial_solutions:
+                self._save_partial_solutions(query, solve_ctx)
+
+        # Prune memory periodically
+        if len(self.memory.episodes) > 100:
+            self.memory.prune_memory()
+
+        if self.config.sleep.enabled and self.evolution.check_compilation_trigger():
+            self.evolution.run_compilation_cycle()
 
     def _save_episode(self, query: str, best_cand: Dict):
-        """Persist a successful reasoning trace to episodic memory."""
         query_emb = llm.get_embedding(query)
         episode_data = {
             "query": query,
             "solution": best_cand['solution'],
             "reasoning_trace": best_cand.get('reasoning', 'N/A'),
-            "score": best_cand.get('final_score', 0.8),
+            "score": best_cand.get('final_score', 0.5),  # Conservative fallback
             "embedding": query_emb,
             "timestamp": time.time()
         }
@@ -117,10 +137,45 @@ class NAREProductionAgent:
     def _bootstrap_load_seeds(self):
         """Placeholder for seed loading logic."""
         pass
-    
-    def wait_for_sleep(self, timeout=300):
-        """Wait for background evolution tasks to finish."""
+
+    def _compile_skill(self, query: str, solution: str, query_emb: list):
+        """Compile repeated pattern as reusable skill."""
+        from .sandbox import extract_python_block
+
+        code_block = extract_python_block(solution)
+        if not code_block:
+            return  # Can't compile non-code solutions
+
+        # Extract pattern (first line of query as trigger)
+        pattern = query.split('\n')[0][:100]
+
+        # Store as compiled skill
+        self.memory.add_compiled_skill(
+            pattern=pattern,
+            code=code_block,
+            trigger_emb=np.array(query_emb, dtype=np.float32)
+        )
+
+        logging.info(f"[LibraryLearning] Compiled skill from pattern: {pattern}")
+
+    def _save_partial_solutions(self, query: str, context):
+        """Save partial solutions (IoU >= 0.95) for future reference."""
+        for partial in context.partial_solutions:
+            query_emb = llm.get_embedding(query)
+            episode_data = {
+                "query": query,
+                "solution": partial['solution'],
+                "reasoning_trace": f"Partial solution (IoU: {partial['iou']:.2%}, attempt: {partial['attempt_num']})",
+                "score": partial['iou'],
+                "embedding": query_emb,
+                "timestamp": time.time(),
+                "partial": True  # Mark as partial for future retrieval
+            }
+            self.memory.add_episode(episode_data, np.array([query_emb], dtype=np.float32))
+            logging.info(f"[Memory] Saved partial solution (IoU: {partial['iou']:.2%})")
+
+    def wait_for_compilation(self, timeout=300):
         start = time.time()
-        while self.evolution._is_sleeping:
+        while self.evolution._is_compiling:
             if time.time() - start > timeout: break
             time.sleep(1)

@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, List, Optional, Tuple
 
 from .sandbox import extract_python_block, safe_execute_freeform
+from .solve_context import SolveContext
 
 
 # A judge takes (query, answer_string) and returns (correct, info_dict).
@@ -89,26 +90,43 @@ def _normalise_oracle_info(info: Any) -> dict:
     return {"diagnostic": repr(info)}
 
 
-def _try_execute(raw: str) -> Tuple[str, str, Optional[str]]:
+def _try_execute(raw: str, use_subprocess: bool = True) -> Tuple[str, str, Optional[str]]:
     """Extract a fenced block (if any) and execute it.
 
-    Returns ``(code, executed_output, error)``.  ``error`` is the
-    string repr of any sandbox-side failure, or ``None`` on success.
+    Added subprocess isolation by default for security.
+
+    Args:
+        raw: Raw LLM response (may contain fenced code block)
+        use_subprocess: If True, execute in isolated subprocess (default: True)
+
+    Returns:
+        (code, executed_output, error) tuple.
+        - code: Extracted Python code block
+        - executed_output: stdout from execution
+        - error: Error message if execution failed, None on success
+
     Plain non-code answers (no fenced block) are passed through as
     ``executed_output == raw, code == ""``.
-
-    ``safe_execute_freeform`` swallows runtime exceptions and returns
-    a string starting with ``"Error: ..."``; we surface that as an
-    ``error`` so the synthesis loop can use it as feedback.
     """
     code = extract_python_block(raw)
     if not code.strip():
         # Nothing to execute — return the raw response verbatim.
         return "", raw, None
-    try:
-        out = safe_execute_freeform(code)
-    except Exception as exc:  # noqa: BLE001 — sandbox policy violations
-        return code, "", f"{type(exc).__name__}: {exc}"
+
+    
+    if use_subprocess:
+        try:
+            from .sandbox_subprocess import safe_execute_subprocess
+            out = safe_execute_subprocess(code)
+        except Exception as exc:  # noqa: BLE001 — sandbox policy violations
+            return code, "", f"{type(exc).__name__}: {exc}"
+    else:
+        # Fallback to in-process sandbox (less secure, but faster)
+        try:
+            out = safe_execute_freeform(code)
+        except Exception as exc:  # noqa: BLE001 — sandbox policy violations
+            return code, "", f"{type(exc).__name__}: {exc}"
+
     if isinstance(out, str) and out.startswith("Error: "):
         # Convention from safe_execute_freeform — runtime failure.
         return code, "", out[len("Error: "):]
@@ -119,6 +137,7 @@ def _format_feedback(
     query: str,
     attempt: SynthesisAttempt,
     expected_hint: Optional[str],
+    context: Optional[SolveContext] = None,
 ) -> str:
     """Turn an attempt's trace into a feedback prompt for the next attempt.
 
@@ -152,7 +171,7 @@ def _format_feedback(
     ):
         parts += [
             "",
-            "IMPORTANT: your code did not call `print()`, so the sandbox",
+            " your code did not call `print()`, so the sandbox",
             "captured no output. End your code with `print(answer)` (or",
             "whatever variable holds the result) so the answer is visible.",
         ]
@@ -160,6 +179,13 @@ def _format_feedback(
         # Oracle's diagnostic dict — include verbatim, it's the ground
         # truth signal vanilla CoT does not have access to.
         parts += ["", f"Oracle diagnostic: {attempt.oracle_info}"]
+
+    # Add context-aware feedback if available
+    if context is not None:
+        context_feedback = context.get_feedback_for_next_attempt()
+        if context_feedback:
+            parts += ["", context_feedback]
+
     if expected_hint:
         parts += ["", f"Expected (training only): {expected_hint}"]
     parts += [
@@ -181,6 +207,7 @@ def verified_synthesis(
     max_attempts: int = 5,
     expected_hint: Optional[str] = None,
     logger: Optional[logging.Logger] = None,
+    context: Optional[SolveContext] = None,
 ) -> SynthesisResult:
     """Run the verified-synthesis loop.
 
@@ -207,6 +234,9 @@ def verified_synthesis(
         answer (LEARN phase, hold-out validation, REM replay).
     logger
         Optional logger; falls back to module logger.
+    context
+        Optional SolveContext for component coordination. Tracks IoU
+        progress and enables adaptive max_attempts extension.
 
     Returns
     -------
@@ -246,7 +276,10 @@ def verified_synthesis(
 
         if oracle is not None:
             try:
-                verdict = oracle(query, out)
+                # Pass executed output if available, otherwise raw response
+                # This allows oracle to extract and execute code from markdown
+                oracle_input = out if out.strip() else raw
+                verdict = oracle(query, oracle_input)
                 # Tolerate non-tuple returns or wrong arity — a misbehaving
                 # external oracle should never crash the loop.
                 if isinstance(verdict, tuple) and len(verdict) >= 2:
@@ -262,6 +295,16 @@ def verified_synthesis(
             attempt.oracle_passed = bool(passed)
             attempt.oracle_info = _normalise_oracle_info(info)
 
+            # Track IoU in context if available
+            if context is not None:
+                iou = info.get('iou', 0.0) if isinstance(info, dict) else 0.0
+                context.add_attempt(
+                    solution=out,
+                    iou=iou,
+                    converged=bool(passed),
+                    error=err
+                )
+
         attempts.append(attempt)
 
         if attempt.oracle_passed:
@@ -270,12 +313,24 @@ def verified_synthesis(
                 query[:60],
                 attempt.attempt,
             )
+            # Return executed output if available, otherwise raw response
+            final_answer = out if out.strip() else raw
             return SynthesisResult(
-                final_answer=out,
+                final_answer=final_answer,
                 attempts=attempts,
                 converged=True,
                 oracle_used=True,
             )
+
+        # Check if we should extend attempts based on IoU progress
+        if context is not None and i + 1 >= max_attempts:
+            if context.should_extend_attempts(max_attempts):
+                max_attempts += 2
+                log.info(
+                    "[VS] Extending max_attempts to %d (best IoU: %.2f)",
+                    max_attempts,
+                    context.best_iou,
+                )
 
         if oracle is None:
             # No oracle → no way to know if attempt 1 was correct.
@@ -293,7 +348,7 @@ def verified_synthesis(
             )
 
         # Oracle present + failed → build feedback for next attempt.
-        prompt = _format_feedback(query, attempt, expected_hint)
+        prompt = _format_feedback(query, attempt, expected_hint, context)
 
     # Exhausted attempts without oracle convergence.  The bound we
     # want is **NARE >= attempt 1**: VS may add wins (later attempt

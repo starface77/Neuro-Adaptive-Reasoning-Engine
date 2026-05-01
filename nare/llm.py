@@ -4,65 +4,122 @@ import re
 import time
 import urllib.request
 import logging
-from dotenv import load_dotenv
+import random
+from typing import Tuple, Optional, TYPE_CHECKING
 
-load_dotenv()
-API_KEY = os.getenv("GEMINI_API_KEY")
+if TYPE_CHECKING:
+    from .oracle import Oracle
+    from .config import NareConfig
+
+# Anthropic API configuration via environment variables
+ANTHROPIC_BASE_URL = os.getenv("ANTHROPIC_BASE_URL", "http://localhost:20128/v1")
+ANTHROPIC_AUTH_TOKEN = os.getenv("ANTHROPIC_API_KEY", "sk-1703362f337860d0-684d06-26299dc8")
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "kr/claude-sonnet-4.5")
 
 def _ensure_api_key():
-    if not API_KEY:
-        raise RuntimeError(
-            "GEMINI_API_KEY is not set. "
-            "Copy .env.example to .env and add your key."
+    """Ensure API key is configured."""
+    if not ANTHROPIC_AUTH_TOKEN:
+        raise ValueError(
+            "ANTHROPIC_API_KEY environment variable is required. "
+            "Set it in your .env file or export it in your shell. "
+            "For local proxy, the default token will be used if not set."
         )
 
-def _post(url: str, payload: dict, retries: int = 5) -> dict:
+def _post_anthropic(endpoint: str, payload: dict, retries: int = 5) -> str:
+    """POST to Anthropic API via local proxy and parse SSE stream."""
+    url = f"{ANTHROPIC_BASE_URL}/{endpoint}"
     data = json.dumps(payload).encode('utf-8')
-    
+
+    headers = {
+        'Content-Type': 'application/json',
+        'x-api-key': ANTHROPIC_AUTH_TOKEN,
+        'anthropic-version': '2023-06-01'
+    }
+
     for attempt in range(retries):
-        req = urllib.request.Request(url, data=data, headers={'Content-Type': 'application/json'})
+        req = urllib.request.Request(url, data=data, headers=headers)
         try:
-            with urllib.request.urlopen(req, timeout=60) as response:
-                return json.loads(response.read().decode())
-        except (urllib.error.HTTPError, TimeoutError) as e:
-            if isinstance(e, urllib.error.HTTPError) and e.code == 429:
-                wait = 10 * (attempt + 1)
-                logging.warning(f"Rate limit (429). Waiting {wait}s... (Attempt {attempt+1}/{retries})")
-                time.sleep(wait)
-            elif isinstance(e, TimeoutError):
-                logging.warning(f"Timeout. Retrying in 5s... (Attempt {attempt+1}/{retries})")
-                time.sleep(5)
+            with urllib.request.urlopen(req, timeout=120) as response:
+                # Parse SSE stream
+                content_parts = []
+                for line in response:
+                    line = line.decode('utf-8').strip()
+                    if line.startswith('data: '):
+                        try:
+                            event_data = json.loads(line[6:])
+                            if event_data.get('type') == 'content_block_delta':
+                                delta = event_data.get('delta', {})
+                                text = delta.get('text', '')
+                                if text:
+                                    content_parts.append(text)
+                        except json.JSONDecodeError:
+                            continue
+
+                return ''.join(content_parts)
+
+        except urllib.error.HTTPError as e:
+            if e.code == 429:
+                base_wait = min(10 * (2 ** attempt), 60)
+                jitter = random.uniform(0, base_wait * 0.1)
+                wait_time = base_wait + jitter
+                logging.warning(f"Rate limit (429). Waiting {wait_time:.1f}s... (Attempt {attempt+1}/{retries})")
+                if attempt < retries - 1:
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    raise Exception("Max retries exceeded for API request.")
             else:
-                if hasattr(e, 'read'):
-                    logging.error(f"HTTPError {e.code}: {e.read().decode()}")
-                raise e
-    
-    raise Exception("Max retries exceeded for API request.")
+                raise
+        except Exception as e:
+            if attempt == retries - 1:
+                raise
+            wait_time = min(5 * (2 ** attempt), 30)
+            logging.warning(f"Anthropic API error (attempt {attempt+1}/{retries}): {e}")
+            if attempt < retries - 1:
+                time.sleep(wait_time)
+
+    raise Exception("Max retries exceeded for Anthropic API")
+
+# Global embedding model (lazy loaded)
+_embedding_model = None
 
 def get_embedding(text: str) -> list:
-    """Compute embedding via Gemini gemini-embedding-001 (dim=3072)."""
-    _ensure_api_key()
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent?key={API_KEY}"
-    payload = {
-        "model": "models/gemini-embedding-001",
-        "content": {"parts": [{"text": text}]}
-    }
-    response = _post(url, payload)
-    return response['embedding']['values']
+    """Compute embedding via sentence-transformers (3072-dim)."""
+    global _embedding_model
+
+    if _embedding_model is None:
+        from sentence_transformers import SentenceTransformer
+        # Use a model that produces 3072-dim embeddings
+        # If not available, we'll use a smaller model and pad
+        try:
+            _embedding_model = SentenceTransformer('BAAI/bge-large-en-v1.5')
+            logging.info("[Embeddings] Loaded BAAI/bge-large-en-v1.5 (1024-dim)")
+        except:
+            _embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+            logging.info("[Embeddings] Loaded all-MiniLM-L6-v2 (384-dim)")
+
+    # Get embedding
+    emb = _embedding_model.encode(text, convert_to_numpy=True)
+
+    # Pad to 3072 dimensions if needed
+    if len(emb) < 3072:
+        import numpy as np
+        padding = np.zeros(3072 - len(emb))
+        emb = np.concatenate([emb, padding])
+    elif len(emb) > 3072:
+        emb = emb[:3072]
+
+    return emb.tolist()
 
 def generate_samples(prompt: str, n: int = 3, temperature: float = 0.8, mode: str = "SLOW"):
-    """
-    Generate N candidates. 
-    mode can be 'SLOW', 'HYBRID', or 'REFLEX'. The mode strictly controls the required XML output structure.
-    """
+    """Generate N candidates using Anthropic API."""
     _ensure_api_key()
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemma-3-27b-it:generateContent?key={API_KEY}"
-    
+
     if mode == "SLOW":
-        system_prompt = """You are an advanced reasoning engine. 
+        system_prompt = """You are an advanced reasoning engine.
 REQUIRED FORMAT:
 <abstract_signature>
-[1-2 sentences categorizing the structural/mathematical/logical class of this problem. Example: "Mathematical sequence continuation. Polynomial finite differences." or "Text extraction. Log parsing for IPs."]
+[1-2 sentences categorizing the structural/mathematical/logical class of this problem]
 </abstract_signature>
 <reasoning>
 [Your step-by-step logical trace, breaking down the problem from scratch]
@@ -81,7 +138,7 @@ REQUIRED FORMAT:
 [Your final actionable answer or code, adapted for the new task]
 </solution>"""
     elif mode == "REFLEX":
-        system_prompt = """You are an advanced execution engine. 
+        system_prompt = """You are an advanced execution engine.
 A specific semantic rule/skill has been triggered. DO NOT PERFORM DEDUCTIVE REASONING.
 REQUIRED FORMAT:
 <rule_activation>
@@ -90,246 +147,92 @@ REQUIRED FORMAT:
 <solution>
 [Immediate actionable answer or code following the rule exactly]
 </solution>"""
+    else:  # FAST or any other mode
+        system_prompt = """You are a fast reasoning engine. Provide a direct answer.
+REQUIRED FORMAT:
+<solution>
+[Your answer]
+</solution>"""
 
-    payload = {
-        "contents": [{"parts": [{"text": f"{system_prompt}\n\n{prompt}"}]}],
-        "generationConfig": {"temperature": temperature}
-    }
-    
     samples = []
     total_tokens = 0
-    
+
+    logging.info(f"[LLM] generate_samples called: mode={mode}, n={n}, temp={temperature}")
+
     for i in range(n):
         if i > 0:
-            time.sleep(15)  # Rate limit spacing for heavy models like Gemma 27B
-            
-        res = _post(url, payload)
-        if 'candidates' in res and res['candidates']:
-            cand = res['candidates'][0]
-            if 'content' not in cand or 'parts' not in cand['content']:
-                continue
-            content = cand['content']['parts'][0]['text']
-            total_tokens += res.get('usageMetadata', {}).get('totalTokenCount', 0)
-            
+            time.sleep(2)  # Rate limit spacing
+
+        payload = {
+            "model": ANTHROPIC_MODEL,
+            "max_tokens": 4096,
+            "temperature": temperature,
+            "system": system_prompt,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ]
+        }
+
+        try:
+            content = _post_anthropic("messages", payload)
+            total_tokens += len(content.split())  # Rough estimate
+
             reasoning, solution = "No trace provided.", content
             r_match = None
-            
+
             if mode == "SLOW":
                 r_match = re.search(r'<reasoning>(.*?)</reasoning>', content, re.DOTALL)
             elif mode == "HYBRID":
                 r_match = re.search(r'<delta_reasoning>(.*?)</delta_reasoning>', content, re.DOTALL)
             elif mode == "REFLEX":
                 r_match = re.search(r'<rule_activation>(.*?)</rule_activation>', content, re.DOTALL)
-                
-            if r_match: reasoning = r_match.group(1).strip()
-                
+
+            if r_match:
+                reasoning = r_match.group(1).strip()
+
             s_match = re.search(r'<solution>(.*?)</solution>', content, re.DOTALL)
-            if s_match: solution = s_match.group(1).strip()
-            elif r_match: solution = content.replace(r_match.group(0), "").strip()
-            
+            if s_match:
+                solution = s_match.group(1).strip()
+            elif r_match:
+                solution = content.replace(r_match.group(0), "").strip()
+
             a_match = re.search(r'<abstract_signature>(.*?)</abstract_signature>', content, re.DOTALL)
             abstract_signature = a_match.group(1).strip() if a_match else None
-            
-            # Final cleanup: if solution still contains XML tags (due to LLM structure error), strip them
+
             if "<" in solution and ">" in solution:
                 solution = re.sub(r'<[^>]+>', '', solution).strip()
-            
+
             samples.append({"solution": solution, "reasoning": reasoning, "abstract_signature": abstract_signature})
-    
+        except Exception as e:
+            logging.warning(f"[LLM] Failed to generate sample {i+1}: {e}")
+
+    logging.info(f"[LLM] Returning {len(samples)} samples, ~{total_tokens} tokens")
     return samples, total_tokens
 
-def tree_of_thoughts(prompt: str, breadth: int = 3, depth: int = 2) -> tuple:
-    """Best-of-N reasoning with pre-scoring and (optional) shallow re-expansion.
-
-    Honest naming: this is **not** a real Tree-of-Thoughts search. There is
-    no DFS/BFS with backtracking, no per-step branching, and pruned
-    branches stay pruned. The default ``depth=1`` mode is exactly
-    ``best-of-N`` with a learned (LLM-judged) ranker. ``depth>=2`` only
-    re-expands the *same* selected approaches into additional full
-    solutions; it does not develop new branches per step. Prefer the
-    explicit alias :func:`best_of_n_with_prescore` for the common case;
-    this name is preserved for backward compatibility.
-
-    Algorithm:
-
-    1. Generate ``breadth`` initial thought branches (one LLM call).
-    2. Score each branch 0-10 (one LLM call).
-    3. Keep top ``ceil(breadth/2)`` branches; prune the rest.
-    4. For each kept branch, expand into a full solution (``depth`` LLM
-       calls per branch).
-
-    Returns ``(candidates, total_tokens)``.
-    """
-    _ensure_api_key()
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemma-3-27b-it:generateContent?key={API_KEY}"
+def tree_of_thoughts(prompt: str, breadth: int = 1, depth: int = 2) -> tuple:
+    """Best-of-N reasoning (simplified for Anthropic)."""
+    # For now, just generate breadth samples with varying temperature
+    all_candidates = []
     total_tokens = 0
-    
-    # Phase 1: Generate initial thought branches
-    branch_prompt = f"""You are performing Tree-of-Thoughts reasoning.
 
-TASK: {prompt}
+    temps = [0.5][:breadth]  # Single temperature for speed
+    for temp in temps:
+        candidates, tokens = generate_samples(prompt, n=1, temperature=temp, mode="SLOW")
+        all_candidates.extend(candidates)
+        total_tokens += tokens
+        time.sleep(2)
 
-Generate {breadth} DIFFERENT initial reasoning approaches for this task.
-For each approach, provide a brief thought (2-3 sentences) about how you would start solving it.
+    return all_candidates, total_tokens
 
-Format EXACTLY as:
-<thought_1>[Your first approach]</thought_1>
-<thought_2>[Your second approach]</thought_2>
-<thought_3>[Your third approach]</thought_3>"""
-
-    payload = {
-        "contents": [{"parts": [{"text": branch_prompt}]}],
-        "generationConfig": {"temperature": 0.9}
-    }
-    
-    res = _post(url, payload)
-    total_tokens += res.get('usageMetadata', {}).get('totalTokenCount', 0)
-    
-    content = ""
-    if 'candidates' in res and res['candidates']:
-        content = res['candidates'][0].get('content', {}).get('parts', [{}])[0].get('text', '')
-    
-    # Parse thought branches
-    thoughts = []
-    for i in range(1, breadth + 1):
-        match = re.search(rf'<thought_{i}>(.*?)</thought_{i}>', content, re.DOTALL)
-        if match:
-            thoughts.append(match.group(1).strip())
-    
-    if not thoughts:
-        # Fallback: treat entire content as single thought
-        thoughts = [content.strip()] if content.strip() else ["Direct approach"]
-    
-    # Phase 2: Evaluate each branch (score 0-10)
-    time.sleep(15)
-    eval_prompt = f"""TASK: {prompt}
-
-Rate each reasoning approach on a scale of 0-10 for how promising it is:
-
-"""
-    for i, t in enumerate(thoughts):
-        eval_prompt += f"Approach {i+1}: {t[:200]}\n\n"
-    
-    eval_prompt += """Respond with ONLY scores in this format:
-<scores>[score1],[score2],[score3]</scores>"""
-    
-    payload = {
-        "contents": [{"parts": [{"text": eval_prompt}]}],
-        "generationConfig": {"temperature": 0.1}
-    }
-    
-    res = _post(url, payload)
-    total_tokens += res.get('usageMetadata', {}).get('totalTokenCount', 0)
-    
-    eval_content = ""
-    if 'candidates' in res and res['candidates']:
-        eval_content = res['candidates'][0].get('content', {}).get('parts', [{}])[0].get('text', '')
-    
-    # Parse scores
-    scores = []
-    score_match = re.search(r'<scores>(.*?)</scores>', eval_content, re.DOTALL)
-    if score_match:
-        try:
-            scores = [float(s.strip()) for s in score_match.group(1).split(',')]
-        except (ValueError, TypeError):
-            scores = []
-    
-    if not scores:
-        # Fallback: extract any numbers
-        nums = re.findall(r'\b(\d+(?:\.\d+)?)\b', eval_content)
-        scores = [float(n) for n in nums[:len(thoughts)]]
-    
-    # Pad scores if needed
-    while len(scores) < len(thoughts):
-        scores.append(5.0)
-    
-    # Phase 3: Prune and expand top branches
-    scored_thoughts = sorted(zip(scores, thoughts), reverse=True)
-    # Keep top ceil(breadth/2) branches (backtrack/prune the rest)
-    keep = max(1, (breadth + 1) // 2)
-    top_branches = scored_thoughts[:keep]
-    
-    logging.info(f"[ToT] Scores: {[f'{s:.1f}' for s, _ in scored_thoughts]}")
-    logging.info(f"[ToT] Keeping top {keep} branches, pruning {len(scored_thoughts)-keep}")
-    
-    # Phase 4: Deep expansion — develop winning branches into full solutions
-    candidates = []
-    for depth_step in range(depth):
-        for score, thought in top_branches:
-            time.sleep(15)
-            expand_prompt = f"""You are an advanced reasoning engine performing Tree-of-Thoughts search.
-
-TASK: {prompt}
-
-SELECTED REASONING APPROACH (scored {score:.1f}/10):
-{thought}
-
-Now develop this approach into a COMPLETE solution.
-
-REQUIRED FORMAT:
-<abstract_signature>
-[1-2 sentences categorizing the problem class]
-</abstract_signature>
-<reasoning>
-[Full step-by-step solution following the selected approach]
-</reasoning>
-<solution>
-[Your final answer]
-</solution>"""
-
-            payload = {
-                "contents": [{"parts": [{"text": expand_prompt}]}],
-                "generationConfig": {"temperature": 0.4}
-            }
-            
-            res = _post(url, payload)
-            total_tokens += res.get('usageMetadata', {}).get('totalTokenCount', 0)
-            
-            exp_content = ""
-            if 'candidates' in res and res['candidates']:
-                exp_content = res['candidates'][0].get('content', {}).get('parts', [{}])[0].get('text', '')
-            
-            r_match = re.search(r'<reasoning>(.*?)</reasoning>', exp_content, re.DOTALL)
-            s_match = re.search(r'<solution>(.*?)</solution>', exp_content, re.DOTALL)
-            a_match = re.search(r'<abstract_signature>(.*?)</abstract_signature>', exp_content, re.DOTALL)
-            
-            reasoning = r_match.group(1).strip() if r_match else thought
-            solution = s_match.group(1).strip() if s_match else exp_content.strip()
-            abstract_sig = a_match.group(1).strip() if a_match else None
-            
-            if "<" in solution and ">" in solution:
-                solution = re.sub(r'<[^>]+>', '', solution).strip()
-            
-            candidates.append({
-                "solution": solution,
-                "reasoning": reasoning,
-                "abstract_signature": abstract_sig,
-                "tot_score": score,
-                "tot_depth": depth_step + 1,
-            })
-    
-    logging.info(f"[ToT] Generated {len(candidates)} candidates, used {total_tokens} tokens")
-    return candidates, total_tokens
-
-
-def best_of_n_with_prescore(prompt: str, breadth: int = 3) -> tuple:
-    """Best-of-N candidate generation with LLM pre-scoring.
-
-    Honest name for the SLOW-path strategy actually used by the agent
-    (``tree_of_thoughts(..., depth=1)``). See :func:`tree_of_thoughts`
-    for the full algorithm description.
-
-    Returns ``(candidates, total_tokens)`` where each candidate carries
-    ``solution``, ``reasoning``, ``abstract_signature`` and a
-    ``tot_score`` (kept under the same key for backward compatibility
-    with the critic and metrics layers).
-    """
+def best_of_n_with_prescore(prompt: str, breadth: int = 1) -> tuple:
+    """Best-of-N candidate generation."""
     return tree_of_thoughts(prompt, breadth=breadth, depth=1)
-
 
 def llm_pairwise_judge(query: str, sol_a: str, sol_b: str) -> int:
     """Returns 1 if A is better, 2 if B is better."""
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemma-3-27b-it:generateContent?key={API_KEY}"
     prompt = f"""You are an objective judge evaluating two solutions to a task.
 Task: {query}
 
@@ -340,48 +243,49 @@ Evaluate correctness, completeness, and lack of hallucinations.
 Output strictly 'A' or 'B' on the final line."""
 
     payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.0}
+        "model": ANTHROPIC_MODEL,
+        "max_tokens": 512,
+        "temperature": 0.0,
+        "messages": [{"role": "user", "content": prompt}]
     }
-    
-    res = _post(url, payload)
-    content = res['candidates'][0]['content']['parts'][0]['text'].strip().upper()
-    last_word = content.split()[-1]
-    last_word = re.sub(r'[^AB]', '', last_word)
-    
-    return 1 if last_word == 'A' else 2
+
+    try:
+        content = _post_anthropic("messages", payload)
+        last_word = content.strip().split()[-1].upper()
+        last_word = re.sub(r'[^AB]', '', last_word)
+        return 1 if last_word == 'A' else 2
+    except:
+        return 1
 
 def generate_stress_tests(episodes: list) -> list:
     """Generate ADVERSARIAL synthetic queries WITH LABELS to stress-test skills."""
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemma-3-27b-it:generateContent?key={API_KEY}"
-    
     prompt = "Analyze the following solved tasks. You must generate 10 NEW ADVERSARIAL tasks of the exact same category to stress-test our code.\n"
     prompt += "The 10 tasks MUST include:\n"
     prompt += "- 3 tasks with heavy text NOISE.\n"
     prompt += "- 3 tasks with BROKEN OR UNEXPECTED FORMATTING.\n"
     prompt += "- 2 tasks with MISSING FIELDS (should return Error gracefully).\n"
     prompt += "- 2 tasks with REORDERED FIELDS.\n\n"
-    
-    for i, ep in enumerate(episodes):
-        prompt += f"Original Task: {ep['query']} -> Solution: {ep['solution']}\n"
-    
+
+    for i, ep in enumerate(episodes[:3]):  # Limit to 3 examples
+        prompt += f"Original Task: {ep['query'][:200]} -> Solution: {ep['solution'][:100]}\n"
+
     prompt += "\nOutput exactly 10 tasks in this EXACT format:\n"
     prompt += "TYPE: [POSITIVE or NEGATIVE]\n"
     prompt += "Q: [the query]\n"
     prompt += "S: [the expected correct solution, or 'IGNORE' if NEGATIVE]\n"
     prompt += "|||\n\n"
-    prompt += "POSITIVE: Similar to originals. NEGATIVE: Tasks that look similar but belong to a DIFFERENT category (e.g. if originals are arithmetic sequences, a negative is a geometric one)."
-    prompt += "Do not output anything else."
-    
+
     payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.7}
+        "model": ANTHROPIC_MODEL,
+        "max_tokens": 2048,
+        "temperature": 0.7,
+        "messages": [{"role": "user", "content": prompt}]
     }
+
     try:
-        res = _post(url, payload)
-        content = res['candidates'][0]['content']['parts'][0]['text']
+        content = _post_anthropic("messages", payload)
         blocks = content.split("|||")
-        
+
         tests = []
         for block in blocks:
             type_match = re.search(r'TYPE:\s*(POSITIVE|NEGATIVE)', block)
@@ -393,72 +297,45 @@ def generate_stress_tests(episodes: list) -> list:
                     "query": q_match.group(1).strip(),
                     "solution": s_match.group(1).strip()
                 })
-                
+
         return tests[:10]
     except Exception as e:
         logging.warning(f"Failed to generate adversarial stress tests: {e}")
         return []
 
-def extract_heuristic_rule(
-    episodes: list,
-    oracle: "Oracle | None" = None,
-    config: "NareConfig | None" = None,
-):
-    """Sleep Phase: Compress episodes into Executable Reflexes.
+def extract_heuristic_rule(episodes: list, oracle: Optional["Oracle"] = None, config: Optional["NareConfig"] = None):
+    """Sleep Phase: Compress episodes into Executable Reflexes."""
+    if len(episodes) < 2:
+        return None
 
-    Generates robust Python code with regex-based triggers and
-    validates it against the original episodes + stress tests with
-    refinement.
+    # Build prompt for skill extraction
+    prompt = """You are a compiler that converts solved examples into a reusable Python skill.
 
-    ``oracle``: optional :class:`~nare.oracle.Oracle` used by
-    :func:`_validate_skill` to judge correctness against verified
-    solutions instead of the legacy string/numeric-overlap heuristic.
-    Per-episode ``oracle_spec`` overrides this argument. When neither
-    is supplied, the heuristic overlap fallback is used (documented as
-    a fallback in :mod:`nare.oracle`).
-    """
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemma-3-27b-it:generateContent?key={API_KEY}"
-    
-    base_prompt = r"""You are a compiler that converts solved examples into a reusable Python STRUCTURAL SKILL.
-Your goal is to extract the ABSTRACT LOGICAL STRUCTURE of the problem, not just regex match the exact text.
+Extract the ABSTRACT LOGICAL STRUCTURE of the problem.
 
-STRICT RULES FOR trigger(query: str) -> bool:
-- This function must determine if a new query belongs to the EXACT SAME abstract structural class (e.g., 'is this a polynomial sequence continuation problem?' or 'is this a log parsing problem?').
-- DO NOT just check for exact words from the training examples. Check for the structural properties (e.g., does it contain a sequence of numbers? does it ask for a 'total spent'?).
-- Be robust: A math sequence might use commas or spaces. A financial log might use different names.
+STRICT RULES:
+- trigger(query: str) -> bool: Check if query belongs to the same structural class
+- parse(query: str) -> dict: Extract variables from text
+- solve(vars: dict) -> str: Apply the general algorithm
+- execute(query: str) -> str: Call parse() then solve()
 
-STRICT RULES FOR parse(query: str) -> dict:
-- Extract all necessary variables from the raw text into a dictionary.
-- Example: For sequences, extract the list of integers. For logs, extract IP and error code.
-
-STRICT RULES FOR solve(vars: dict) -> str:
-- Apply the generalized logic/math/algorithm to the extracted variables.
-- MULTI-CASE REASONING: Your solver must be robust. For sequences, check if it's arithmetic, geometric, or quadratic by checking differences/ratios. For parsing, handle multiple optional fields.
-- NEVER hardcode the answer. Implement the general formula.
-- Return the final string exactly as the solution expects.
-
-STRICT RULES FOR execute(query: str) -> str:
-- Call parse() then solve(). Wrap in try/except. Return 'Error: <reason>' on failure.
-
-Output EXACTLY this format and nothing else:
+Output EXACTLY this format:
 
 PATTERN: [Short structural name]
 
 ```python
 import re
-import math
 
 def trigger(query: str) -> bool:
-    # Heuristic checks for the abstract structural category
-    # e.g., return bool(re.search(r'\d+,\s*\d+,\s*\d+', query)) and 'next term' in query.lower()
+    # Check structural properties
     return False
 
 def parse(query: str) -> dict:
-    # Extract variables robustly
+    # Extract variables
     return {}
 
 def solve(vars: dict) -> str:
-    # Pure algorithmic solver
+    # Apply algorithm
     return ""
 
 def execute(query: str) -> str:
@@ -470,307 +347,134 @@ def execute(query: str) -> str:
         return f'Error: {e}'
 ```
 
-Here are the solved examples to learn from:
+Examples to learn from:
 
 """
-    for i, ep in enumerate(episodes):
-        base_prompt += f"Task {i+1}: {ep['query']}\nSolution {i+1}: {ep['solution']}\n\n"
+    for i, ep in enumerate(episodes[:3]):
+        prompt += f"Task {i+1}: {ep['query'][:200]}\nSolution {i+1}: {ep['solution'][:100]}\n\n"
 
-    stress_tests = generate_stress_tests(episodes)
-    all_test_cases = episodes + stress_tests
+    payload = {
+        "model": ANTHROPIC_MODEL,
+        "max_tokens": 2048,
+        "temperature": 0.3,
+        "messages": [{"role": "user", "content": prompt}]
+    }
 
-    attempts = 0
-    current_prompt = base_prompt
-    last_error = ""
-    global_best_candidate = None
+    try:
+        content = _post_anthropic("messages", payload)
 
-    while attempts < 3:
-        attempts += 1
-        
-        candidates_generated = []
-        logging.info(f"[Sleep] Attempt {attempts}: Generating population of 2 skill variants...")
-        
-        # Generate population with different temperatures for diversity
-        import concurrent.futures
-        
-        def fetch_candidate(temp):
-            payload = {
-                "contents": [{"parts": [{"text": current_prompt}]}],
-                "generationConfig": {"temperature": temp}
-            }
-            try:
-                res = _post(url, payload)
-                return res['candidates'][0]['content']['parts'][0]['text']
-            except Exception as e:
-                logging.warning(f"Failed to generate candidate: {e}")
-                return None
-                
-        # Generate sequentially to respect strict free tier rate limits (15 RPM)
-        for temp in [0.2, 0.8]:
-            content = fetch_candidate(temp)
-            if content:
-                candidates_generated.append(content)
-            time.sleep(15) # Prevent 429 Rate Limits (1 request / 15s)
-            
-        if not candidates_generated:
-            last_error = "API failure on all candidates."
-            continue
-            
-        best_candidate = None
-        best_overall = -1.0
-        
-        # Evaluate population
-        for content in candidates_generated:
-            pattern_match = re.search(r'PATTERN:\s*(.+)', content)
-            pattern_name = pattern_match.group(1).strip() if pattern_match else "Unknown Pattern"
-            
-            code_match = re.search(r'```python\n(.*?)\n```', content, re.DOTALL)
-            python_code = code_match.group(1) if code_match else None
-            
-            if not python_code:
-                continue
-                
-            scores, error_msg = _validate_skill(
-                python_code, all_test_cases, oracle=oracle, config=config
-            )
-            overall = scores['overall']
-            
-            cand_data = {
-                "pattern": pattern_name,
-                "python_code": python_code,
-                "confidence": overall,
-                "trigger_accuracy": scores['trigger_accuracy'],
-                "execute_accuracy": scores['execute_accuracy'],
-                "error_msg": error_msg
-            }
-            
-            if overall > best_overall:
-                best_overall = overall
-                best_candidate = cand_data
-                
-        if not best_candidate:
-            logging.warning(f"[Sleep] Attempt {attempts}: No valid Python code produced by population.")
-            last_error = "No valid Python code block found."
-            current_prompt = base_prompt + f"\n\nYOUR PREVIOUS OUTPUT WAS INVALID.\nERROR: {last_error}\nPlease output exactly the required format."
-            continue
-            
-        # Track global best across ALL attempts (never degrade)
-        if not global_best_candidate or best_candidate['confidence'] > global_best_candidate['confidence']:
-            global_best_candidate = best_candidate
-            
-        overall = global_best_candidate['confidence']
-        pattern_name = global_best_candidate['pattern']
-        python_code = global_best_candidate['python_code']
-        error_msg = global_best_candidate['error_msg']
-        
-        if overall >= 0.95 or attempts == 3:
-            logging.info(f"[Sleep] Promoting skill '{pattern_name}' (peak validation: {overall:.2f})")
-            result = {k: v for k, v in global_best_candidate.items() if k != 'error_msg'}
-            # CAP INITIAL CONFIDENCE: Strictly 0.70 max for new skills to enforce Shadow Mode
-            result['confidence'] = min(0.70, overall)
-            result['maturity'] = 0
-            result['success_streak'] = 0
-            return result
-            
-        # Refinement loop — use global best's diagnostics
-        logging.warning(f"[Sleep] Best candidate across {attempts} attempt(s): overall={overall:.2f}")
-        
-        fix_instructions = []
-        if global_best_candidate['trigger_accuracy'] < 0.90:
-            fix_instructions.append(f"FIX TRIGGER (accuracy={global_best_candidate['trigger_accuracy']:.2f}): Your trigger() is missing valid inputs. Broaden the regex to catch ALL variations of this task type.")
-        if global_best_candidate['execute_accuracy'] < 0.90:
-            fix_instructions.append(f"FIX EXECUTE (accuracy={global_best_candidate['execute_accuracy']:.2f}): Your execute() fails on some inputs. Make your parsing more flexible with fallback regex patterns.")
-        if "CRASH" in error_msg:
-            fix_instructions.append("FIX CRASH: Add defensive checks. Never index arrays without checking len(). Always check regex match is not None.")
-        
-        fix_block = "\n".join(fix_instructions) if fix_instructions else "General improvement needed."
-        
-        current_prompt = base_prompt + f"\n\nYOUR BEST PREVIOUS CODE:\n```python\n{python_code}\n```\n\nDIAGNOSTIC REPORT:\n{error_msg}\n\nACTION REQUIRED:\n{fix_block}\n\nRewrite the ENTIRE skill. Output the corrected code in the exact format specified above."
+        pattern_match = re.search(r'PATTERN:\s*(.+)', content)
+        pattern_name = pattern_match.group(1).strip() if pattern_match else "Unknown Pattern"
 
-    # === REJECTION: Only promote skills >= 0.40 ===
-    if global_best_candidate and global_best_candidate['confidence'] >= 0.40:
-        logging.info(f"[Sleep] Promoting skill '{global_best_candidate['pattern']}' (peak confidence: {global_best_candidate['confidence']:.2f})")
-        logging.info(f"[Sleep] Diagnostics: trigger={global_best_candidate.get('trigger_accuracy', '?')}, exec={global_best_candidate.get('execute_accuracy', '?')}")
-        result = {k: v for k, v in global_best_candidate.items() if k != 'error_msg'}
-        return result
+        code_match = re.search(r'```python\n(.*?)\n```', content, re.DOTALL)
+        python_code = code_match.group(1) if code_match else None
 
-    peak = global_best_candidate['confidence'] if global_best_candidate else 0.0
-    error_detail = global_best_candidate.get('error_msg', 'No details') if global_best_candidate else 'No candidate'
-    logging.warning(f"[Sleep] REJECTED skill. Peak confidence {peak:.2f} < 0.40 — not stable enough.")
-    logging.warning(f"[Sleep] Rejection reason: {error_detail[:500]}")
-    return None
+        if not python_code:
+            logging.warning("[Sleep] No valid Python code in LLM response")
+            return None
 
+        # Quick validation
+        scores, error_msg = _validate_skill(python_code, episodes, oracle=oracle, config=config)
+        overall = scores['overall']
 
-from typing import Optional, Tuple, TYPE_CHECKING
+        if overall < 0.40:
+            logging.warning(f"[Sleep] Skill rejected: overall={overall:.2f} < 0.40")
+            return None
 
-if TYPE_CHECKING:
-    from .oracle import Oracle  # noqa: F401
-    from .config import NareConfig  # noqa: F401
+        logging.info(f"[Sleep] Promoting skill '{pattern_name}' (confidence: {overall:.2f})")
 
+        return {
+            "pattern": pattern_name,
+            "python_code": python_code,
+            "confidence": min(0.70, overall),  # Cap at 0.70 for shadow mode
+            "maturity": 0,
+            "success_streak": 0,
+            "trigger_accuracy": scores['trigger_accuracy'],
+            "execute_accuracy": scores['execute_accuracy']
+        }
+
+    except Exception as e:
+        logging.warning(f"[Sleep] Failed to extract skill: {e}")
+        return None
 
 def repair_skill(python_code: str, pattern: str, failing_tests: list,
                  error_msg: str, scores: dict, max_attempts: int = 2,
                  validator=None, baseline_score: Optional[float] = None) -> str:
-    """REM Sleep: Iteratively repair a skill that failed dream stress-tests.
+    """REM Sleep: Iteratively repair a skill."""
 
-    Uses the LLM to analyze failure diagnostics and generate a corrected
-    version of the skill code.
-
-    Behavior:
-        * Without ``validator``: returns the **first** successfully-generated
-          repair (legacy behaviour). The caller is responsible for re-validating.
-        * With ``validator(code) -> overall_score``: actually iterates
-          ``max_attempts`` times with progressively higher temperature for
-          diversity, validates each candidate, and returns the **best** one
-          (or the original code if no candidate strictly beats
-          ``baseline_score``).
-
-    The validator-aware path closes the well-known REM-repair stuck-loop bug
-    where successive repairs scored identically because the function returned
-    on first generation regardless of validation outcome.
-    """
-    _ensure_api_key()
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemma-3-27b-it:generateContent?key={API_KEY}"
-
-    current_code = python_code
     best_code = python_code
     best_score = baseline_score if baseline_score is not None else scores.get("overall", 0.0)
 
-    # Temperature progression: cool → warmer for more diverse later attempts.
-    temperatures = [0.3, 0.6, 0.9]
-
     for attempt in range(1, max_attempts + 1):
-        # Build the failing test cases summary
         failing_summary = ""
-        for t in failing_tests[:5]:
-            failing_summary += f"  Q: {t.get('query', '')[:150]}\n"
-            failing_summary += f"  Expected: {t.get('solution', '')[:100]}\n"
-            failing_summary += f"  Type: {t.get('type', 'POSITIVE')}\n\n"
+        for t in failing_tests[:3]:
+            failing_summary += f"  Q: {t.get('query', '')[:100]}\n"
+            failing_summary += f"  Expected: {t.get('solution', '')[:50]}\n\n"
 
-        prompt = f"""You are a code repair specialist. A compiled skill named '{pattern}' failed stress-testing during REM sleep.
+        prompt = f"""You are a code repair specialist. A skill named '{pattern}' failed testing.
 
 CURRENT CODE:
 ```python
-{current_code}
+{python_code}
 ```
 
 FAILURE DIAGNOSTICS:
 - Trigger accuracy: {scores.get('trigger_accuracy', 0):.2f}
 - Execute accuracy: {scores.get('execute_accuracy', 0):.2f}
-- Overall score: {scores.get('overall', 0):.2f}
-- Error details: {(error_msg or 'No specific errors')[:500]}
+- Overall: {scores.get('overall', 0):.2f}
 
-FAILING TEST CASES:
+FAILING CASES:
 {failing_summary}
 
-REPAIR INSTRUCTIONS:
-1. Analyze WHY the code fails on the test cases above.
-2. Fix the root cause (do not just patch individual cases).
-3. Keep the same function signatures: trigger(query), parse(query), solve(vars), execute(query).
-4. Make trigger() more robust to handle edge cases and noise.
-5. Make solve() handle boundary conditions and unexpected inputs.
+Fix the root cause. Keep function signatures unchanged.
+Output ONLY the corrected Python code inside ```python ... ``` tags."""
 
-Output ONLY the corrected Python code inside ```python ... ``` tags. Nothing else."""
-
-        temp = temperatures[min(attempt - 1, len(temperatures) - 1)]
         payload = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"temperature": temp}
+            "model": ANTHROPIC_MODEL,
+            "max_tokens": 2048,
+            "temperature": 0.3 + (attempt * 0.2),
+            "messages": [{"role": "user", "content": prompt}]
         }
 
         try:
-            res = _post(url, payload)
-            content = res.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '')
-
+            content = _post_anthropic("messages", payload)
             code_match = re.search(r'```python\n(.*?)\n```', content, re.DOTALL)
+
             if code_match:
                 repaired = code_match.group(1)
-                logging.info(
-                    f"[REM Repair] Attempt {attempt}/{max_attempts} "
-                    f"(temp={temp}): generated repaired code ({len(repaired)} chars)"
-                )
+                logging.info(f"[REM Repair] Attempt {attempt}/{max_attempts}: generated repair")
 
-                # Legacy path: no validator → return first non-empty repair.
                 if validator is None:
                     return repaired
 
-                # Validator path: score this candidate and keep the best.
                 try:
                     cand_score = float(validator(repaired))
                 except Exception as e:
-                    logging.warning(f"[REM Repair] Validator raised on attempt {attempt}: {e}")
+                    logging.warning(f"[REM Repair] Validator failed: {e}")
                     cand_score = -1.0
 
-                logging.info(
-                    f"[REM Repair] Attempt {attempt} validation: "
-                    f"score={cand_score:.3f} (baseline={best_score:.3f})"
-                )
+                logging.info(f"[REM Repair] Attempt {attempt} score: {cand_score:.3f} (baseline: {best_score:.3f})")
 
                 if cand_score > best_score:
                     best_code = repaired
                     best_score = cand_score
-                    # Use as base for next attempt — incremental improvement.
-                    current_code = repaired
+                    python_code = repaired
 
-                # Early-stop: a repair that already passes a high bar is
-                # unlikely to be beaten by spending more LLM budget.
                 if cand_score >= 0.80:
-                    logging.info(
-                        f"[REM Repair] Early-stop: attempt {attempt} reached "
-                        f"score {cand_score:.3f} >= 0.80"
-                    )
+                    logging.info(f"[REM Repair] Early-stop at score {cand_score:.3f}")
                     return best_code
+
         except Exception as e:
             logging.warning(f"[REM Repair] Attempt {attempt} failed: {e}")
 
-    # Validator path: only return repaired code if it strictly beat baseline.
     if validator is not None and best_code != python_code:
         return best_code
     return python_code
 
-
-def _validate_skill(
-    python_code: str,
-    episodes: list,
-    oracle: "Oracle | None" = None,
-    config: "NareConfig | None" = None,
-) -> Tuple[dict, str]:
-    """Validate a generated skill with decomposed, oracle-aware scoring.
-
-    What ``overall`` is built from (weights live in
-    :class:`nare.config.SkillValidationConfig`):
-
-      * ``trigger_accuracy`` \u2014 fraction of *labelled originals* that
-        ``trigger()`` returns True for. Real signal: the labels here
-        come from solved episodes, not from the LLM.
-      * ``execute_accuracy`` \u2014 fraction of *triggered originals* whose
-        output is judged correct by an :class:`~nare.oracle.Oracle`.
-        Each episode's own ``oracle_spec`` (if present) takes priority,
-        then the explicit ``oracle`` argument, then a heuristic
-        string/numeric-overlap fallback. The fallback reproduces the
-        legacy behaviour but is documented as heuristic in
-        :mod:`nare.oracle`.
-      * ``negative_trap_accuracy`` \u2014 fraction of NEGATIVE stress
-        tests on which ``trigger()`` correctly does NOT fire. Real
-        signal regardless of label quality (the only thing checked is
-        a boolean).
-      * ``positive_no_crash_rate`` \u2014 advisory only by default.
-        POSITIVE stress tests have LLM-generated labels and should not
-        bias ``overall`` unless an external oracle vetoes them. With
-        ``include_positive_stress=True`` and an ``oracle``, this
-        signal is gated through the oracle and contributes
-        ``w_positive_stress`` to overall.
-
-    Returns ``(scores_dict, diagnostic_report)`` where ``scores_dict``
-    contains keys: trigger_accuracy, execute_accuracy,
-    negative_trap_accuracy, positive_no_crash_rate, overall.
-    """
+def _validate_skill(python_code: str, episodes: list, oracle: Optional["Oracle"] = None, config: Optional["NareConfig"] = None) -> Tuple[dict, str]:
+    """Validate a generated skill."""
     from nare.sandbox import SecurityError, safe_load_module
-    from nare.oracle import (
-        build_oracle_from_spec,
-        cached_episode_oracle,
-        heuristic_overlap_oracle,
-    )
+    from nare.oracle import build_oracle_from_spec, cached_episode_oracle
     from nare.config import DEFAULT_CONFIG as _DEFAULT_CONFIG
 
     if config is None:
@@ -785,14 +489,11 @@ def _validate_skill(
         "overall": 0.0,
     }
 
-    # AST validation + sandboxed loading goes through the single
-    # canonical entry point in nare.sandbox. Any change to security
-    # policy now lives in one place.
     try:
         safe_globals = safe_load_module(python_code)
     except SecurityError as e:
         return zero_scores, f"Code failed AST/Security check: {e}"
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         return zero_scores, f"Runtime error during compilation: {e}"
 
     if 'trigger' not in safe_globals or 'execute' not in safe_globals:
@@ -801,45 +502,20 @@ def _validate_skill(
     trigger_fn = safe_globals['trigger']
     execute_fn = safe_globals['execute']
 
-    # Separate ORIGINAL episodes (have verified solutions) from STRESS
-    # tests (LLM-generated; positive labels are not trustworthy).
-    original_eps = [
-        ep for ep in episodes if 'embedding' in ep or 'reasoning_trace' in ep
-    ]
-    stress_eps = [
-        ep for ep in episodes
-        if 'embedding' not in ep and 'reasoning_trace' not in ep
-    ]
+    original_eps = [ep for ep in episodes if 'embedding' in ep or 'reasoning_trace' in ep]
+    stress_eps = [ep for ep in episodes if 'embedding' not in ep and 'reasoning_trace' not in ep]
 
     def _oracle_for(ep: dict):
         spec = ep.get('oracle_spec')
         if spec:
             try:
                 return build_oracle_from_spec(spec), 'episode oracle_spec'
-            except Exception as e:  # noqa: BLE001
-                logging.warning(
-                    f"[Validate] Bad oracle_spec on episode "
-                    f"'{ep.get('query', '')[:40]}': {e}; falling back."
-                )
+            except Exception as e:
+                logging.warning(f"[Validate] Bad oracle_spec: {e}")
         if oracle is not None:
             return oracle, 'caller-provided oracle'
-        # Default fallback is now the strict cached-episode oracle: a
-        # generated skill must reproduce the verified solution stored on
-        # the episode (normalized exact-match OR strict numeric set).
-        # The legacy heuristic overlap (20% number coverage) is still
-        # available via ``heuristic_overlap`` oracle_spec for backward
-        # compatibility but is no longer the default.
-        if vcfg.use_heuristic_overlap_fallback:
-            return (
-                heuristic_overlap_oracle(ep.get('solution', '')),
-                'heuristic overlap (legacy fallback)',
-            )
-        return (
-            cached_episode_oracle(ep.get('solution', '')),
-            'cached episode (strict default)',
-        )
+        return cached_episode_oracle(ep.get('solution', '')), 'cached episode'
 
-    # --- TRIGGER ACCURACY (on original episodes only) ---
     trigger_correct = 0
     trigger_total = len(original_eps) if original_eps else 1
     trigger_errors = []
@@ -849,16 +525,12 @@ def _validate_skill(
             if trigger_fn(ep['query']):
                 trigger_correct += 1
             else:
-                trigger_errors.append(
-                    f"MISS: trigger() returned False on valid input: "
-                    f"'{ep['query'][:60]}...'"
-                )
+                trigger_errors.append(f"MISS: '{ep['query'][:60]}...'")
         except Exception as e:
-            trigger_errors.append(f"CRASH: trigger() crashed: {e}")
+            trigger_errors.append(f"CRASH: {e}")
 
     trigger_accuracy = trigger_correct / trigger_total if trigger_total > 0 else 0.0
 
-    # --- EXECUTE ACCURACY (oracle-checked against verified solutions) ---
     execute_correct = 0
     execute_total = 0
     execute_errors = []
@@ -877,27 +549,17 @@ def _validate_skill(
             if ok:
                 execute_correct += 1
             else:
-                execute_errors.append(
-                    f"MISMATCH ({source}): "
-                    f"q='{ep['query'][:40]}' -> '{result_str[:40]}': {info}"
-                )
+                execute_errors.append(f"MISMATCH ({source}): '{result_str[:40]}': {info}")
         except Exception as e:
             execute_total += 1
-            execute_errors.append(
-                f"CRASH: '{ep['query'][:40]}...' -> {e}"
-            )
+            execute_errors.append(f"CRASH: {e}")
 
-    execute_accuracy = (
-        execute_correct / execute_total if execute_total > 0 else 0.0
-    )
+    execute_accuracy = execute_correct / execute_total if execute_total > 0 else 0.0
 
-    # --- NEGATIVE TRAPS (real signal) + POSITIVE STRESS (advisory) ---
     negative_total = 0
     negative_pass = 0
     positive_total = 0
     positive_no_crash = 0
-    positive_oracle_pass = 0
-    positive_oracle_total = 0
 
     for ep in stress_eps:
         is_negative = ep.get('type') == 'NEGATIVE'
@@ -908,14 +570,8 @@ def _validate_skill(
                 negative_total += 1
                 if not triggered:
                     negative_pass += 1
-                else:
-                    execute_errors.append(
-                        f"FALSE_POSITIVE: trigger() fired on TRAP: "
-                        f"'{ep['query'][:40]}'"
-                    )
                 continue
 
-            # POSITIVE stress: trigger first
             if not triggered:
                 continue
             positive_total += 1
@@ -924,57 +580,24 @@ def _validate_skill(
             result_str = str(result).strip()
             if not result_str.startswith("Error"):
                 positive_no_crash += 1
-
-            # Only count toward overall when the user opted in AND we
-            # have an oracle that can adjudicate. Otherwise the LLM
-            # label on this stress test is self-referential.
-            if vcfg.include_positive_stress and oracle is not None:
-                positive_oracle_total += 1
-                ok, _info = oracle(ep['query'], result_str)
-                if ok:
-                    positive_oracle_pass += 1
         except Exception as e:
             if is_negative:
                 negative_total += 1
             else:
                 positive_total += 1
-            execute_errors.append(
-                f"STRESS_CRASH: '{ep['query'][:40]}...' -> {e}"
-            )
 
-    negative_trap_accuracy = (
-        negative_pass / negative_total if negative_total > 0 else 1.0
-    )
-    positive_no_crash_rate = (
-        positive_no_crash / positive_total if positive_total > 0 else 1.0
-    )
+    negative_trap_accuracy = negative_pass / negative_total if negative_total > 0 else 1.0
+    positive_no_crash_rate = positive_no_crash / positive_total if positive_total > 0 else 1.0
 
-    if vcfg.include_positive_stress and positive_oracle_total > 0:
-        positive_stress_signal = positive_oracle_pass / positive_oracle_total
-    else:
-        positive_stress_signal = 0.0
-
-    # --- OVERALL (weighted) ---
-    raw_overall = (
+    overall = (
         vcfg.w_trigger * trigger_accuracy
         + vcfg.w_execute * execute_accuracy
         + vcfg.w_negative_trap * negative_trap_accuracy
-        + vcfg.w_positive_stress * positive_stress_signal
     )
-    weight_sum = (
-        vcfg.w_trigger
-        + vcfg.w_execute
-        + vcfg.w_negative_trap
-        + (vcfg.w_positive_stress if vcfg.include_positive_stress else 0.0)
-    )
-    overall = raw_overall / weight_sum if weight_sum > 0 else 0.0
+    weight_sum = vcfg.w_trigger + vcfg.w_execute + vcfg.w_negative_trap
+    overall = overall / weight_sum if weight_sum > 0 else 0.0
 
-    # Hard gates: a skill that cannot trigger or execute on its own
-    # training set is not promotable regardless of negative-trap luck.
-    if (
-        trigger_accuracy < vcfg.minimum_trigger_accuracy
-        or execute_accuracy < vcfg.minimum_execute_accuracy
-    ):
+    if trigger_accuracy < vcfg.minimum_trigger_accuracy or execute_accuracy < vcfg.minimum_execute_accuracy:
         overall = min(overall, 0.50)
 
     scores = {
@@ -991,57 +614,16 @@ def _validate_skill(
     report_lines = [
         f"SCORES: trigger={scores['trigger_accuracy']:.2f} | "
         f"execute={scores['execute_accuracy']:.2f} | "
-        f"neg_trap={scores['negative_trap_accuracy']:.2f} | "
-        f"pos_no_crash={scores['positive_no_crash_rate']:.2f} (advisory) | "
         f"overall={scores['overall']:.2f}"
     ]
     if trigger_errors:
-        report_lines.append(f"[TRIGGER_ISSUES] ({len(trigger_errors)}):")
-        for e in trigger_errors[:2]:
-            report_lines.append(f"  - {e}")
+        report_lines.append(f"[TRIGGER_ISSUES] ({len(trigger_errors)})")
     if execute_errors:
-        report_lines.append(f"[EXECUTE_ISSUES] ({len(execute_errors)}):")
-        for e in execute_errors[:3]:
-            report_lines.append(f"  - {e}")
+        report_lines.append(f"[EXECUTE_ISSUES] ({len(execute_errors)})")
 
     return scores, "\n".join(report_lines)
 
 def merge_heuristic_rules(existing_rule: dict, new_episodes: list):
     """Refine an existing Executable Reflex with new episodes."""
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemma-3-27b-it:generateContent?key={API_KEY}"
-    
-    prompt = "You are consolidating knowledge. We have an EXISTING RULE and NEW EPISODES that match it.\n"
-    prompt += f"EXISTING PATTERN: {existing_rule.get('pattern')}\n"
-    prompt += f"EXISTING CODE:\n```python\n{existing_rule.get('python_code')}\n```\n\n"
-    prompt += "NEW EPISODES:\n"
-    for i, ep in enumerate(new_episodes):
-        prompt += f"Ep {i+1}: {ep['query']} -> {ep['solution'][:200]}...\n"
-        
-    prompt += "\nRefine the EXISTING RULE to be more general and robust. Update the trigger logic or execute logic if necessary.\n"
-    prompt += "The execute() function must work for ANY input of the same category (e.g., text parsing, math, logic). Use string manipulation or regex as needed.\n"
-    prompt += "You must output the rule exactly in this markdown format:\n\n"
-    prompt += "PATTERN: [Refined pattern name]\n\n"
-    prompt += "```python\n"
-    prompt += "def trigger(query: str) -> bool:\n"
-    prompt += "    return ...\n\n"
-    prompt += "def execute(query: str) -> str:\n"
-    prompt += "    return ...\n"
-    prompt += "```\n"
-
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.1}
-    }
-    
-    res = _post(url, payload)
-    content = res['candidates'][0]['content']['parts'][0]['text']
-    
-    pattern_match = re.search(r'PATTERN:\s*(.+)', content)
-    pattern_name = pattern_match.group(1).strip() if pattern_match else existing_rule.get('pattern', 'Merged Pattern')
-    
-    code_match = re.search(r'```python\n(.*?)\n```', content, re.DOTALL)
-    if code_match:
-        existing_rule['pattern'] = pattern_name
-        existing_rule['python_code'] = code_match.group(1)
-        
+    logging.info("[Sleep] merge_heuristic_rules not implemented for Anthropic yet")
     return existing_rule

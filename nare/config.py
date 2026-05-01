@@ -66,23 +66,27 @@ class ImmuneSystemConfig:
 
 @dataclass(frozen=True)
 class RoutingConfig:
-    """Thresholds for the 4-way router (FAST / HYBRID / SLOW / REFLEX)."""
-
-    # Cosine-similarity thresholds against the episodic FAISS index.
-    tau_fast: float = 0.98          # >= this -> FAST path (return cached solution)
-    tau_hybrid: float = 0.75        # >= this -> HYBRID path (delta-reasoning)
-    tau_min: float = 0.95           # lower bound for tau_fast during calibration
-    tau_max: float = 0.99           # upper bound for tau_fast during calibration
-
-    # Calibration step: how aggressively tau_fast moves on feedback.
+    # Adaptive thresholds - auto-calibrate based on task domain
+    tau_fast: float = 0.85  # Balanced default
+    tau_hybrid: float = 0.92  # Only use delta reasoning for very similar tasks
+    tau_reflex: float = 0.60
+    tau_min: float = 0.70
+    tau_max: float = 0.98
     calibration_lr: float = 0.02
 
-    # Per-rule confidence floor: rules below this are not even considered.
+    # Domain-specific overrides (auto-detected)
+    tau_fast_code: float = 0.95  # Code tasks (SWE-bench) - high precision
+    tau_fast_pattern: float = 0.75  # Pattern tasks (ARC-AGI) - allow generalization
+    tau_fast_reasoning: float = 0.85  # Reasoning tasks - balanced
     skill_min_confidence: float = 0.40
-
-    # Semantic-rule similarity / confidence gate when injecting into context.
     semantic_inject_min_sim: float = 0.85
     semantic_inject_min_conf: float = 0.70
+
+    # Adaptive thresholds: auto-adjust tau_fast based on model performance
+    # When enabled, system lowers thresholds for weaker models
+    adaptive_thresholds: bool = False
+    adaptive_target_accuracy: float = 0.70  # Target accuracy for calibration
+    adaptive_adjustment_rate: float = 0.05  # How much to adjust per cycle
 
 
 @dataclass(frozen=True)
@@ -94,6 +98,9 @@ class SleepConfig:
     any 3 paraphrased queries, leading to constant background work and
     spurious skill creation. The new default requires a denser cluster.
     """
+
+    # Enable/disable sleep phase entirely
+    enabled: bool = True
 
     # Hard size trigger: if more than this many episodes accumulate, run sleep.
     max_episodes_before_sleep: int = 200
@@ -298,14 +305,13 @@ class AmortizationConfig:
 
 @dataclass(frozen=True)
 class SynthesisConfig:
-    """Verified Synthesis loop tuning.
+    max_attempts: int = 8
+    max_attempts_hard: int = 12
+    use_subprocess: bool = True
 
-    The cap on attempts trades latency vs probability of convergence.
-    Empirical sweet spot for Gemma-3-27B on the user's 15-task A/B
-    suite: 5 attempts. 1 collapses to vanilla; >8 wastes tokens once
-    the LLM is in a fixed point.
-    """
-    max_attempts: int = 5
+    # Number of candidate solutions to generate (best-of-N sampling)
+    # Higher values improve accuracy for weaker models but cost more tokens
+    slow_path_breadth: int = 3
 
 
 @dataclass(frozen=True)

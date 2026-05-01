@@ -81,9 +81,13 @@ class MemorySystem:
         self.config = config
         self._lock = threading.RLock()
 
-        # Episodic Memory — HNSW index for O(log N) retrieval 
+
+        self._query_epoch = 0  # Incremented on each retrieve_episodes() call
+
+        # Episodic Memory — HNSW index for O(log N) retrieval
         self.episodic_index = _make_hnsw_index(embedding_dim)
         self.episodes: List[Dict[str, Any]] = []
+        self.episode_embeddings = np.array([], dtype=np.float32).reshape(0, embedding_dim)
 
         # Semantic Memory (Rules) — brute-force (small N)
         self.semantic_index = faiss.IndexFlatIP(embedding_dim)
@@ -98,8 +102,18 @@ class MemorySystem:
         # pair, it is filtered out.
         self.suppression_rules: List[Dict[str, Any]] = []
 
+        # Library Learning: compiled skills
+        self.compiled_skills: List[Dict[str, Any]] = []
+
         os.makedirs(self.persist_dir, exist_ok=True)
         self.load()
+
+        # Validate embedding dimension after load
+        if self.episodic_index.ntotal > 0:
+            stored_dim = self.episodic_index.d
+            if stored_dim != embedding_dim:
+                logging.warning(f"[Memory] Dimension mismatch: stored={stored_dim}, requested={embedding_dim}. Rebuilding index.")
+                self._rebuild_index()
 
     def add_episode(self, episode_data: Dict[str, Any], embedding: np.ndarray):
         """Episode Schema: {query, context, solution, reasoning_trace, score, timestamp}.
@@ -124,7 +138,12 @@ class MemorySystem:
 
             episode_data['timestamp'] = time.time()
             episode_data['last_used'] = time.time()
+            episode_data['activation_score'] = 1.0
+            episode_data['access_count'] = 0
             episode_data['strength'] = 1.0
+            
+            episode_data['created_epoch'] = self._query_epoch
+            episode_data['last_used_epoch'] = self._query_epoch
             # Immune system : initial trust coefficient
             episode_data.setdefault('tau', self.config.immune.initial_tau)
             # Stable content-derived key — survives episode deletion /
@@ -243,26 +262,32 @@ class MemorySystem:
         return False
 
     # ------------------------------------------------------------------
-    # Ebbinghaus forgetting
+    # Ebbinghaus forgetting (transaction-based)
     # ------------------------------------------------------------------
 
     def prune_fading_memories(self, threshold: Optional[float] = None):
-        """Ebbinghaus Forgetting: R = exp(-t / (s * 24h)).
+        """Ebbinghaus Forgetting based on query epochs, not wall-clock time.
 
-        Episodes with retention below ``threshold`` are dropped at the
-        next sleep cycle. If ``threshold`` is None, falls back to
-        ``config.sleep.fading_retention_threshold``.
+        Uses transaction-based epochs instead of 24-hour half-life.
+        This ensures forgetting actually activates during short benchmarks.
+
+        Old formula: R = exp(-hours / (s * 24))
+        New formula: R = exp(-epochs / (s * 100))
+
+        Episodes with retention below ``threshold`` are dropped.
         """
         if threshold is None:
             threshold = self.config.sleep.fading_retention_threshold
 
-        now = time.time()
+        now_epoch = self._query_epoch
         with self._lock:
             kept_episodes = []
             for ep in self.episodes:
-                t = (now - ep.get('last_used', ep['timestamp'])) / 3600
+                last_used_epoch = ep.get('last_used_epoch', ep.get('created_epoch', 0))
+                delta_epochs = now_epoch - last_used_epoch
                 s = ep.get('strength', 1.0)
-                retention = np.exp(-t / (s * 24))
+                # Decay per 100 queries instead of 24 hours
+                retention = np.exp(-delta_epochs / (s * 100))
                 if retention >= threshold:
                     kept_episodes.append(ep)
 
@@ -289,12 +314,17 @@ class MemorySystem:
     def retrieve_episodes(self, query_emb: np.ndarray, k: int = 3) -> List[Dict[str, Any]]:
         """Retrieve top-k episodes, filtering suppressed pairs.
 
+        Increments query epoch for transaction-based forgetting.
+
         Results are ranked by *trust-weighted similarity*:
             effective_sim = raw_similarity × τ_i
         so that high-trust episodes rank above low-trust ones even if
         their raw embedding distance is slightly worse.
         """
         with self._lock:
+            
+            self._query_epoch += 1
+
             if self.episodic_index.ntotal == 0:
                 return []
 
@@ -319,6 +349,12 @@ class MemorySystem:
                     res['tau'] = tau
                     res['effective_similarity'] = float(sim) * tau
                     res['memory_id'] = int(idx)
+
+                    # Update activation score and access tracking
+                    self.episodes[idx]['last_used_epoch'] = self._query_epoch
+                    self.episodes[idx]['activation_score'] = self.episodes[idx].get('activation_score', 1.0) + 0.1
+                    self.episodes[idx]['access_count'] = self.episodes[idx].get('access_count', 0) + 1
+                    self.episodes[idx]['last_used'] = time.time()
                     pool.append(res)
 
             # Re-rank by trust-weighted similarity
@@ -478,6 +514,9 @@ class MemorySystem:
 
     def save(self):
         with self._lock:
+            # Ensure directory exists before writing (defensive check)
+            os.makedirs(self.persist_dir, exist_ok=True)
+
             faiss.write_index(self.episodic_index, os.path.join(self.persist_dir, "episodic.faiss"))
             faiss.write_index(self.semantic_index, os.path.join(self.persist_dir, "semantic.faiss"))
             faiss.write_index(self.factual_index, os.path.join(self.persist_dir, "factual.faiss"))
@@ -489,6 +528,8 @@ class MemorySystem:
                 json.dump(self.facts, f, ensure_ascii=False, indent=2)
             with open(os.path.join(self.persist_dir, "suppression.json"), "w", encoding="utf-8") as f:
                 json.dump(self.suppression_rules, f, ensure_ascii=False, indent=2)
+            with open(os.path.join(self.persist_dir, "compiled_skills.json"), "w", encoding="utf-8") as f:
+                json.dump(self.compiled_skills, f, ensure_ascii=False, indent=2)
 
     def load(self):
         ep_index = os.path.join(self.persist_dir, "episodic.faiss")
@@ -516,3 +557,108 @@ class MemorySystem:
         if os.path.exists(sup_data):
             with open(sup_data, "r", encoding="utf-8") as f:
                 self.suppression_rules = json.load(f)
+
+        skills_data = os.path.join(self.persist_dir, "compiled_skills.json")
+        if os.path.exists(skills_data):
+            with open(skills_data, "r", encoding="utf-8") as f:
+                self.compiled_skills = json.load(f)
+
+    def prune_memory(self, tau_prune: float = 0.1, decay_rate: float = 0.01):
+        """Remove episodes with low activation scores (Ebbinghaus forgetting).
+
+        Uses exponential decay: s_i * exp(-Δt / S)
+        Episodes with activation_score < tau_prune are removed.
+        Also removes episodes that failed validation (false positives).
+        """
+        current_time = time.time()
+        with self._lock:
+            kept_episodes = []
+
+            for ep in self.episodes:
+                # Check for validation failures (false positives)
+                validation_failures = ep.get('validation_failures', 0)
+                if validation_failures >= 2:
+                    # Episode failed validation multiple times - remove it
+                    logging.info(f"[Memory] Removing episode with {validation_failures} validation failures")
+                    continue
+
+                # Downgrade score if it has validation failures
+                if validation_failures > 0:
+                    ep['score'] = max(0.5, ep.get('score', 0.8) - (0.2 * validation_failures))
+
+                # Exponential decay based on time since last access
+                last_access = ep.get('last_used', ep.get('timestamp', current_time))
+                delta_t = current_time - last_access
+                decay = np.exp(-delta_t * decay_rate)
+
+                # Update activation score with decay
+                ep['activation_score'] = ep.get('activation_score', 1.0) * decay
+
+                # Keep if above threshold AND (has been accessed OR has high score)
+                if ep['activation_score'] >= tau_prune:
+                    kept_episodes.append(ep)
+                elif ep.get('access_count', 0) > 0 or ep.get('score', 0) >= 0.80:
+                    # Keep verified episodes even if activation is low
+                    # But only if they haven't failed validation
+                    if validation_failures == 0:
+                        kept_episodes.append(ep)
+
+            if len(kept_episodes) < len(self.episodes):
+                removed = len(self.episodes) - len(kept_episodes)
+                logging.info(f"[Memory] Pruned {removed} low-quality/stale episodes")
+                self.episodes = kept_episodes
+                self._rebuild_episodic_index()
+
+            if len(kept_episodes) < len(self.episodes):
+                removed = len(self.episodes) - len(kept_episodes)
+                logging.info(f"[Memory] Pruned {removed} low-activation episodes")
+                self.episodes = kept_episodes
+                self._rebuild_episodic_index()
+                self.save()
+
+    def _rebuild_index(self):
+        """Rebuild FAISS index with current embedding dimension."""
+        self._rebuild_episodic_index()
+
+    def add_compiled_skill(self, pattern: str, code: str, trigger_emb: np.ndarray):
+        """Add a compiled skill (reusable function)."""
+        with self._lock:
+            self.compiled_skills.append({
+                'pattern': pattern,
+                'code': code,
+                'trigger_embedding': trigger_emb.tolist() if hasattr(trigger_emb, 'tolist') else list(trigger_emb),
+                'use_count': 0,
+                'created_at': time.time()
+            })
+            logging.info(f"[LibraryLearning] Compiled skill: {pattern}")
+            self.save()
+
+    def retrieve_skills(self, query_emb: np.ndarray, k: int = 3) -> List[Dict]:
+        """Retrieve top-k compiled skills by similarity."""
+        with self._lock:
+            if not self.compiled_skills:
+                return []
+
+            skill_embs = np.array([s['trigger_embedding'] for s in self.compiled_skills], dtype=np.float32)
+            faiss.normalize_L2(skill_embs)
+
+            query_vec = np.array(query_emb, dtype=np.float32)
+            if query_vec.ndim == 1:
+                query_vec = query_vec.reshape(1, -1)
+            faiss.normalize_L2(query_vec)
+
+            # Create temporary index for search
+            temp_index = faiss.IndexFlatIP(skill_embs.shape[1])
+            temp_index.add(skill_embs)
+
+            k_search = min(k, len(self.compiled_skills))
+            sims, indices = temp_index.search(query_vec, k_search)
+
+            results = []
+            for sim, idx in zip(sims[0], indices[0]):
+                if idx >= 0 and idx < len(self.compiled_skills):
+                    skill = self.compiled_skills[idx].copy()
+                    skill['similarity'] = float(sim)
+                    skill['skill_id'] = int(idx)
+                    results.append(skill)
+            return results

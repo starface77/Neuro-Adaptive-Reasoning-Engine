@@ -22,11 +22,12 @@ class MetricsTracker:
     def __init__(self, persist_dir: str = "memory_store"):
         self.persist_dir = persist_dir
         self.history: List[Dict[str, Any]] = []
+        self.baseline_results: List[Dict[str, Any]] = []
         self._load()
 
     def record(self, query: str, route: str, elapsed: float,
                tokens_used: int, similarity: float,
-               answer: str, score: float):
+               answer: str, score: float, correct: Optional[bool] = None):
         entry = {
             "timestamp": time.time(),
             "query": query[:200],
@@ -37,9 +38,66 @@ class MetricsTracker:
             "answer_hash": hash(answer[:100]),
             "answer_length": len(answer),
             "score": round(score, 4),
+            "correct": correct,
         }
         self.history.append(entry)
         self._save()
+
+    def record_baseline(self, query: str, answer: str, elapsed: float, tokens: int, correct: bool):
+        """Record baseline LLM performance (no memory/routing)."""
+        self.baseline_results.append({
+            'query': query[:200],
+            'answer': answer[:200],
+            'elapsed': elapsed,
+            'tokens': tokens,
+            'correct': correct,
+            'timestamp': time.time()
+        })
+        self._save()
+
+    def compute_deltas(self) -> Dict[str, float]:
+        """Compute Δ between VARE and baseline (MemoryBench metrics)."""
+        if not self.baseline_results or not self.history:
+            return {}
+
+        # Quality Δ
+        vare_correct = [r for r in self.history if r.get('correct') is not None]
+        if vare_correct:
+            vare_accuracy = sum(1 for r in vare_correct if r['correct']) / len(vare_correct)
+        else:
+            vare_accuracy = 0.0
+
+        baseline_accuracy = sum(1 for r in self.baseline_results if r['correct']) / len(self.baseline_results)
+        delta_quality = vare_accuracy - baseline_accuracy
+
+        # Latency Δ
+        vare_latency = np.mean([r['elapsed_seconds'] for r in self.history])
+        baseline_latency = np.mean([r['elapsed'] for r in self.baseline_results])
+        delta_latency = (vare_latency - baseline_latency) / baseline_latency if baseline_latency > 0 else 0.0
+
+        # Tokens Δ
+        vare_tokens = np.mean([r['tokens_used'] for r in self.history])
+        baseline_tokens = np.mean([r['tokens'] for r in self.baseline_results])
+        delta_tokens = (vare_tokens - baseline_tokens) / baseline_tokens if baseline_tokens > 0 else 0.0
+
+        return {
+            'delta_quality': round(delta_quality, 4),
+            'delta_latency_pct': round(delta_latency * 100, 2),
+            'delta_tokens_pct': round(delta_tokens * 100, 2),
+            'vare_accuracy': round(vare_accuracy, 4),
+            'baseline_accuracy': round(baseline_accuracy, 4),
+            'vare_latency': round(vare_latency, 4),
+            'baseline_latency': round(baseline_latency, 4),
+            'vare_tokens': round(vare_tokens, 2),
+            'baseline_tokens': round(baseline_tokens, 2),
+        }
+
+    def compute_amortization_rate(self) -> float:
+        """Compute % of queries served by FAST/REFLEX/COMPILED_SKILL (O(1) paths)."""
+        if not self.history:
+            return 0.0
+        fast_routes = sum(1 for r in self.history if r.get('route') in ('FAST', 'REFLEX', 'COMPILED_SKILL'))
+        return round(fast_routes / len(self.history), 4)
 
     # ------------------------------------------------------------------
     # Metric 1: Routing Recall & Precision
@@ -54,7 +112,7 @@ class MetricsTracker:
             r = e["route"]
             counts[r] = counts.get(r, 0) + 1
         total = len(entries)
-        amortized = sum(counts.get(r, 0) for r in ("FAST", "REFLEX", "REFLEX_PROVISIONAL"))
+        amortized = sum(counts.get(r, 0) for r in ("FAST", "REFLEX", "REFLEX_PROVISIONAL", "COMPILED_SKILL"))
         return {
             "total_queries": total,
             "route_counts": counts,
@@ -136,23 +194,28 @@ class MetricsTracker:
     ) -> Dict[str, Any]:
         """Compute formal amortization metrics.
 
-        α_t = 1 - exp(-κ·|M_t|)     — coverage ratio
-        C_t = (1-α_t)·C_LLM + α_t·C_mem  — blended cost
-        dC_t/d|M_t| = -κ·exp(-κ|M_t|)·(C_LLM - C_mem) < 0
-        """
-        alpha_t = 1.0 - np.exp(-kappa * memory_size)
-        c_t = (1.0 - alpha_t) * c_llm + alpha_t * c_mem
-        dc_dm = -kappa * np.exp(-kappa * memory_size) * (c_llm - c_mem)
+        alpha_t now represents empirical amortization ratio,
+        not a function of global memory size.
 
-        # Empirical α: ratio of amortized queries (FAST + REFLEX)
+        Old formula (incorrect): α_t = 1 - exp(-κ·|M_t|)
+        New formula (honest): α_t = empirical ratio of FAST/REFLEX queries
+
+        C_t = (1-α_t)·C_LLM + α_t·C_mem  — blended cost
+        """
+        # Empirical α: ratio of amortized queries (FAST + REFLEX + COMPILED_SKILL)
         if self.history:
             amortized_count = sum(
                 1 for e in self.history
-                if e["route"] in ("FAST", "REFLEX", "REFLEX_PROVISIONAL")
+                if e["route"] in ("FAST", "REFLEX", "REFLEX_PROVISIONAL", "COMPILED_SKILL")
             )
             alpha_empirical = amortized_count / len(self.history)
         else:
             alpha_empirical = 0.0
+
+        # Use empirical alpha instead of theoretical formula
+        alpha_t = alpha_empirical
+        c_t = (1.0 - alpha_t) * c_llm + alpha_t * c_mem
+        dc_dm = -kappa * np.exp(-kappa * memory_size) * (c_llm - c_mem)
 
         # Empirical cost: average tokens per query
         if self.history:
@@ -195,7 +258,10 @@ class MetricsTracker:
         path = os.path.join(self.persist_dir, "metrics.json")
         try:
             with open(path, "w", encoding="utf-8") as f:
-                json.dump(self.history, f, ensure_ascii=False, indent=2)
+                json.dump({
+                    'history': self.history,
+                    'baseline_results': self.baseline_results
+                }, f, ensure_ascii=False, indent=2)
         except Exception as e:
             logger.warning(f"Failed to save metrics: {e}")
 
@@ -204,6 +270,14 @@ class MetricsTracker:
         if os.path.exists(path):
             try:
                 with open(path, "r", encoding="utf-8") as f:
-                    self.history = json.load(f)
+                    data = json.load(f)
+                    if isinstance(data, dict):
+                        self.history = data.get('history', [])
+                        self.baseline_results = data.get('baseline_results', [])
+                    else:
+                        # Legacy format: just history list
+                        self.history = data
+                        self.baseline_results = []
             except Exception:
                 self.history = []
+                self.baseline_results = []

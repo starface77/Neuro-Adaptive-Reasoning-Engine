@@ -285,6 +285,42 @@ def heuristic_overlap_oracle(expected_solution: str) -> Oracle:
     return _oracle
 
 
+def test_execution_oracle(
+    repo_manager,
+    task_id: str,
+    test_command: str,
+    timeout: int = 300
+) -> Oracle:
+    """Oracle that applies solution and runs tests in real repository.
+
+    Args:
+        repo_manager: RepoManager instance
+        task_id: Task ID
+        test_command: Command to run tests (e.g., "pytest path/to/test.py")
+        timeout: Test timeout in seconds
+
+    Returns:
+        Oracle function that validates by running tests
+    """
+    def _oracle(query: str, candidate_answer: str) -> Tuple[bool, str]:
+        # Apply solution to repository
+        success, error = repo_manager.apply_solution(task_id, candidate_answer)
+
+        if not success:
+            return False, f"Failed to apply solution: {error}"
+
+        # Run tests
+        passed, output = repo_manager.run_tests(task_id, test_command, timeout)
+
+        if passed:
+            return True, "Tests passed"
+        else:
+            # Return first 500 chars of error output
+            return False, f"Tests failed: {output[:500]}"
+
+    return _oracle
+
+
 def build_oracle_from_spec(spec: dict) -> Oracle:
     """Materialize an Oracle from a JSON-serializable specification.
 
@@ -295,6 +331,7 @@ def build_oracle_from_spec(spec: dict) -> Oracle:
       * ``{"type": "string_contains", "must_contain": ["foo", "bar"]}``
       * ``{"type": "python_assert", "code": "assert int(answer) == 5"}``
       * ``{"type": "heuristic_overlap", "expected_solution": "..."}``
+      * ``{"type": "test_execution", "repo_manager": <obj>, "task_id": "...", "test_command": "pytest ..."}``
 
     Unknown ``type`` values raise ``ValueError`` so callers can detect
     misconfiguration rather than silently fall back to a weaker oracle.
@@ -321,6 +358,14 @@ def build_oracle_from_spec(spec: dict) -> Oracle:
             rel_tol=spec.get("rel_tol", 1e-6),
             abs_tol=spec.get("abs_tol", 1e-9),
         )
+    if kind == "test_execution":
+        repo_manager = spec.get("repo_manager")
+        task_id = spec.get("task_id")
+        test_command = spec.get("test_command")
+        timeout = spec.get("timeout", 300)
+        if not repo_manager or not task_id or not test_command:
+            raise ValueError("test_execution oracle requires repo_manager, task_id, and test_command")
+        return test_execution_oracle(repo_manager, task_id, test_command, timeout)
     raise ValueError(f"Unknown oracle spec type: {kind!r}")
 
 
@@ -332,5 +377,6 @@ __all__ = [
     "llm_yes_no_oracle",
     "heuristic_overlap_oracle",
     "cached_episode_oracle",
+    "test_execution_oracle",
     "build_oracle_from_spec",
 ]
