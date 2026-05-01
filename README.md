@@ -106,15 +106,6 @@ print(result["route_decision"])  # ANALYTIC or SYNTHESIS
 print(result["final_answer"])     # 150
 ```
 
-### Running SWE-bench
-
-```bash
-# Run on 30 tasks
-python benchmarks/swe_bench_official.py --max-tasks 30
-
-# Output: predictions.jsonl (official format)
-```
-
 ---
 
 ## 📊 What's Working (2026-05-01)
