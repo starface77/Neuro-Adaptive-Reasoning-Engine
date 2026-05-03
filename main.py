@@ -2,20 +2,16 @@ import os
 import sys
 import time
 import argparse
-from nare.agent import VareAgent, NAREProductionAgent
+from nare.core.agent import VareAgent, NAREProductionAgent
 from dotenv import load_dotenv
 
 
 def run_demo(agent: VareAgent):
     """Run built-in demo tasks showcasing FAST and VERIFIED_RETRY routes."""
     tasks = [
-        # Task 1: Verified Retry (first encounter)
         "What is the most efficient sorting algorithm for an array that is already 90% sorted? Explain your reasoning.",
-        # Task 2: Exact Repeat -> FAST (cached)
         "What is the most efficient sorting algorithm for an array that is already 90% sorted? Explain your reasoning.",
-        # Task 3: Similar -> should benefit from memory
         "Which sorting algorithm should I use if my dataset is mostly sorted, but has a few random elements at the end?",
-        # Additional tasks to trigger Library Learning
         "How to sort an almost sorted list of integers?",
         "Best algorithm for sorting a nearly sorted array in Python?",
         "Sorting an array with only a few inversions?"
