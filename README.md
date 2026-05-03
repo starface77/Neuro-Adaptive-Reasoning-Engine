@@ -1,11 +1,11 @@
 <p align="center">
-  <img src="nare_banner.png" alt="NARE Banner" width="800"/>
+  <img src="nare_banner.png" alt="VARE Banner" width="800"/>
 </p>
 
-<h1 align="center">NARE — Non-parametric Amortized Reasoning Evolution</h1>
+<h1 align="center">VARE — Verified Amortized Reasoning Engine</h1>
 
 <p align="center">
-  <em>A Skill-Based Cognitive Architecture for Deterministic Routing of Logic Tasks<br/>via Semantic Compression and Executable Reflexes</em>
+  <em>A Verified Code Synthesis Architecture with Episodic Memory<br/>for Amortized LLM Reasoning via Formal Verification</em>
 </p>
 
 <p align="center">
@@ -29,16 +29,18 @@
 
 ## Overview
 
-**NARE** is an experimental hierarchical-cache architecture for LLM reasoning. It pairs an LLM (default: Gemma-3-27B via Google Generative AI) with an episodic memory and a registry of *executable* skills compiled from past reasoning trajectories. A 4-way router dispatches each query to the cheapest viable layer: an exact cache, a sandboxed Python skill, a delta-reasoning step over a similar past episode, or a full Tree-of-Thoughts pass.
+**VARE** (Verified Amortized Reasoning Engine) is a cognitive architecture that combines LLM-based code synthesis with formal verification and episodic memory. It processes queries through three independent components:
 
-> **What this is.** A research/engineering prototype, not a benchmarked system. The interesting parts are: (1) AST-validated execution of LLM-generated skills, (2) a sleep/REM consolidation loop that compiles repeated patterns into Python, (3) decomposed (trigger / execute / stress) confidence scoring, and (4) a maturity / shadow-check lifecycle for promoted skills.
->
-> **What this is not.** This repository does **not** include results on standard reasoning benchmarks (HumanEval+, MATH, GSM8K, BIG-Bench Hard, AlfWorld, WebArena). The Free-Energy / active-inference / Bayesian-model-reduction / topological framings in earlier drafts are **conceptual inspirations**, not formal claims about what the code computes — see [LIMITATIONS.md](LIMITATIONS.md).
+1. **M_cache** — HNSW-backed episodic memory for instant retrieval of verified solutions
+2. **G_θ** — Fixed-weight LLM generator (Gemma-3-27B) with iterative self-refinement
+3. **V_sandbox** — Formal verifier (Python AST + subprocess isolation)
+
+> **Key idea:** Familiar queries are served instantly from verified cache (FAST route). Novel queries go through a verified synthesis loop: generate → sandbox verify → refine until correct (VERIFIED_RETRY). Successfully verified solutions are cached for future use. Background Library Learning clusters similar solutions into reusable compiled skills.
 
 ---
 
 <a name="architecture"></a>
-## 🏗 Architecture
+## Architecture
 
 ```
                               ┌─────────────────────────────┐
@@ -51,394 +53,158 @@
                               └──────────┬──────────────────┘
                                          │
                     ┌────────────────────▼────────────────────────┐
-                    │          4-WAY DYNAMIC ROUTER                │
+                    │           2-WAY ROUTER                       │
                     │                                              │
-                    │  ┌──────────┐  Exact    ┌──────────────┐    │
-                    │  │ Layer 0  ├──match───►│  FAST CACHE  │    │
-                    │  └────┬─────┘           │   (0 tokens) │    │
-                    │       │ no match        └──────────────┘    │
-                    │  ┌────▼─────┐  trigger  ┌──────────────┐    │
-                    │  │ Layer 1  ├──hit────►│   REFLEX     │    │
-                    │  │          │           │ (0 tokens,   │    │
-                    │  └────┬─────┘           │  O(1) exec)  │    │
-                    │       │ no trigger      └──────────────┘    │
-                    │  ┌────▼─────┐  sim>τ    ┌──────────────┐    │
-                    │  │ Layer 2  ├──────────►│   HYBRID     │    │
-                    │  │          │           │ (δ-reasoning)│    │
-                    │  └────┬─────┘           └──────────────┘    │
-                    │       │ sim<τ                                │
-                    │  ┌────▼─────┐           ┌──────────────┐    │
-                    │  │ Layer 3  ├──────────►│    SLOW      │    │
-                    │  │          │           │(Tree-of-     │    │
-                    │  └──────────┘           │ Thoughts)    │    │
-                    │                         └──────────────┘    │
+                    │  ρ(x) = max cos_sim(E(x), M_cache)          │
+                    │                                              │
+                    │  ┌──────────┐  ρ≥τ_fast  ┌──────────────┐  │
+                    │  │  FAST    ├────────────►│ Return cached │  │
+                    │  │  ROUTE   │             │ answer / run  │  │
+                    │  └──────────┘             │ compiled skill│  │
+                    │       │ ρ<τ_fast          └──────────────┘  │
+                    │  ┌────▼──────────┐        ┌──────────────┐  │
+                    │  │  VERIFIED     ├───────►│ Generate →    │  │
+                    │  │  RETRY        │        │ Verify →      │  │
+                    │  │  (System 2)   │        │ Refine loop   │  │
+                    │  └───────────────┘        └──────────────┘  │
                     └─────────────────────────────────────────────┘
                                          │
-                    ┌────────────────────▼────────────────────────┐
-                    │              MEMORY SYSTEM                   │
-                    │                                              │
-                    │  ┌─────────┐ ┌──────────┐ ┌─────────────┐  │
-                    │  │Episodic │ │ Semantic  │ │  Factual    │  │
-                    │  │ (FAISS) │ │ (Skills)  │ │  (RAG)      │  │
-                    │  └─────────┘ └──────────┘ └─────────────┘  │
-                    │  ┌─────────┐ ┌──────────┐ ┌─────────────┐  │
-                    │  │  Graph  │ │   RL     │ │   Neural    │  │
-                    │  │ Memory  │ │Retriever │ │(Titans/MIRAS)│  │
-                    │  └─────────┘ └──────────┘ └─────────────┘  │
-                    └─────────────────────────────────────────────┘
+                              ┌──────────▼──────────────────┐
+                              │    Store verified result     │
+                              │    in M_cache (HNSW)         │
+                              └──────────┬──────────────────┘
                                          │
-                    ┌────────────────────▼────────────────────────┐
-                    │            SLEEP CONSOLIDATION               │
-                    │                                              │
-                    │  ┌─────────────┐      ┌──────────────────┐  │
-                    │  │  NREM       │      │  REM             │  │
-                    │  │ (cluster +  │─────►│ (stress-test +   │  │
-                    │  │  compile)   │      │  repair skills)  │  │
-                    │  └─────────────┘      └──────────────────┘  │
-                    │                                              │
-                    │  ┌─────────────────────────────────────────┐ │
-                    │  │  Meta-Abduction (cross-domain transfer) │ │
-                    │  └─────────────────────────────────────────┘ │
-                    └─────────────────────────────────────────────┘
+                              ┌──────────▼──────────────────┐
+                              │   Background: Library        │
+                              │   Learning (cluster →        │
+                              │   abstract → verify →        │
+                              │   COMPILED_SKILL)            │
+                              └──────────────────────────────┘
 ```
 
-### Cognitive Workflow
+### Components
 
-```
-   Novel Problem          Recurring Problem          Mature Skill
-        │                       │                        │
-   SLOW Path               FAST Cache               REFLEX Path
-   (60+ sec)               (~0.01 sec)              (~0.001 sec)
-        │                       │                        │
-   Tree-of-Thoughts        Exact Match              Python exec()
-   + HybridCritic          Retrieval                Zero API cost
-        │                       │                        │
-        └───► Episode ──► Sleep ──► Skill ──► Maturity ──┘
-              Storage     Phase    Compile    Growth
-```
+| Component | Role | Complexity |
+|-----------|------|------------|
+| **M_cache** | HNSW vector index of verified episodes + compiled skills | O(log N) search |
+| **G_θ** | Fixed-weight LLM (Gemma-3-27B), generates candidates | Per-query cost |
+| **V_sandbox** | AST validation + subprocess execution, binary R(y)∈{0,1} | Deterministic |
+
+### Routing
+
+| Route | Condition | Cost |
+|-------|-----------|------|
+| **FAST** | `max_sim >= τ_fast` | 0 tokens, O(log N) |
+| **VERIFIED_RETRY** | `max_sim < τ_fast` | N × LLM calls (max H retries) |
+
+### Verified Synthesis MDP
+
+The synthesis loop is formalized as an MDP:
+- **State** S: query x + error history E₁..ₖ₋₁
+- **Action** A: generate candidate y_k ~ G_θ(y | x, E₁..ₖ₋₁)
+- **Transition** T: execute y_k in V_sandbox
+- **Reward** R: R(y_k) = 1 if passes, else 0
+- **Horizon** H: max_retries
+
+### Library Learning (Background)
+
+Periodically clusters similar verified episodes, asks LLM to abstract a reusable function, verifies it against all cluster tasks, and stores as `COMPILED_SKILL` for instant FAST-route execution.
 
 ---
 
 <a name="features"></a>
-## 🔬 Features
+## Features
 
-### Core Engine
-
-| Component | Description | Theory Reference |
-|-----------|-------------|-----------------|
-| **4-Way Router** | Dynamic routing: REFLEX → FAST → HYBRID → SLOW | §3.1 Routing Protocol |
-| **Skill Registry** | Fault-tolerant with confidence gating & shadow verification | §3.2 Skill Compilation |
-| **HybridCritic** | Elo tournament + self-consistency + anti-gaming evaluation | §3.3 Critic System |
-| **Maturity System** | Skills grow through success streaks; mature skills bypass shadow mode | §3.4 Maturity |
-| **AST Sandbox** | Secure execution with restricted builtins, blocked imports | §3.5 Safety |
-
-### Memory System (6 layers)
-
-| Layer | Type | Mechanism |
-|-------|------|-----------|
-| **Episodic** | Dense vectors | FAISS IndexFlatIP, cosine similarity, Ebbinghaus forgetting |
-| **Semantic** | Compiled skills | Python AST with trigger/parse/solve/execute functions |
-| **Factual (RAG)** | Knowledge base | FAISS retrieval, deduplication at >0.92 similarity |
-| **Graph** | Associative | Hebbian strengthening, synaptic downscaling, multi-hop BFS |
-| **RL Retriever** | Contextual bandit | Linear value function, ε-greedy exploration, reward learning |
-| **Neural (Titans)** | Online MLP | Surprise-driven gating, Huber loss, Retention Gate |
-
-### Consolidation & Meta-Learning
-
-| Component | Description |
-|-----------|-------------|
-| **NREM Sleep** | FAISS clustering → skill crystallization via LLM code generation |
-| **REM Sleep** | Adversarial stress-testing with **iterative code repair** via LLM |
-| **Tree-of-Thoughts** | BFS with branch scoring (0-10), pruning, and expansion |
-| **Meta-Abduction** | Cross-domain structural isomorphism → LLM-generated abstract principles |
-| **MetricsTracker** | Recall, cost reduction, convergence, stability-plasticity balance |
+- **Verified Code Synthesis** — Every solution is sandbox-verified before caching
+- **HNSW Episodic Memory** — O(log N) approximate nearest neighbour search
+- **Activation-Based Forgetting** — Ebbinghaus-inspired exponential decay
+- **Library Learning** — Automatic abstraction of recurring patterns into skills
+- **AST Sandbox** — Secure execution with whitelist-based validation
+- **Self-Refinement** — Error traces fed back to LLM for iterative correction
+- **Oracle Protocol** — Pluggable ground-truth verification (SymPy, pytest, custom)
 
 ---
 
 <a name="quickstart"></a>
-## 🚀 Quickstart
-
-### Prerequisites
-
-- Python 3.10+
-- [Gemini API Key](https://aistudio.google.com/apikey) (free tier works)
-
-### Installation
+## Quickstart
 
 ```bash
-# Clone
+# 1. Clone
 git clone https://github.com/starface77/Neuro-Adaptive-Reasoning-Engine.git
 cd Neuro-Adaptive-Reasoning-Engine
 
-# Install dependencies
-pip install -r requirements.txt
+# 2. Install
+pip install -e .
 
-# Configure API key
-echo "GEMINI_API_KEY=your_key_here" > .env
-```
+# 3. Configure
+cp .env.example .env
+# Edit .env and add your GEMINI_API_KEY
 
-### Usage
+# 4. Run demo
+python main.py demo
 
-```bash
-# Interactive REPL
+# 5. Interactive mode
 python main.py interactive
 
-# Single query
-python main.py --query "What is the sum of numbers from 1 to 100?"
-
-# Demo mode (predefined queries showing amortization)
-python main.py
-
-# Run benchmarks
-python main.py benchmark
+# 6. Single query
+python main.py --query "Find the next number: 3, 6, 9, 12, 15"
 ```
 
-### Python API
+### Benchmarks
 
-```python
-from nare.agent import NAREProductionAgent
+```bash
+# Quick sanity check (6 tasks, ~5 min)
+python main.py benchmark --benchmark quick
 
-agent = NAREProductionAgent()
-
-# First call — SLOW path (full LLM reasoning)
-result = agent.solve("What is the sum of the first 10 even numbers?")
-print(f"Route: {result['route']}, Answer: {result['answer']}")
-# Route: SLOW, Answer: 110
-
-# Second call — FAST path (cached, 0 tokens)
-result = agent.solve("What is the sum of the first 10 even numbers?")
-print(f"Route: {result['route']}, Tokens: {result['tokens_used']}")
-# Route: FAST, Tokens: 0
-
-# After sleep consolidation — REFLEX path (compiled Python)
-agent.sleep_consolidate()
-result = agent.solve("What is the sum of the first 20 even numbers?")
-print(f"Route: {result['route']}")
-# Route: REFLEX
+# Full evaluation (24 tasks, ~25 min)
+python main.py benchmark --benchmark full
 ```
-
-#### Plugging in an external oracle (recommended)
-
-By default, generated skills are validated against the heuristic
-string/numeric-overlap fallback in `nare/oracle.py`. For any
-benchmark-grade run you should supply a real oracle so the skill is
-judged against verified ground truth instead of self-referential LLM
-labels:
-
-```python
-from nare.agent import NAREProductionAgent
-from nare.oracle import numeric_set_oracle, python_assert_oracle
-
-# Domain-specific oracle: every skill output must contain the right
-# integer answer.
-def my_oracle(query: str, candidate: str):
-    expected = run_reference_solver(query)        # your ground truth
-    return numeric_set_oracle([expected])(query, candidate)
-
-agent = NAREProductionAgent(oracle=my_oracle)
-```
-
-You can also attach an `oracle_spec` to individual episodes after they
-are stored. The spec is JSON-serializable so it survives save/load,
-and it takes priority over the global oracle when the sleep phase
-validates a skill compiled from that episode:
-
-```python
-ep = agent.memory.episodes[-1]
-ep["oracle_spec"] = {"type": "numeric_set", "expected": [7]}
-agent.memory.save()
-```
-
-Recognized spec types live in `nare/oracle.py`:
-`numeric_set` / `string_contains` / `python_assert` / `heuristic_overlap`.
-
-The validator's weights live in `nare.config.SkillValidationConfig`.
-By default `w_positive_stress = 0`: LLM-judged stress tests are
-reported as `positive_no_crash_rate` for diagnostics but do not bias
-the `overall` score that gates promotion. See `LIMITATIONS.md` §3.
 
 ---
 
 <a name="benchmarks"></a>
-## 📊 Benchmarks
+## Metrics
 
-### Routing Distribution
+VARE tracks three composite metrics (per MemoryBench):
 
-```
-Route       │ Count │ Share  │ Avg Latency │ Tokens
-────────────┼───────┼────────┼─────────────┼───────
-SLOW (ToT)  │   1   │ 14.3%  │   60+ sec   │  ~700
-HYBRID (δ)  │   3   │ 42.9%  │   ~2 sec    │  ~100
-FAST (cache)│   1   │ 14.3%  │   ~0.01 sec │    0
-REFLEX (exe)│   2   │ 28.6%  │   ~0.001 sec│    0
-```
-
-### Amortization, qualitatively
-
-The routing protocol is designed so that, once a skill compiles, repeated queries of the same class hit a deterministic Python function and consume **zero generation tokens**. Quantitatively comparing this to a SLOW-path call requires care:
-
-- The default SLOW path uses Tree-of-Thoughts with `time.sleep(15)` between calls to respect Gemini free-tier rate limits. Removing those sleeps would cut SLOW wall-clock time roughly 5–10×. **Any speedup number you read in older drafts of this README that was based on those rate-limited timings (e.g. "8,500×") is misleading and has been removed.**
-- A meaningful speedup figure should be reported on a real benchmark (with a fixed test set, a baseline like CoT or Reflexion, multiple seeds, and confidence intervals). This repository does not yet include such a study; see [LIMITATIONS.md](LIMITATIONS.md).
-
----
-
-## 📁 Project Structure
-
-```
-Neuro-Adaptive-Reasoning-Engine/
-├── nare/                          # Core engine (~3,040 lines)
-│   ├── agent.py                   # NAREProductionAgent — main agent (789 lines)
-│   ├── llm.py                     # Gemini API, skill generation, repair (831 lines)
-│   ├── memory.py                  # Episodic + semantic + RAG memory (255 lines)
-│   ├── meta_abduction.py          # Cross-domain meta-rule discovery (350 lines)
-│   ├── neural_memory.py           # Titans/MIRAS online MLP (241 lines)
-│   ├── graph_memory.py            # Associative graph with Hebbian learning (162 lines)
-│   ├── rl_retriever.py            # Contextual bandit retriever (164 lines)
-│   ├── metrics.py                 # Continuous learning metrics (150 lines)
-│   ├── sandbox.py                 # AST-validated secure execution (90 lines)
-│   ├── oracle.py                  # External validation protocols (150 lines)
-│   ├── config.py                  # Centralized system parameters (130 lines)
-│   └── __init__.py                # Package exports
-├── benchmarks/                    # Evaluation suites
-│   ├── quick_test.py              # Sanity check (6 tasks, all 4 routes)
-│   └── full_benchmark.py          # 24 real tasks across 6 domains
-├── scripts/                       # Utility scripts
-│   ├── list_models.py             # List Gemini models
-│   └── list_gemma.py              # List Gemma models
-├── main.py                        # CLI entry point (demo/interactive/benchmark)
-├── pyproject.toml                 # Package configuration
-├── requirements.txt               # Dependencies
-├── .env.example                   # Environment template
-└── LICENSE                        # MIT License
-```
-
----
-
-## 🧠 Theoretical Inspirations (not formal claims)
-
-The design borrows vocabulary from several research traditions, but **the implementation does not formally instantiate any of these mathematical objects**. They are listed here as inspirations only, not as guarantees:
-
-1. **Amortized inference / memory-amortized search** — motivates the cache hierarchy. We do *not* compute a posterior, KL divergence, or evidence lower bound.
-2. **Sleep-replay consolidation** — motivates the offline crystallization phase. The implementation is heuristic clustering + LLM compilation, not a Bayesian model-reduction step.
-3. **Self-Refine / Reflexion / Tree-of-Thoughts** — direct algorithmic ancestors of the SLOW path. See those papers for the actual algorithms.
-4. **Voyager / EXPEL / CER** — direct ancestors of the executable-skill registry. Voyager (NVIDIA, 2023) introduced the same compile-skills-from-trajectories idea in Minecraft.
-
-If you need the formal versions of these ideas, please cite the original papers, not this repository.
-
-### Key Theoretical Properties
-
-| Property | Implementation |
-|----------|---------------|
-| **Amortization** | SLOW→REFLEX compilation eliminates repeated inference |
-| **Compositionality** | Tree-of-Thoughts enables compositional reasoning |
-| **Continual Learning** | Ebbinghaus forgetting + synaptic downscaling prevent catastrophic interference |
-| **Transfer Learning** | Meta-abduction generates domain-independent meta-rules |
-| **Robustness** | REM sleep stress-tests and repairs skills adversarially |
-
----
-
-## ⚙️ Configuration
-
-| Environment Variable | Required | Description |
-|---------------------|----------|-------------|
-| `GEMINI_API_KEY` | Yes | Google Gemini API key ([get one](https://aistudio.google.com/apikey)) |
-
-| Internal Parameter | Default | Description |
-|-------------------|---------|-------------|
-| `persist_dir` | `memory_store/` | Directory for persistent memory files |
-| `sleep_interval` | `300s` | Time between sleep consolidation cycles |
-| `similarity_threshold` | Dynamic τ | Calibrated routing threshold |
-| `maturity_threshold` | `3` | Success streaks needed for full trust |
-| `confidence_gate` | `0.6` | Minimum confidence for skill execution |
-
----
-
-## 🤝 Contributing
-
-Contributions are welcome! Please:
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
----
-
-<a name="citation"></a>
-## 📝 Citation
-
-If you use NARE in your research, please cite:
-
-```bibtex
-@software{nare2026,
-  title     = {NARE: Non-parametric Amortized Reasoning Evolution},
-  author    = {Danikov},
-  year      = {2026},
-  url       = {https://github.com/starface77/Neuro-Adaptive-Reasoning-Engine},
-  note      = {A Skill-Based Cognitive Architecture for Deterministic
-               Routing of Logic Tasks via Semantic Compression
-               and Executable Reflexes}
-}
-```
+| Metric | Description |
+|--------|-------------|
+| **Quality** | Accuracy — fraction of verified solutions |
+| **Latency** | Average response time (should decrease as memory grows) |
+| **Tokens** | LLM token consumption per query (should decrease with FAST hits) |
 
 ---
 
 <a name="russian"></a>
-## 🇷🇺 Русская документация
+## Русский
 
-<details>
-<summary><b>Нажмите для раскрытия полной документации на русском языке</b></summary>
+**VARE** (Verified Amortized Reasoning Engine) — когнитивная архитектура, объединяющая синтез кода через LLM с формальной верификацией и эпизодической памятью.
 
-### NARE — Непараметрическая Эволюция Амортизированных Рассуждений
+Три компонента:
+- **M_cache** — HNSW-граф эпизодической памяти для мгновенного извлечения проверенных решений
+- **G_θ** — LLM-генератор с фиксированными весами и итеративным самоулучшением
+- **V_sandbox** — формальный верификатор (AST + изолированный subprocess)
 
-*Детерминированный роутинг логических задач через семантическое сжатие и исполняемые рефлексы.*
+Два маршрута:
+- **FAST** — при высоком сходстве (≥ τ_fast) мгновенный возврат из кэша
+- **VERIFIED_RETRY** — цикл генерации → верификации → уточнения до корректного результата
 
-NARE представляет собой когнитивную архитектуру, основанную на навыках, разработанную для перевода вычислительно затратных LLM-рассуждений (System 2) в детерминированное исполнение (System 1). Система динамически обучается на собственных траекториях рассуждений, компилирует абстрактные алгоритмы на Python во время фазы консолидации и выполняет их для решения повторяющихся классов логических задач с задержкой O(1) и нулевыми затратами на API.
-
-### Базовая архитектура
-
-- **Амортизация рассуждений**: Перенос вычислительной сложности с авторегрессионной генерации LLM на локальное процедурное исполнение
-- **Исполняемые рефлексы**: Автоматический синтез и компиляция алгоритмов на базе AST для решения повторяющихся паттернов
-- **Протокол 4-х фазного роутинга**:
-  1. **REFLEX**: O(1) процедурное исполнение кристаллизованных навыков
-  2. **FAST**: Детерминированное извлечение точных совпадений через плотное векторное сходство
-  3. **HYBRID**: Контекстно-аугментированный вывод с дельта-рассуждением
-  4. **SLOW**: Глубокое исследовательское рассуждение (Tree-of-Thoughts) с турнирным критиком
-
-### Когнитивный процесс
-
-1. **Эпизодическое кодирование**: Агент обрабатывает новый стимул через маршрут SLOW. Успешные траектории эмбеддятся и сохраняются в FAISS
-2. **Консолидация (Фаза Сна)**: По достижении порога плотности агент компилирует абстрактный Python-алгоритм с функциями `trigger()` и `execute()`
-3. **Процедурное исполнение**: Стимулы, попадающие в семантическую границу, обходят LLM и исполняются детерминированно
-
-### Продвинутая архитектура
-
-| Компонент | Описание |
-|-----------|----------|
-| **Tree-of-Thoughts** | BFS с оценкой ветвей (0-10), pruning и backtracking |
-| **REM-Сон** | Стресс-тестирование + итеративная коррекция кода навыков через LLM |
-| **RAG-память** | Трёхуровневая: эпизодическая + семантическая + фактуальная |
-| **Графовая память** | Хеббовское усиление, синаптическое масштабирование, multi-hop BFS |
-| **RL-ретривер** | Контекстный бандит с ε-greedy исследованием |
-| **Нейросетевая память** | Titans/MIRAS: surprise-gating, Huber loss, Retention Gate |
-| **Мета-абдукция** | Структурные изоморфизмы + LLM-генерация абстрактных принципов |
-| **Метрики** | Recall, cost reduction, convergence, stability-plasticity |
-
-### Быстрый старт
-
-```bash
-git clone https://github.com/starface77/Neuro-Adaptive-Reasoning-Engine.git
-cd Neuro-Adaptive-Reasoning-Engine
-pip install -r requirements.txt
-echo "GEMINI_API_KEY=ваш_ключ" > .env
-python main.py interactive
-```
-
-</details>
+Фоновый процесс Library Learning кластеризует решённые задачи, абстрагирует в функции, верифицирует и сохраняет как COMPILED_SKILL.
 
 ---
 
-<p align="center">
-  <b>Built with</b> 🧠 <b>by</b> <a href="https://github.com/starface77">Danikov</a>
-</p>
+<a name="citation"></a>
+## Citation
+
+```bibtex
+@software{vare2025,
+  title   = {VARE: Verified Amortized Reasoning Engine},
+  author  = {starface77},
+  year    = {2025},
+  url     = {https://github.com/starface77/Neuro-Adaptive-Reasoning-Engine}
+}
+```
+
+## License
+
+MIT — see [LICENSE](LICENSE) for details.

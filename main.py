@@ -2,20 +2,20 @@ import os
 import sys
 import time
 import argparse
-from nare.agent import NAREProductionAgent
+from nare.agent import VareAgent, NAREProductionAgent
 from dotenv import load_dotenv
 
 
-def run_demo(agent: NAREProductionAgent):
-    """Run built-in demo tasks showcasing all 4 routing paths."""
+def run_demo(agent: VareAgent):
+    """Run built-in demo tasks showcasing FAST and VERIFIED_RETRY routes."""
     tasks = [
-        # Task 1: Slow Path (Generation & Evaluation)
+        # Task 1: Verified Retry (first encounter)
         "What is the most efficient sorting algorithm for an array that is already 90% sorted? Explain your reasoning.",
-        # Task 2: Exact Repeat -> Fast Path (Retrieval only)
+        # Task 2: Exact Repeat -> FAST (cached)
         "What is the most efficient sorting algorithm for an array that is already 90% sorted? Explain your reasoning.",
-        # Task 3: Slight Variation -> Hybrid Path
+        # Task 3: Similar -> should benefit from memory
         "Which sorting algorithm should I use if my dataset is mostly sorted, but has a few random elements at the end?",
-        # Additional tasks to trigger Sleep Phase
+        # Additional tasks to trigger Library Learning
         "How to sort an almost sorted list of integers?",
         "Best algorithm for sorting a nearly sorted array in Python?",
         "Sorting an array with only a few inversions?"
@@ -42,9 +42,9 @@ def run_demo(agent: NAREProductionAgent):
             print(f"      - {log}")
 
 
-def run_interactive(agent: NAREProductionAgent):
-    """Interactive REPL mode for querying NARE."""
-    print("NARE Interactive Mode (type 'exit' or 'quit' to stop)\n")
+def run_interactive(agent: VareAgent):
+    """Interactive REPL mode for querying VARE."""
+    print("VARE Interactive Mode (type 'exit' or 'quit' to stop)\n")
 
     while True:
         try:
@@ -76,8 +76,8 @@ def main():
     load_dotenv()
 
     parser = argparse.ArgumentParser(
-        prog="nare",
-        description="NARE — Non-parametric Amortized Reasoning Evolution",
+        prog="vare",
+        description="VARE — Verified Amortized Reasoning Engine",
     )
     parser.add_argument(
         "mode",
@@ -88,8 +88,8 @@ def main():
     )
     parser.add_argument(
         "--benchmark",
-        choices=["metrics", "complex", "nlp", "hardcore", "basic"],
-        default="metrics",
+        choices=["quick", "full"],
+        default="quick",
         help="Benchmark suite to run (only used with 'benchmark' mode)",
     )
     parser.add_argument(
@@ -106,8 +106,8 @@ def main():
         print("  3. Get a key at: https://aistudio.google.com/apikey")
         sys.exit(1)
 
-    print("Initializing NARE Production Architecture (Gemini Engine)...")
-    agent = NAREProductionAgent()
+    print("Initializing VARE (Verified Amortized Reasoning Engine)...")
+    agent = VareAgent()
 
     if args.query:
         start_time = time.time()
@@ -122,21 +122,12 @@ def main():
     elif args.mode == "interactive":
         run_interactive(agent)
     elif args.mode == "benchmark":
-        if args.benchmark == "metrics":
-            from benchmarks.metrics_benchmark import run_metrics_benchmark
-            run_metrics_benchmark()
-        elif args.benchmark == "complex":
-            from benchmarks.complex_benchmark import run_complex_benchmark
-            run_complex_benchmark()
-        elif args.benchmark == "nlp":
-            from benchmarks.nlp_benchmark import run_nlp_benchmark
-            run_nlp_benchmark()
-        elif args.benchmark == "hardcore":
-            from benchmarks.hardcore_benchmark import run_hardcore_benchmark
-            run_hardcore_benchmark()
-        elif args.benchmark == "basic":
-            from benchmarks.benchmark import run_benchmark
-            run_benchmark()
+        if args.benchmark == "quick":
+            from benchmarks.quick_test import main as quick_main
+            quick_main()
+        elif args.benchmark == "full":
+            from benchmarks.full_benchmark import main as full_main
+            full_main()
 
 
 if __name__ == "__main__":

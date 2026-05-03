@@ -1,11 +1,11 @@
-"""
-MetricsTracker: Continuous learning metrics per NARE theory.
+"""MetricsTracker for VARE.
 
-Tracks 4 key metrics:
-1. Recall & Precision of routing (amortization efficiency)
-2. Computational cost reduction over time
-3. Convergence of inferences (variance reduction)
-4. Stability-plasticity balance (no catastrophic interference)
+Three composite metrics (per MemoryBench):
+  1. Quality (Accuracy)  — fraction of verified solutions
+  2. Latency            — average response time
+  3. Tokens             — LLM token consumption per query
+
+Also tracks: routing distribution, cost trends, amortization dynamics.
 """
 
 import time
@@ -42,35 +42,81 @@ class MetricsTracker:
         self._save()
 
     # ------------------------------------------------------------------
-    # Metric 1: Routing Recall & Precision
+    # Metric 1: Quality (Accuracy)
+    # ------------------------------------------------------------------
+    def quality(self, last_n: Optional[int] = None) -> Dict[str, Any]:
+        """Fraction of queries with score >= 0.5 (verified)."""
+        entries = self.history[-last_n:] if last_n else self.history
+        if not entries:
+            return {"accuracy": 0.0, "total": 0}
+        correct = sum(1 for e in entries if e["score"] >= 0.5)
+        return {
+            "accuracy": round(correct / len(entries), 4),
+            "correct": correct,
+            "total": len(entries),
+        }
+
+    # ------------------------------------------------------------------
+    # Metric 2: Latency
+    # ------------------------------------------------------------------
+    def latency(self, last_n: Optional[int] = None) -> Dict[str, Any]:
+        """Average latency and breakdown by route."""
+        entries = self.history[-last_n:] if last_n else self.history
+        if not entries:
+            return {"avg_latency": 0.0}
+        times = [e["elapsed_seconds"] for e in entries]
+        by_route: Dict[str, List[float]] = {}
+        for e in entries:
+            by_route.setdefault(e["route"], []).append(e["elapsed_seconds"])
+        return {
+            "avg_latency": round(np.mean(times), 4),
+            "median_latency": round(float(np.median(times)), 4),
+            "by_route": {
+                r: round(np.mean(t), 4) for r, t in by_route.items()
+            },
+        }
+
+    # ------------------------------------------------------------------
+    # Metric 3: Token Efficiency
+    # ------------------------------------------------------------------
+    def tokens(self, last_n: Optional[int] = None) -> Dict[str, Any]:
+        """Average token usage per query."""
+        entries = self.history[-last_n:] if last_n else self.history
+        if not entries:
+            return {"avg_tokens": 0.0}
+        toks = [e["tokens_used"] for e in entries]
+        return {
+            "avg_tokens": round(np.mean(toks), 1),
+            "total_tokens": sum(toks),
+        }
+
+    # ------------------------------------------------------------------
+    # Routing Distribution
     # ------------------------------------------------------------------
     def routing_stats(self, last_n: Optional[int] = None) -> Dict[str, Any]:
-        """Distribution of routing decisions."""
         entries = self.history[-last_n:] if last_n else self.history
         if not entries:
             return {}
-        counts = {}
+        counts: Dict[str, int] = {}
         for e in entries:
             r = e["route"]
             counts[r] = counts.get(r, 0) + 1
         total = len(entries)
-        amortized = sum(counts.get(r, 0) for r in ("FAST", "REFLEX", "REFLEX_PROVISIONAL"))
+        amortized = counts.get("FAST", 0)
         return {
             "total_queries": total,
             "route_counts": counts,
             "route_pct": {r: round(c / total * 100, 1) for r, c in counts.items()},
             "amortization_ratio": round(amortized / total, 4),
-            "alpha_mean": round(np.mean([e["similarity"] for e in entries]), 4),
         }
 
     # ------------------------------------------------------------------
-    # Metric 2: Computational Cost Reduction
+    # Cost Trend
     # ------------------------------------------------------------------
     def cost_trend(self, window: int = 10) -> Dict[str, Any]:
-        """Rolling average of latency and token usage."""
         if len(self.history) < 2:
             return {"insufficient_data": True}
-        first_half = self.history[: len(self.history) // 2]
+        first_half = self.history[:len(self.history) // 2]
         second_half = self.history[len(self.history) // 2:]
         avg_time_first = np.mean([e["elapsed_seconds"] for e in first_half])
         avg_time_second = np.mean([e["elapsed_seconds"] for e in second_half])
@@ -79,118 +125,31 @@ class MetricsTracker:
         return {
             "first_half_avg_latency": round(avg_time_first, 4),
             "second_half_avg_latency": round(avg_time_second, 4),
-            "latency_reduction_pct": round((1 - avg_time_second / max(avg_time_first, 1e-9)) * 100, 1),
+            "latency_reduction_pct": round(
+                (1 - avg_time_second / max(avg_time_first, 1e-9)) * 100, 1
+            ),
             "first_half_avg_tokens": round(avg_tok_first, 1),
             "second_half_avg_tokens": round(avg_tok_second, 1),
-            "token_reduction_pct": round((1 - avg_tok_second / max(avg_tok_first, 1e-9)) * 100, 1),
-        }
-
-    # ------------------------------------------------------------------
-    # Metric 3: Convergence (variance reduction for similar queries)
-    # ------------------------------------------------------------------
-    def convergence(self) -> Dict[str, Any]:
-        """Measure answer determinism over time."""
-        if len(self.history) < 3:
-            return {"insufficient_data": True}
-        first_half = self.history[: len(self.history) // 2]
-        second_half = self.history[len(self.history) // 2:]
-        var_first = np.var([e["answer_length"] for e in first_half])
-        var_second = np.var([e["answer_length"] for e in second_half])
-        latency_var_first = np.var([e["elapsed_seconds"] for e in first_half])
-        latency_var_second = np.var([e["elapsed_seconds"] for e in second_half])
-        return {
-            "answer_length_variance_first": round(var_first, 2),
-            "answer_length_variance_second": round(var_second, 2),
-            "latency_variance_first": round(latency_var_first, 4),
-            "latency_variance_second": round(latency_var_second, 4),
-            "converging": var_second < var_first,
-        }
-
-    # ------------------------------------------------------------------
-    # Metric 4: Stability-Plasticity Balance
-    # ------------------------------------------------------------------
-    def stability_plasticity(self) -> Dict[str, Any]:
-        """Check that new learning doesn't destroy old skills."""
-        if len(self.history) < 5:
-            return {"insufficient_data": True}
-        scores = [e["score"] for e in self.history]
-        window = min(5, len(scores) // 2)
-        early_avg = np.mean(scores[:window])
-        late_avg = np.mean(scores[-window:])
-        return {
-            "early_avg_score": round(early_avg, 4),
-            "late_avg_score": round(late_avg, 4),
-            "score_degradation": round(early_avg - late_avg, 4),
-            "stable": late_avg >= early_avg * 0.9,
-        }
-
-    # ------------------------------------------------------------------
-    # Metric 5: Formal Amortization α_t and C_t
-    # ------------------------------------------------------------------
-    def amortization_dynamics(
-        self,
-        memory_size: int,
-        kappa: float = 0.05,
-        c_llm: float = 2000.0,
-        c_mem: float = 0.0,
-    ) -> Dict[str, Any]:
-        """Compute formal amortization metrics.
-
-        α_t = 1 - exp(-κ·|M_t|)     — coverage ratio
-        C_t = (1-α_t)·C_LLM + α_t·C_mem  — blended cost
-        dC_t/d|M_t| = -κ·exp(-κ|M_t|)·(C_LLM - C_mem) < 0
-        """
-        alpha_t = 1.0 - np.exp(-kappa * memory_size)
-        c_t = (1.0 - alpha_t) * c_llm + alpha_t * c_mem
-        dc_dm = -kappa * np.exp(-kappa * memory_size) * (c_llm - c_mem)
-
-        # Empirical α: ratio of amortized queries (FAST + REFLEX)
-        if self.history:
-            amortized_count = sum(
-                1 for e in self.history
-                if e["route"] in ("FAST", "REFLEX", "REFLEX_PROVISIONAL")
-            )
-            alpha_empirical = amortized_count / len(self.history)
-        else:
-            alpha_empirical = 0.0
-
-        # Empirical cost: average tokens per query
-        if self.history:
-            c_empirical = np.mean([e["tokens_used"] for e in self.history])
-        else:
-            c_empirical = c_llm
-
-        return {
-            "memory_size": memory_size,
-            "alpha_t_theoretical": round(float(alpha_t), 6),
-            "alpha_t_empirical": round(float(alpha_empirical), 6),
-            "cost_t_theoretical": round(float(c_t), 2),
-            "cost_t_empirical": round(float(c_empirical), 2),
-            "dCost_dMemory": round(float(dc_dm), 4),
-            "kappa": kappa,
-        }
-
-    def summary(self, memory_size: int = 0, config: "Any" = None) -> Dict[str, Any]:
-        kappa = 0.05
-        c_llm = 2000.0
-        c_mem = 0.0
-        if config is not None:
-            kappa = config.amortization.kappa
-            c_llm = config.amortization.c_llm
-            c_mem = config.amortization.c_mem
-        return {
-            "routing": self.routing_stats(),
-            "cost": self.cost_trend(),
-            "convergence": self.convergence(),
-            "stability": self.stability_plasticity(),
-            "amortization": self.amortization_dynamics(
-                memory_size=memory_size,
-                kappa=kappa,
-                c_llm=c_llm,
-                c_mem=c_mem,
+            "token_reduction_pct": round(
+                (1 - avg_tok_second / max(avg_tok_first, 1e-9)) * 100, 1
             ),
         }
 
+    # ------------------------------------------------------------------
+    # Summary
+    # ------------------------------------------------------------------
+    def summary(self, memory_size: int = 0, config: "Any" = None) -> Dict[str, Any]:
+        return {
+            "quality": self.quality(),
+            "latency": self.latency(),
+            "tokens": self.tokens(),
+            "routing": self.routing_stats(),
+            "cost_trend": self.cost_trend(),
+        }
+
+    # ------------------------------------------------------------------
+    # Persistence
+    # ------------------------------------------------------------------
     def _save(self):
         path = os.path.join(self.persist_dir, "metrics.json")
         try:
