@@ -30,14 +30,26 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+import re as _re
 from typing import Any, Callable, List, Optional, Tuple
 
 from ..execution.sandbox import extract_python_block, safe_execute_freeform
 from ..tools.solve_context import SolveContext
 
+# Callback: (file_path) -> Optional[str].  Returns file content or None.
+FileProviderFn = Callable[[str], Optional[str]]
+
 
 # A judge takes (query, answer_string) and returns (correct, info_dict).
 OracleFn = Callable[[str, str], Tuple[bool, dict]]
+
+
+def _extract_needed_file(raw: str) -> Optional[str]:
+    """Parse 'CANNOT_FIX: need file <path>' from LLM response."""
+    m = _re.search(r'CANNOT_FIX:\s*need\s+file\s+([a-zA-Z0-9_./\-]+)', raw)
+    if m:
+        return m.group(1).strip()
+    return None
 
 
 @dataclass
@@ -188,15 +200,34 @@ def _format_feedback(
 
     if expected_hint:
         parts += ["", f"Expected (training only): {expected_hint}"]
-    parts += [
-        "",
-        "Rewrite the code so it passes the oracle.  Output ONLY a",
-        "single fenced ```python``` block that prints the final answer.",
-        "Do NOT hardcode the expected value; compute it from the query.",
-        "If your previous approach computed a different quantity than",
-        "what the query asks for, re-read the query and try a fundamentally",
-        "different decomposition rather than tweaking the same code.",
-    ]
+
+    # CRITICAL: Detect SWE-bench tasks (file-based) vs code execution tasks
+    is_swe_bench = "File:" in query and "CRITICAL FORMAT REQUIREMENT" in query
+
+    if is_swe_bench:
+        # SWE-bench: preserve File: format instructions
+        parts += [
+            "",
+            "Fix the issue and output in the EXACT format from the original query:",
+            "File: <path>",
+            "```python",
+            "<complete file content>",
+            "```",
+            "",
+            "NOTHING ELSE. No explanations, no test code, no analysis.",
+            "START YOUR RESPONSE with 'File:' on the first line.",
+        ]
+    else:
+        # Code execution: require print() output
+        parts += [
+            "",
+            "Rewrite the code so it passes the oracle.  Output ONLY a",
+            "single fenced ```python``` block that prints the final answer.",
+            "Do NOT hardcode the expected value; compute it from the query.",
+            "If your previous approach computed a different quantity than",
+            "what the query asks for, re-read the query and try a fundamentally",
+            "different decomposition rather than tweaking the same code.",
+        ]
     return "\n".join(parts)
 
 
@@ -208,6 +239,7 @@ def verified_synthesis(
     expected_hint: Optional[str] = None,
     logger: Optional[logging.Logger] = None,
     context: Optional[SolveContext] = None,
+    file_provider: Optional[FileProviderFn] = None,
 ) -> SynthesisResult:
     """Run the verified-synthesis loop.
 
@@ -251,9 +283,49 @@ def verified_synthesis(
     # For SWE-bench, query is already the formatted prompt with File: instructions
     # For code execution tasks, query contains the code-execution prompt
     prompt = query
+    # Track files already fetched to avoid infinite loops
+    _fetched_files: set = set()
 
     for i in range(max_attempts):
         raw = propose_fn(prompt, attempts)
+
+        needed = _extract_needed_file(raw)
+        if needed and file_provider:
+            if needed not in _fetched_files:
+                _fetched_files.add(needed)
+                file_content = file_provider(needed)
+                if file_content is not None:
+                    log.info(
+                        "[VS] Agent requested file '%s' — injecting into context",
+                        needed,
+                    )
+                    # Inject the file into the prompt for the next attempt
+                    injection = (
+                        f"\n\nHere is the file you requested ({needed}):\n"
+                        f"File: {needed}\n```python\n{file_content[:15000]}\n```\n"
+                        f"\nNow fix the bug using this file. Output in the required format."
+                    )
+                    prompt = prompt + injection
+                else:
+                    log.warning(
+                        "[VS] Agent requested file '%s' but it was not found",
+                        needed,
+                    )
+                    injection = (
+                        f"\n\nYou requested file '{needed}', but it DOES NOT EXIST in the repository. "
+                        f"Please check the path or search for another file. Output ONLY your fix or another CANNOT_FIX request."
+                    )
+                    prompt = prompt + injection
+                continue  # Retry immediately without counting as oracle failure
+            else:
+                log.warning("[VS] Agent requested file '%s' AGAIN", needed)
+                injection = (
+                    f"\n\nYou already requested file '{needed}'. "
+                    f"It was either already provided or it does not exist. "
+                    f"DO NOT request it again. You MUST provide a fix now. Output in the required format."
+                )
+                prompt = prompt + injection
+                continue
         code, out, err = _try_execute(raw)
 
         attempt = SynthesisAttempt(
@@ -317,8 +389,10 @@ def verified_synthesis(
                 query[:60],
                 attempt.attempt,
             )
-            # Return executed output if available, otherwise raw response
-            final_answer = out if out.strip() else raw
+            # For SWE-bench (file-based tasks), always return raw response
+            # For code execution tasks, prefer executed output
+            is_swe_bench = "File:" in raw and "```" in raw
+            final_answer = raw if is_swe_bench else (out if out.strip() else raw)
             return SynthesisResult(
                 final_answer=final_answer,
                 attempts=attempts,
@@ -333,7 +407,9 @@ def verified_synthesis(
                 query[:60],
                 attempt.attempt,
             )
-            final_answer = out if out.strip() else raw
+            # For SWE-bench (file-based tasks), always return raw response
+            is_swe_bench = "File:" in raw and "```" in raw
+            final_answer = raw if is_swe_bench else (out if out.strip() else raw)
             return SynthesisResult(
                 final_answer=final_answer,
                 attempts=attempts,
@@ -394,15 +470,21 @@ def verified_synthesis(
     def _payload(a: SynthesisAttempt) -> str:
         """The externally-visible answer for an attempt.
 
-        Prefers executed stdout over raw LLM text — the former is
-        what the oracle saw and what vanilla's harness would have
-        produced for the same code.
+        For SWE-bench (file-based tasks), always return raw response.
+        For code execution tasks, prefer executed stdout over raw LLM text.
         """
+        raw = a.raw_response or ""
+        is_swe_bench = "File:" in raw and "```" in raw
+
+        if is_swe_bench:
+            return raw if raw.strip() else ""
+
+        # Code execution task: prefer executed output
         ex = _executed(a)
         if ex:
             return ex
-        if a.raw_response and a.raw_response.strip():
-            return a.raw_response
+        if raw.strip():
+            return raw
         return ""
 
     # The "vanilla floor" — what a single greedy LLM call would have

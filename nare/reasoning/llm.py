@@ -11,53 +11,108 @@ if TYPE_CHECKING:
     from .oracle import Oracle
     from ..config import NareConfig
 
-# Anthropic API configuration via environment variables
+# LLM proxy configuration via environment variables.
+# Defaults point at a self-hosted endpoint; override in `.env` to use the
+# vendor's public API or a different proxy.
 ANTHROPIC_BASE_URL = os.getenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
-ANTHROPIC_AUTH_TOKEN = os.getenv("ANTHROPIC_API_KEY")
+ANTHROPIC_AUTH_TOKEN = os.getenv("ANTHROPIC_API_KEY", "")
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")
 
 def _ensure_api_key():
-    """Ensure API key is configured."""
+    """Ensure an API key is configured before talking to the LLM."""
     if not ANTHROPIC_AUTH_TOKEN:
         raise ValueError(
-            "ANTHROPIC_API_KEY environment variable is required. "
-            "Set it in your .env file or export it in your shell. "
-            "For local proxy, the default token will be used if not set."
+            "ANTHROPIC_API_KEY is not set. Add it to your .env file or "
+            "export it in the current shell. See .env.example for details."
         )
 
-def _post_anthropic(endpoint: str, payload: dict, retries: int = 5) -> str:
-    """POST to Anthropic API via local proxy and parse SSE stream."""
+def _post_anthropic(endpoint: str, payload: dict, stream_callback=None) -> str:
+    """POST to the configured LLM endpoint using stdlib urllib."""
+    import urllib.request
+    import urllib.error
+
+    # Enable streaming ONLY if callback provided
+    if stream_callback:
+        payload['stream'] = True
+
     url = f"{ANTHROPIC_BASE_URL}/{endpoint}"
     data = json.dumps(payload).encode('utf-8')
-
     headers = {
         'Content-Type': 'application/json',
         'x-api-key': ANTHROPIC_AUTH_TOKEN,
         'anthropic-version': '2023-06-01'
     }
 
+    retries = 5
     for attempt in range(retries):
         req = urllib.request.Request(url, data=data, headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=120) as response:
-                # Parse SSE stream
-                content_parts = []
-                for line in response:
-                    line = line.decode('utf-8').strip()
-                    if line.startswith('data: '):
-                        try:
-                            event_data = json.loads(line[6:])
-                            if event_data.get('type') == 'content_block_delta':
-                                delta = event_data.get('delta', {})
-                                text = delta.get('text', '')
-                                if text:
-                                    content_parts.append(text)
-                        except json.JSONDecodeError:
-                            continue
+                # REAL-TIME STREAMING: Use readline() for immediate SSE events
+                if stream_callback:
+                    content_parts = []
 
-                return ''.join(content_parts)
+                    # Read line by line using readline() for unbuffered streaming
+                    while True:
+                        line = response.readline()
+                        if not line:
+                            break
+
+                        line_str = line.decode('utf-8', errors='ignore').strip()
+
+                        if line_str.startswith('data: '):
+                            try:
+                                event_data = json.loads(line_str[6:])
+                                # Check for content_block_delta events
+                                if event_data.get('type') == 'content_block_delta':
+                                    delta = event_data.get('delta', {})
+                                    text = delta.get('text', '')
+                                    if text:
+                                        content_parts.append(text)
+                                        # CRITICAL: Call callback immediately for real-time streaming
+                                        stream_callback(text)
+                            except json.JSONDecodeError:
+                                continue
+
+                    return ''.join(content_parts)
+                else:
+                    # Non-streaming: read all at once
+                    body = response.read()
+                    body_str = body.decode('utf-8', errors='ignore')
+
+                    # Check if response is SSE format (starts with "event:")
+                    if body_str.strip().startswith('event:'):
+                        # Parse SSE events
+                        content_parts = []
+                        lines = body_str.split('\n')
+
+                        for line in lines:
+                            line = line.strip()
+                            if line.startswith('data: '):
+                                try:
+                                    event_data = json.loads(line[6:])
+                                    if event_data.get('type') == 'content_block_delta':
+                                        delta = event_data.get('delta', {})
+                                        text = delta.get('text', '')
+                                        if text:
+                                            content_parts.append(text)
+                                except json.JSONDecodeError:
+                                    continue
+
+                        return ''.join(content_parts)
+                    else:
+                        # Regular JSON response
+                        try:
+                            result = json.loads(body_str)
+                            if 'content' in result and len(result['content']) > 0:
+                                return result['content'][0].get('text', '')
+                        except json.JSONDecodeError:
+                            logging.warning(f"[LLM] Failed to parse JSON response")
+                            pass
+                        return body_str
 
         except urllib.error.HTTPError as e:
+            error_body = e.read().decode('utf-8') if hasattr(e, 'read') else ''
             if e.code == 429:
                 base_wait = min(10 * (2 ** attempt), 60)
                 jitter = random.uniform(0, base_wait * 0.1)
@@ -68,17 +123,21 @@ def _post_anthropic(endpoint: str, payload: dict, retries: int = 5) -> str:
                     continue
                 else:
                     raise Exception("Max retries exceeded for API request.")
+            elif e.code == 400:
+                logging.error(f"HTTP 400 Bad Request. Response: {error_body[:500]}")
+                raise
             else:
+                logging.error(f"HTTP {e.code}. Response: {error_body[:500]}")
                 raise
         except Exception as e:
             if attempt == retries - 1:
                 raise
             wait_time = min(5 * (2 ** attempt), 30)
-            logging.warning(f"Anthropic API error (attempt {attempt+1}/{retries}): {e}")
+            logging.warning(f"LLM API error (attempt {attempt+1}/{retries}): {e}")
             if attempt < retries - 1:
                 time.sleep(wait_time)
 
-    raise Exception("Max retries exceeded for Anthropic API")
+    raise Exception("Max retries exceeded for LLM API")
 
 # Global embedding model (lazy loaded)
 _embedding_model = None
@@ -89,17 +148,33 @@ def get_embedding(text: str) -> list:
 
     if _embedding_model is None:
         from sentence_transformers import SentenceTransformer
-        # Use a model that produces 3072-dim embeddings
-        # If not available, we'll use a smaller model and pad
-        try:
-            _embedding_model = SentenceTransformer('BAAI/bge-large-en-v1.5')
-            logging.info("[Embeddings] Loaded BAAI/bge-large-en-v1.5 (1024-dim)")
-        except:
-            _embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
-            logging.info("[Embeddings] Loaded all-MiniLM-L6-v2 (384-dim)")
+        import warnings
+        import sys
+        from io import StringIO
 
-    # Get embedding
-    emb = _embedding_model.encode(text, convert_to_numpy=True)
+        # Suppress ALL output during model loading
+        warnings.filterwarnings('ignore')
+        os.environ['TOKENIZERS_PARALLELISM'] = 'false'
+        os.environ['TRANSFORMERS_VERBOSITY'] = 'error'
+
+        # Redirect stderr to suppress progress bars
+        old_stderr = sys.stderr
+        sys.stderr = StringIO()
+
+        try:
+            # Use a model that produces 3072-dim embeddings
+            # If not available, we'll use a smaller model and pad
+            try:
+                _embedding_model = SentenceTransformer('BAAI/bge-large-en-v1.5', device='cpu')
+                _embedding_model.max_seq_length = 512
+            except:
+                _embedding_model = SentenceTransformer('all-MiniLM-L6-v2', device='cpu')
+        finally:
+            # Restore stderr
+            sys.stderr = old_stderr
+
+    # Get embedding (suppress progress bar)
+    emb = _embedding_model.encode(text, convert_to_numpy=True, show_progress_bar=False)
 
     # Pad to 3072 dimensions if needed
     if len(emb) < 3072:
@@ -111,8 +186,8 @@ def get_embedding(text: str) -> list:
 
     return emb.tolist()
 
-def generate_samples(prompt: str, n: int = 3, temperature: float = 0.8, mode: str = "ANALYTIC"):
-    """Generate N candidates using Anthropic API.
+def generate_samples(prompt: str, n: int = 3, temperature: float = 0.8, mode: str = "ANALYTIC", thinking_display=None):
+    """Generate N candidates from the configured LLM.
 
     Modes:
     - DIRECT: Zero-shot direct answer without reasoning
@@ -123,73 +198,175 @@ def generate_samples(prompt: str, n: int = 3, temperature: float = 0.8, mode: st
     """
     _ensure_api_key()
 
+    # Create stream callback that extracts reasoning tokens
+    # ONLY if thinking_display is provided
+    stream_callback = None
+    if thinking_display:
+        in_reasoning = False
+        in_delta = False
+        in_solution = False
+        in_abstract = False
+        buffer = ""
+        seen_first_tag = False  # Track if we've seen any tag yet
+
+        def callback(token: str):
+            nonlocal in_reasoning, in_delta, in_solution, in_abstract, buffer, seen_first_tag
+            buffer += token
+
+            # DIRECT and SYNTHESIS mode: stream everything immediately without tags
+            if mode in ("DIRECT", "SYNTHESIS"):
+                thinking_display.stream_token(token)
+                return
+
+            # Check for abstract_signature tags (comes first)
+            if "<abstract_signature>" in buffer and not in_abstract:
+                in_abstract = True
+                seen_first_tag = True
+                buffer = buffer.split("<abstract_signature>", 1)[1]
+                return
+
+            if "</abstract_signature>" in buffer and in_abstract:
+                in_abstract = False
+                buffer = buffer.split("</abstract_signature>", 1)[1]
+                return
+
+            # Check for reasoning tags (ANALYTIC mode)
+            if "<reasoning>" in buffer and not in_reasoning:
+                in_reasoning = True
+                seen_first_tag = True
+                # Clear buffer up to and including the tag
+                buffer = buffer.split("<reasoning>", 1)[1]
+                return
+
+            # Check for delta_reasoning tags (ADAPTIVE mode)
+            if "<delta_reasoning>" in buffer and not in_delta:
+                in_delta = True
+                seen_first_tag = True
+                buffer = buffer.split("<delta_reasoning>", 1)[1]
+                return
+
+            # Check for solution tags
+            if "<solution>" in buffer and not in_solution:
+                in_solution = True
+                seen_first_tag = True
+                buffer = buffer.split("<solution>", 1)[1]
+                # Switch to solution display
+                if hasattr(thinking_display, 'switch_to_solution'):
+                    thinking_display.switch_to_solution()
+                return
+
+            # Stream reasoning content
+            if in_reasoning:
+                if "</reasoning>" in buffer:
+                    # End of reasoning - flush remaining content before tag
+                    final_text = buffer.split("</reasoning>", 1)[0]
+                    if final_text:
+                        thinking_display.stream_token(final_text)
+                    in_reasoning = False
+                    buffer = ""
+                else:
+                    partial_tags = ['<', '</', '</r', '</re', '</rea', '</reas', '</reaso', '</reason', '</reasoni', '</reasonin']
+                    if not any(buffer.endswith(p) for p in partial_tags):
+                        if buffer:
+                            thinking_display.stream_token(buffer)
+                        buffer = ""
+            elif in_delta:
+                if "</delta_reasoning>" in buffer:
+                    final_text = buffer.split("</delta_reasoning>", 1)[0]
+                    if final_text:
+                        thinking_display.stream_token(final_text)
+                    in_delta = False
+                    buffer = ""
+                else:
+                    partial_tags = ['<', '</', '</d', '</de', '</del', '</delt', '</delta', '</delta_', '</delta_r', '</delta_re', '</delta_rea', '</delta_reas', '</delta_reaso', '</delta_reason', '</delta_reasoni', '</delta_reasonin', '</delta_reasoning']
+                    if not any(buffer.endswith(p) for p in partial_tags):
+                        if buffer:
+                            thinking_display.stream_token(buffer)
+                        buffer = ""
+            elif in_solution:
+                if "</solution>" in buffer:
+                    # Found closing tag - output everything before it
+                    final_text = buffer.split("</solution>", 1)[0]
+                    if final_text:
+                        thinking_display.stream_token(final_text)
+                    in_solution = False
+                    buffer = ""
+                else:
+                    partial_tags = ['<', '</', '</s', '</so', '</sol', '</solu', '</solut', '</soluti', '</solutio', '</solution']
+                    if not any(buffer.endswith(p) for p in partial_tags):
+                        if buffer:
+                            thinking_display.stream_token(buffer)
+                        buffer = ""
+            elif not seen_first_tag:
+                # Before first tag - don't output anything (it's preamble/reasoning without tags)
+                pass
+
+        stream_callback = callback
+
     if mode == "ANALYTIC":
-        system_prompt = """You are an advanced reasoning engine.
+        system_prompt = """You are NARE (Neural Amortized Reasoning Engine).
+
+Tools available:
+- create_file(filepath, content)
+- edit_file(filepath, target, replacement)
+- read_file(filepath)
+- list_files(directory, pattern)
+
+Rules:
+1. Use tools directly, don't show code blocks
+2. Be concise (1-2 sentences)
+3. No emojis, no bullet points
+4. Professional tone
+
+Format:
+<reasoning>Brief plan</reasoning>
+<solution>Tool calls + short confirmation</solution>
+
+Example:
+User: "создай test.py"
+<reasoning>Create Python file</reasoning>
+<solution>
+create_file("test.py", "def hello():\n    print('hi')")
+Created test.py.
+</solution>
+
 REQUIRED FORMAT:
 <abstract_signature>
-[1-2 sentences categorizing the structural/mathematical/logical class of this problem]
+[1-2 sentences categorizing the problem type]
 </abstract_signature>
 <reasoning>
-[Your step-by-step logical trace, breaking down the problem from scratch]
+[Your step-by-step logical analysis]
 </reasoning>
 <solution>
-[Your final actionable answer or code]
-</solution>"""
+[Tool calls FIRST, then brief explanation]
+</solution>
+
+Remember: you're running inside NARE CLI with full filesystem and shell access — use the tools, don't just describe what could be done."""
     elif mode == "SYNTHESIS":
         # Program synthesis mode: file generation with exact format
-        system_prompt = """You are a software engineering assistant that generates complete file contents.
+        # CRITICAL: Keep system prompt minimal - user prompt contains detailed instructions
+        system_prompt = """You are a code generation assistant.
 
-CRITICAL OUTPUT FORMAT:
-You MUST respond with EXACTLY this format (no other text):
-
-File: <exact_file_path>
-```python
-[complete file content here]
-```
-
-RULES:
-1. Start with "File: " followed by the exact path
-2. Use the EXACT path provided in the user's message
-3. Follow immediately with a Python code block
-4. Include the COMPLETE file content (not snippets)
-5. Do NOT add explanations before or after
-6. Do NOT use relative paths or shortened paths
-
-EXAMPLE:
-File: django/conf/global_settings.py
-```python
-# Complete file content here
-import os
-DEBUG = False
-```
-
-Follow the user's instructions EXACTLY."""
+Follow the user's format instructions EXACTLY. Output ONLY code in the specified format.
+Do NOT write explanations, analysis, or reasoning.
+Do NOT write "I need to", "Let me", "Looking at", or any prose.
+Start your response immediately with the required format."""
     elif mode == "ADAPTIVE":
-        system_prompt = """You are an advanced reasoning engine performing DELTA REASONING.
-You have been provided with a past solution. DO NOT reason from scratch.
-REQUIRED FORMAT:
-<delta_reasoning>
-[MAX 2 SENTENCES. Describe ONLY the logical differences or delta from the past solution]
-</delta_reasoning>
-<solution>
-[Your final actionable answer or code, adapted for the new task]
-</solution>"""
+        system_prompt = """You are NARE performing delta reasoning.
+Analyze differences from past solution.
+
+Format:
+<delta_reasoning>What changed (1-2 sentences)</delta_reasoning>
+<solution>Adapted answer</solution>"""
     elif mode == "REACTIVE":
-        system_prompt = """You are an advanced execution engine.
-A specific semantic rule/skill has been triggered. DO NOT PERFORM DEDUCTIVE REASONING.
-REQUIRED FORMAT:
-<rule_activation>
-[Name of the rule being applied]
-</rule_activation>
-<solution>
-[Immediate actionable answer or code following the rule exactly]
-</solution>"""
+        system_prompt = """You are NARE executing a semantic rule.
+Apply the rule directly.
+
+Format:
+<rule_activation>Rule name</rule_activation>
+<solution>Answer following the rule</solution>"""
     else:  # DIRECT or any other mode
-        system_prompt = """You are a direct answer engine. Provide concise, accurate answers.
-REQUIRED FORMAT:
-<solution>
-[Your answer]
-</solution>"""
+        system_prompt = """You are NARE. Provide clear, concise answers. No emojis, no bullet points."""
 
     samples = []
     total_tokens = 0
@@ -214,8 +391,13 @@ REQUIRED FORMAT:
         }
 
         try:
-            content = _post_anthropic("messages", payload)
+            content = _post_anthropic("messages", payload, stream_callback=stream_callback)
             total_tokens += len(content.split())  # Rough estimate
+
+            # CRITICAL: If response looks like system prompt leak, skip it
+            if "You are" in content[:100] and ("reasoning engine" in content or "code generation" in content):
+                logging.warning(f"[LLM] Detected system prompt leak, retrying...")
+                continue
 
             reasoning, solution = "No trace provided.", content
             r_match = None
@@ -234,13 +416,20 @@ REQUIRED FORMAT:
             if s_match:
                 solution = s_match.group(1).strip()
             elif r_match:
+                # Remove reasoning tags from solution
                 solution = content.replace(r_match.group(0), "").strip()
+                # Also remove abstract_signature if present
+                solution = re.sub(r'<abstract_signature>.*?</abstract_signature>', '', solution, flags=re.DOTALL).strip()
+            else:
+                # FALLBACK: No tags found, use raw content
+                # This handles cases where LLM doesn't follow format
+                solution = content.strip()
+                # Remove any reasoning/abstract_signature tags from raw content
+                solution = re.sub(r'<reasoning>.*?</reasoning>', '', solution, flags=re.DOTALL).strip()
+                solution = re.sub(r'<abstract_signature>.*?</abstract_signature>', '', solution, flags=re.DOTALL).strip()
 
             a_match = re.search(r'<abstract_signature>(.*?)</abstract_signature>', content, re.DOTALL)
             abstract_signature = a_match.group(1).strip() if a_match else None
-
-            if "<" in solution and ">" in solution:
-                solution = re.sub(r'<[^>]+>', '', solution).strip()
 
             samples.append({"solution": solution, "reasoning": reasoning, "abstract_signature": abstract_signature})
         except Exception as e:
@@ -249,24 +438,24 @@ REQUIRED FORMAT:
     logging.info(f"[LLM] Returning {len(samples)} samples, ~{total_tokens} tokens")
     return samples, total_tokens
 
-def tree_of_thoughts(prompt: str, breadth: int = 1, depth: int = 2) -> tuple:
-    """Best-of-N reasoning (simplified for Anthropic)."""
+def tree_of_thoughts(prompt: str, breadth: int = 1, depth: int = 2, thinking_display=None) -> tuple:
+    """Best-of-N reasoning."""
     # For now, just generate breadth samples with varying temperature
     all_candidates = []
     total_tokens = 0
 
     temps = [0.5][:breadth]  # Single temperature for speed
     for temp in temps:
-        candidates, tokens = generate_samples(prompt, n=1, temperature=temp, mode="ANALYTIC")
+        candidates, tokens = generate_samples(prompt, n=1, temperature=temp, mode="ANALYTIC", thinking_display=thinking_display)
         all_candidates.extend(candidates)
         total_tokens += tokens
         time.sleep(2)
 
     return all_candidates, total_tokens
 
-def best_of_n_with_prescore(prompt: str, breadth: int = 1) -> tuple:
+def best_of_n_with_prescore(prompt: str, breadth: int = 1, thinking_display=None) -> tuple:
     """Best-of-N candidate generation."""
-    return tree_of_thoughts(prompt, breadth=breadth, depth=1)
+    return tree_of_thoughts(prompt, breadth=breadth, depth=1, thinking_display=thinking_display)
 
 def llm_pairwise_judge(query: str, sol_a: str, sol_b: str) -> int:
     """Returns 1 if A is better, 2 if B is better."""
@@ -662,5 +851,5 @@ def _validate_skill(python_code: str, episodes: list, oracle: Optional["Oracle"]
 
 def merge_heuristic_rules(existing_rule: dict, new_episodes: list):
     """Refine an existing Executable Reflex with new episodes."""
-    logging.info("[Sleep] merge_heuristic_rules not implemented for Anthropic yet")
+    logging.info("[Sleep] merge_heuristic_rules is not implemented yet")
     return existing_rule

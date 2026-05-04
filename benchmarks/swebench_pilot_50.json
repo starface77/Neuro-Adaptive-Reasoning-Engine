@@ -1,0 +1,752 @@
+[
+  {
+    "id": "astropy__astropy-12907",
+    "category": "SWE-bench",
+    "query": "Given the following GitHub issue, identify the exact file paths that need to be modified to fix the issue. Print them one per line.\n\nIssue: Modeling's `separability_matrix` does not compute separability correctly for nested CompoundModels\nConsider the following model:\r\n\r\n```python\r\nfrom astropy.modeling import models as m\r\nfrom astropy.modeling.separable import separability_matrix\r\n\r\ncm = m.Linear1D(10) & m.Linear1D(5)\r\n```\r\n\r\nIt's separability matrix as you might expect is a diagonal:\r\n\r\n```python\r\n>>> separability_matrix(cm)\r\narray([[ True, False],\r\n       [False,  True]])\r\n```\r\n\r\nIf I make the model more complex:\r\n```python\r\n>>> separability_matrix(m.Pix2Sky_TAN() & m.Linear1D(10) & m.Linear1D(5))\r\narray([[ True,  True, False, False],\r\n       [ True,  True, False, False],\r\n       [False, False,  True, False],\r\n       [False, False, False,  True]])\r\n```\r\n\r\nThe output matrix is again, as expected, the outputs and inputs to the linear models are separable and independent of each other.\r\n\r\nIf however, I nest these compound models:\r\n```python\r\n>>> separability_matrix(m.Pix2Sky_TAN() & cm)\r\narray([[ True,  True, False, False],\r\n       [ True,  True, False, False],\r\n       [False, False,  True,  True],\r\n       [False, False,  True,  True]])\r\n```\r\nSuddenly the inputs and outputs are no longer separable?\r\n\r\nThis feels like a bug to me, but I might be missing something?\n...",
+    "paraphrases": [
+      "Which files must be edited to resolve this bug report?\n\nReport: Modeling's `separability_matrix` does not compute separability correctly for nested CompoundModels\nConsider the following model:\r\n\r\n```python\r\nfrom astropy.modeling import models as m\r\nfrom astropy.modeling.separable import separability_matrix\r\n\r\ncm = m.Linear1D(10) & m.Linear1D(5)\r\n```\r\n\r\nIt's separability matrix as you might expect is a diagonal:\r\n\r\n```python\r\n>>> separability_matrix(cm)\r\narray([[ True, False],\r\n       [False,  True]])\r\n```\r\n\r\nIf I make the model more complex:\r\n```python\r\n>>> separability_matrix(m.Pix2Sky_TAN() & m.Linear1D(10) & m.Linear1D(5))\r\narray([[ True,  True, False, False],\r\n       [ True,  True, False, False],\r\n       [False, False,  True, False],\r\n       [False, False, False,  True]])\r\n```\r\n\r\nThe output matrix is again, as expected, the outputs and inputs to the linear models are separable and independent of each other.\r\n\r\nIf however, I nest these compound models:\r\n```python\r\n>>> separability_matrix(m.Pix2Sky_TAN() & cm)\r\narray([[ True,  True, False, False],\r\n       [ True,  True, False, False],\r\n       [False, False,  True,  True],\r\n       [False, False,  True,  True]])\r\n```\r\nSuddenly the inputs and outputs are no longer separable?\r\n\r\nThis feels like a bug to me, but I might be missing something?\n..."
+    ],
+    "expected_solution": "astropy/modeling/separable.py",
+    "oracle_spec": {
+      "type": "string_contains",
+      "must_contain": [
+        "astropy/modeling/separable.py"
+      ]
+    }
+  },
+  {
+    "id": "astropy__astropy-14182",
+    "category": "SWE-bench",
+    "query": "Given the following GitHub issue, identify the exact file paths that need to be modified to fix the issue. Print them one per line.\n\nIssue: Please support header rows in RestructuredText output\n### Description\r\n\r\nIt would be great if the following would work:\r\n\r\n```Python\r\n>>> from astropy.table import QTable\r\n>>> import astropy.units as u\r\n>>> import sys\r\n>>> tbl = QTable({'wave': [350,950]*u.nm, 'response': [0.7, 1.2]*u.count})\r\n>>> tbl.write(sys.stdout,  format=\"ascii.rst\")\r\n===== ========\r\n wave response\r\n===== ========\r\n350.0      0.7\r\n950.0      1.2\r\n===== ========\r\n>>> tbl.write(sys.stdout,  format=\"ascii.fixed_width\", header_rows=[\"name\", \"unit\"])\r\n|  wave | response |\r\n|    nm |       ct |\r\n| 350.0 |      0.7 |\r\n| 950.0 |      1.2 |\r\n>>> tbl.write(sys.stdout,  format=\"ascii.rst\", header_rows=[\"name\", \"unit\"])\r\nTraceback (most recent call last):\r\n  File \"<stdin>\", line 1, in <module>\r\n  File \"/usr/lib/python3/dist-packages/astropy/table/connect.py\", line 129, in __call__\r\n    self.registry.write(instance, *args, **kwargs)\r\n  File \"/usr/lib/python3/dist-packages/astropy/io/registry/core.py\", line 369, in write\r\n    return writer(data, *args, **kwargs)\r\n  File \"/usr/lib/python3/dist-packages/astropy/io/ascii/connect.py\", line 26, in io_write\r\n    return write(table, filename, **kwargs)\r\n  File \"/usr/lib/python3/dist-packages/astropy/io/ascii/ui.py\", line 856, in write\r\n    writer = get_writer(Writer=Writer, fast_writer=fast_writer, **kwargs)\r\n  File \"/usr/lib/python3/dist-packages/astropy/io/ascii/ui.py\", line 800, in get_writer\r\n    writer = core._get_writer(Writer, fast_writer, **kwargs)\r\n  File \"/usr/lib/python3/dist-packages/astropy/io/ascii/core.py\", line 1719, in _get_writer\r\n    writer = Writer(**writer_kwargs)\r\nTypeError: RST.__init__() got an unexpected keyword argument 'header_rows'\r\n```\r\n\r\n\r\n### Additional context\r\n\r\nRestructuredText output is a great way to fill autogenerated documentation with content, so having this flexible makes the life easier `:-)`\r\n\r\n\n...",
+    "paraphrases": [
+      "Which files must be edited to resolve this bug report?\n\nReport: Please support header rows in RestructuredText output\n### Description\r\n\r\nIt would be great if the following would work:\r\n\r\n```Python\r\n>>> from astropy.table import QTable\r\n>>> import astropy.units as u\r\n>>> import sys\r\n>>> tbl = QTable({'wave': [350,950]*u.nm, 'response': [0.7, 1.2]*u.count})\r\n>>> tbl.write(sys.stdout,  format=\"ascii.rst\")\r\n===== ========\r\n wave response\r\n===== ========\r\n350.0      0.7\r\n950.0      1.2\r\n===== ========\r\n>>> tbl.write(sys.stdout,  format=\"ascii.fixed_width\", header_rows=[\"name\", \"unit\"])\r\n|  wave | response |\r\n|    nm |       ct |\r\n| 350.0 |      0.7 |\r\n| 950.0 |      1.2 |\r\n>>> tbl.write(sys.stdout,  format=\"ascii.rst\", header_rows=[\"name\", \"unit\"])\r\nTraceback (most recent call last):\r\n  File \"<stdin>\", line 1, in <module>\r\n  File \"/usr/lib/python3/dist-packages/astropy/table/connect.py\", line 129, in __call__\r\n    self.registry.write(instance, *args, **kwargs)\r\n  File \"/usr/lib/python3/dist-packages/astropy/io/registry/core.py\", line 369, in write\r\n    return writer(data, *args, **kwargs)\r\n  File \"/usr/lib/python3/dist-packages/astropy/io/ascii/connect.py\", line 26, in io_write\r\n    return write(table, filename, **kwargs)\r\n  File \"/usr/lib/python3/dist-packages/astropy/io/ascii/ui.py\", line 856, in write\r\n    writer = get_writer(Writer=Writer, fast_writer=fast_writer, **kwargs)\r\n  File \"/usr/lib/python3/dist-packages/astropy/io/ascii/ui.py\", line 800, in get_writer\r\n    writer = core._get_writer(Writer, fast_writer, **kwargs)\r\n  File \"/usr/lib/python3/dist-packages/astropy/io/ascii/core.py\", line 1719, in _get_writer\r\n    writer = Writer(**writer_kwargs)\r\nTypeError: RST.__init__() got an unexpected keyword argument 'header_rows'\r\n```\r\n\r\n\r\n### Additional context\r\n\r\nRestructuredText output is a great way to fill autogenerated documentation with content, so having this flexible makes the life easier `:-)`\r\n\r\n\n..."
+    ],
+    "expected_solution": "astropy/io/ascii/rst.py",
+    "oracle_spec": {
+      "type": "string_contains",
+      "must_contain": [
+        "astropy/io/ascii/rst.py"
+      ]
+    }
+  },
+  {
+    "id": "astropy__astropy-14365",
+    "category": "SWE-bench",
+    "query": "Given the following GitHub issue, identify the exact file paths that need to be modified to fix the issue. Print them one per line.\n\nIssue: ascii.qdp Table format assumes QDP commands are upper case\n### Description\n\nascii.qdp assumes that commands in a QDP file are upper case, for example, for errors they must be \"READ SERR 1 2\" whereas QDP itself is not case sensitive and case use \"read serr 1 2\". \r\n\r\nAs many QDP files are created by hand, the expectation that all commands be all-caps should be removed.\n\n### Expected behavior\n\nThe following qdp file should read into a `Table` with errors, rather than crashing.\r\n```\r\nread serr 1 2 \r\n1 0.5 1 0.5\r\n```\n\n### How to Reproduce\n\nCreate a QDP file:\r\n```\r\n> cat > test.qdp\r\nread serr 1 2 \r\n1 0.5 1 0.5\r\n<EOF>\r\n\r\n > python\r\nPython 3.10.9 (main, Dec  7 2022, 02:03:23) [Clang 13.0.0 (clang-1300.0.29.30)] on darwin\r\nType \"help\", \"copyright\", \"credits\" or \"license\" for more information.\r\n>>> from astropy.table import Table\r\n>>> Table.read('test.qdp',format='ascii.qdp')\r\nWARNING: table_id not specified. Reading the first available table [astropy.io.ascii.qdp]\r\nTraceback (most recent call last):\r\n...\r\n    raise ValueError(f'Unrecognized QDP line: {line}')\r\nValueError: Unrecognized QDP line: read serr 1 2\r\n```\r\n\r\nRunning \"qdp test.qdp\" works just fine.\r\n\n\n### Versions\n\nPython 3.10.9 (main, Dec  7 2022, 02:03:23) [Clang 13.0.0 (clang-1300.0.29.30)]\r\nastropy 5.1\r\nNumpy 1.24.1\r\npyerfa 2.0.0.1\r\nScipy 1.10.0\r\nMatplotlib 3.6.3\r\n\n...",
+    "paraphrases": [
+      "Which files must be edited to resolve this bug report?\n\nReport: ascii.qdp Table format assumes QDP commands are upper case\n### Description\n\nascii.qdp assumes that commands in a QDP file are upper case, for example, for errors they must be \"READ SERR 1 2\" whereas QDP itself is not case sensitive and case use \"read serr 1 2\". \r\n\r\nAs many QDP files are created by hand, the expectation that all commands be all-caps should be removed.\n\n### Expected behavior\n\nThe following qdp file should read into a `Table` with errors, rather than crashing.\r\n```\r\nread serr 1 2 \r\n1 0.5 1 0.5\r\n```\n\n### How to Reproduce\n\nCreate a QDP file:\r\n```\r\n> cat > test.qdp\r\nread serr 1 2 \r\n1 0.5 1 0.5\r\n<EOF>\r\n\r\n > python\r\nPython 3.10.9 (main, Dec  7 2022, 02:03:23) [Clang 13.0.0 (clang-1300.0.29.30)] on darwin\r\nType \"help\", \"copyright\", \"credits\" or \"license\" for more information.\r\n>>> from astropy.table import Table\r\n>>> Table.read('test.qdp',format='ascii.qdp')\r\nWARNING: table_id not specified. Reading the first available table [astropy.io.ascii.qdp]\r\nTraceback (most recent call last):\r\n...\r\n    raise ValueError(f'Unrecognized QDP line: {line}')\r\nValueError: Unrecognized QDP line: read serr 1 2\r\n```\r\n\r\nRunning \"qdp test.qdp\" works just fine.\r\n\n\n### Versions\n\nPython 3.10.9 (main, Dec  7 2022, 02:03:23) [Clang 13.0.0 (clang-1300.0.29.30)]\r\nastropy 5.1\r\nNumpy 1.24.1\r\npyerfa 2.0.0.1\r\nScipy 1.10.0\r\nMatplotlib 3.6.3\r\n\n..."
+    ],
+    "expected_solution": "astropy/io/ascii/qdp.py",
+    "oracle_spec": {
+      "type": "string_contains",
+      "must_contain": [
+        "astropy/io/ascii/qdp.py"
+      ]
+    }
+  },
+  {
+    "id": "astropy__astropy-14995",
+    "category": "SWE-bench",
+    "query": "Given the following GitHub issue, identify the exact file paths that need to be modified to fix the issue. Print them one per line.\n\nIssue: In v5.3, NDDataRef mask propagation fails when one of the operand does not have a mask\n### Description\n\nThis applies to v5.3. \r\n\r\nIt looks like when one of the operand does not have a mask, the mask propagation when doing arithmetic, in particular with `handle_mask=np.bitwise_or` fails.  This is not a problem in v5.2.\r\n\r\nI don't know enough about how all that works, but it seems from the error that the operand without a mask is set as a mask of None's and then the bitwise_or tries to operate on an integer and a None and fails.\n\n### Expected behavior\n\nWhen one of the operand does not have mask, the mask that exists should just be copied over to the output.  Or whatever was done in that situation in v5.2 where there's no problem.\n\n### How to Reproduce\n\nThis is with v5.3.   With v5.2, there are no errors.\r\n\r\n```\r\n>>> import numpy as np\r\n>>> from astropy.nddata import NDDataRef\r\n\r\n>>> array = np.array([[0, 1, 0], [1, 0, 1], [0, 1, 0]])\r\n>>> mask = np.array([[0, 1, 64], [8, 0, 1], [2, 1, 0]])\r\n\r\n>>> nref_nomask = NDDataRef(array)\r\n>>> nref_mask = NDDataRef(array, mask=mask)\r\n\r\n# multiply no mask by constant (no mask * no mask)\r\n>>> nref_nomask.multiply(1., handle_mask=np.bitwise_or).mask   # returns nothing, no mask,  OK\r\n\r\n# multiply no mask by itself (no mask * no mask)\r\n>>> nref_nomask.multiply(nref_nomask, handle_mask=np.bitwise_or).mask # return nothing, no mask, OK\r\n\r\n# multiply mask by constant (mask * no mask)\r\n>>> nref_mask.multiply(1., handle_mask=np.bitwise_or).mask\r\n...\r\nTypeError: unsupported operand type(s) for |: 'int' and 'NoneType'\r\n\r\n# multiply mask by itself (mask * mask)\r\n>>> nref_mask.multiply(nref_mask, handle_mask=np.bitwise_or).mask\r\narray([[ 0,  1, 64],\r\n       [ 8,  0,  1],\r\n       [ 2,  1,  0]])\r\n\r\n# multiply mask by no mask (mask * no mask)\r\n>>> nref_mask.multiply(nref_nomask, handle_mask=np.bitwise_or).mask\r\n...\r\nTypeError: unsupported operand type(s) for |: 'int' and 'NoneType'\r\n```\r\n\n\n### Versions\n\n>>> import sys; print(\"Python\", sys.versio...",
+    "paraphrases": [
+      "Which files must be edited to resolve this bug report?\n\nReport: In v5.3, NDDataRef mask propagation fails when one of the operand does not have a mask\n### Description\n\nThis applies to v5.3. \r\n\r\nIt looks like when one of the operand does not have a mask, the mask propagation when doing arithmetic, in particular with `handle_mask=np.bitwise_or` fails.  This is not a problem in v5.2.\r\n\r\nI don't know enough about how all that works, but it seems from the error that the operand without a mask is set as a mask of None's and then the bitwise_or tries to operate on an integer and a None and fails.\n\n### Expected behavior\n\nWhen one of the operand does not have mask, the mask that exists should just be copied over to the output.  Or whatever was done in that situation in v5.2 where there's no problem.\n\n### How to Reproduce\n\nThis is with v5.3.   With v5.2, there are no errors.\r\n\r\n```\r\n>>> import numpy as np\r\n>>> from astropy.nddata import NDDataRef\r\n\r\n>>> array = np.array([[0, 1, 0], [1, 0, 1], [0, 1, 0]])\r\n>>> mask = np.array([[0, 1, 64], [8, 0, 1], [2, 1, 0]])\r\n\r\n>>> nref_nomask = NDDataRef(array)\r\n>>> nref_mask = NDDataRef(array, mask=mask)\r\n\r\n# multiply no mask by constant (no mask * no mask)\r\n>>> nref_nomask.multiply(1., handle_mask=np.bitwise_or).mask   # returns nothing, no mask,  OK\r\n\r\n# multiply no mask by itself (no mask * no mask)\r\n>>> nref_nomask.multiply(nref_nomask, handle_mask=np.bitwise_or).mask # return nothing, no mask, OK\r\n\r\n# multiply mask by constant (mask * no mask)\r\n>>> nref_mask.multiply(1., handle_mask=np.bitwise_or).mask\r\n...\r\nTypeError: unsupported operand type(s) for |: 'int' and 'NoneType'\r\n\r\n# multiply mask by itself (mask * mask)\r\n>>> nref_mask.multiply(nref_mask, handle_mask=np.bitwise_or).mask\r\narray([[ 0,  1, 64],\r\n       [ 8,  0,  1],\r\n       [ 2,  1,  0]])\r\n\r\n# multiply mask by no mask (mask * no mask)\r\n>>> nref_mask.multiply(nref_nomask, handle_mask=np.bitwise_or).mask\r\n...\r\nTypeError: unsupported operand type(s) for |: 'int' and 'NoneType'\r\n```\r\n\n\n### Versions\n\n>>> import sys; print(\"Python\", sys.versio..."
+    ],
+    "expected_solution": "astropy/nddata/mixins/ndarithmetic.py",
+    "oracle_spec": {
+      "type": "string_contains",
+      "must_contain": [
+        "astropy/nddata/mixins/ndarithmetic.py"
+      ]
+    }
+  },
+  {
+    "id": "astropy__astropy-6938",
+    "category": "SWE-bench",
+    "query": "Given the following GitHub issue, identify the exact file paths that need to be modified to fix the issue. Print them one per line.\n\nIssue: Possible bug in io.fits related to D exponents\nI came across the following code in ``fitsrec.py``:\r\n\r\n```python\r\n        # Replace exponent separator in floating point numbers\r\n        if 'D' in format:\r\n            output_field.replace(encode_ascii('E'), encode_ascii('D'))\r\n```\r\n\r\nI think this may be incorrect because as far as I can tell ``replace`` is not an in-place operation for ``chararray`` (it returns a copy). Commenting out this code doesn't cause any tests to fail so I think this code isn't being tested anyway.\n...",
+    "paraphrases": [
+      "Which files must be edited to resolve this bug report?\n\nReport: Possible bug in io.fits related to D exponents\nI came across the following code in ``fitsrec.py``:\r\n\r\n```python\r\n        # Replace exponent separator in floating point numbers\r\n        if 'D' in format:\r\n            output_field.replace(encode_ascii('E'), encode_ascii('D'))\r\n```\r\n\r\nI think this may be incorrect because as far as I can tell ``replace`` is not an in-place operation for ``chararray`` (it returns a copy). Commenting out this code doesn't cause any tests to fail so I think this code isn't being tested anyway.\n..."
+    ],
+    "expected_solution": "astropy/io/fits/fitsrec.py",
+    "oracle_spec": {
+      "type": "string_contains",
+      "must_contain": [
+        "astropy/io/fits/fitsrec.py"
+      ]
+    }
+  },
+  {
+    "id": "astropy__astropy-7746",
+    "category": "SWE-bench",
+    "query": "Given the following GitHub issue, identify the exact file paths that need to be modified to fix the issue. Print them one per line.\n\nIssue: Issue when passing empty lists/arrays to WCS transformations\nThe following should not fail but instead should return empty lists/arrays:\r\n\r\n```\r\nIn [1]: from astropy.wcs import WCS\r\n\r\nIn [2]: wcs = WCS('2MASS_h.fits')\r\n\r\nIn [3]: wcs.wcs_pix2world([], [], 0)\r\n---------------------------------------------------------------------------\r\nInconsistentAxisTypesError                Traceback (most recent call last)\r\n<ipython-input-3-e2cc0e97941a> in <module>()\r\n----> 1 wcs.wcs_pix2world([], [], 0)\r\n\r\n~/Dropbox/Code/Astropy/astropy/astropy/wcs/wcs.py in wcs_pix2world(self, *args, **kwargs)\r\n   1352         return self._array_converter(\r\n   1353             lambda xy, o: self.wcs.p2s(xy, o)['world'],\r\n-> 1354             'output', *args, **kwargs)\r\n   1355     wcs_pix2world.__doc__ = \"\"\"\r\n   1356         Transforms pixel coordinates to world coordinates by doing\r\n\r\n~/Dropbox/Code/Astropy/astropy/astropy/wcs/wcs.py in _array_converter(self, func, sky, ra_dec_order, *args)\r\n   1267                     \"a 1-D array for each axis, followed by an origin.\")\r\n   1268 \r\n-> 1269             return _return_list_of_arrays(axes, origin)\r\n   1270 \r\n   1271         raise TypeError(\r\n\r\n~/Dropbox/Code/Astropy/astropy/astropy/wcs/wcs.py in _return_list_of_arrays(axes, origin)\r\n   1223             if ra_dec_order and sky == 'input':\r\n   1224                 xy = self._denormalize_sky(xy)\r\n-> 1225             output = func(xy, origin)\r\n   1226             if ra_dec_order and sky == 'output':\r\n   1227                 output = self._normalize_sky(output)\r\n\r\n~/Dropbox/Code/Astropy/astropy/astropy/wcs/wcs.py in <lambda>(xy, o)\r\n   1351             raise ValueError(\"No basic WCS settings were created.\")\r\n   1352         return self._array_converter(\r\n-> 1353             lambda xy, o: self.wcs.p2s(xy, o)['world'],\r\n   1354             'output', *args, **kwargs)\r\n   1355     wcs_pix2world.__doc__ = \"\"\"\r\n\r\nInconsistentAxisTypesError: ERROR 4 in wcsp2s() at line 2646 of file cextern/wcslib/C/wcs.c:\r\nnc...",
+    "paraphrases": [
+      "Which files must be edited to resolve this bug report?\n\nReport: Issue when passing empty lists/arrays to WCS transformations\nThe following should not fail but instead should return empty lists/arrays:\r\n\r\n```\r\nIn [1]: from astropy.wcs import WCS\r\n\r\nIn [2]: wcs = WCS('2MASS_h.fits')\r\n\r\nIn [3]: wcs.wcs_pix2world([], [], 0)\r\n---------------------------------------------------------------------------\r\nInconsistentAxisTypesError                Traceback (most recent call last)\r\n<ipython-input-3-e2cc0e97941a> in <module>()\r\n----> 1 wcs.wcs_pix2world([], [], 0)\r\n\r\n~/Dropbox/Code/Astropy/astropy/astropy/wcs/wcs.py in wcs_pix2world(self, *args, **kwargs)\r\n   1352         return self._array_converter(\r\n   1353             lambda xy, o: self.wcs.p2s(xy, o)['world'],\r\n-> 1354             'output', *args, **kwargs)\r\n   1355     wcs_pix2world.__doc__ = \"\"\"\r\n   1356         Transforms pixel coordinates to world coordinates by doing\r\n\r\n~/Dropbox/Code/Astropy/astropy/astropy/wcs/wcs.py in _array_converter(self, func, sky, ra_dec_order, *args)\r\n   1267                     \"a 1-D array for each axis, followed by an origin.\")\r\n   1268 \r\n-> 1269             return _return_list_of_arrays(axes, origin)\r\n   1270 \r\n   1271         raise TypeError(\r\n\r\n~/Dropbox/Code/Astropy/astropy/astropy/wcs/wcs.py in _return_list_of_arrays(axes, origin)\r\n   1223             if ra_dec_order and sky == 'input':\r\n   1224                 xy = self._denormalize_sky(xy)\r\n-> 1225             output = func(xy, origin)\r\n   1226             if ra_dec_order and sky == 'output':\r\n   1227                 output = self._normalize_sky(output)\r\n\r\n~/Dropbox/Code/Astropy/astropy/astropy/wcs/wcs.py in <lambda>(xy, o)\r\n   1351             raise ValueError(\"No basic WCS settings were created.\")\r\n   1352         return self._array_converter(\r\n-> 1353             lambda xy, o: self.wcs.p2s(xy, o)['world'],\r\n   1354             'output', *args, **kwargs)\r\n   1355     wcs_pix2world.__doc__ = \"\"\"\r\n\r\nInconsistentAxisTypesError: ERROR 4 in wcsp2s() at line 2646 of file cextern/wcslib/C/wcs.c:\r\nnc..."
+    ],
+    "expected_solution": "astropy/wcs/wcs.py",
+    "oracle_spec": {
+      "type": "string_contains",
+      "must_contain": [
+        "astropy/wcs/wcs.py"
+      ]
+    }
+  },
+  {
+    "id": "django__django-10914",
+    "category": "SWE-bench",
+    "query": "Given the following GitHub issue, identify the exact file paths that need to be modified to fix the issue. Print them one per line.\n\nIssue: Set default FILE_UPLOAD_PERMISSION to 0o644.\nDescription\n\t\nHello,\nAs far as I can see, the \u0432\u0402\u2039File Uploads documentation page does not mention any permission issues.\nWhat I would like to see is a warning that in absence of explicitly configured FILE_UPLOAD_PERMISSIONS, the permissions for a file uploaded to FileSystemStorage might not be consistent depending on whether a MemoryUploadedFile or a TemporaryUploadedFile was used for temporary storage of the uploaded data (which, with the default FILE_UPLOAD_HANDLERS, in turn depends on the uploaded data size).\nThe tempfile.NamedTemporaryFile + os.rename sequence causes the resulting file permissions to be 0o0600 on some systems (I experience it here on CentOS 7.4.1708 and Python 3.6.5). In all probability, the implementation of Python's built-in tempfile module explicitly sets such permissions for temporary files due to security considerations.\nI found mentions of this issue \u0432\u0402\u2039on GitHub, but did not manage to find any existing bug report in Django's bug tracker.\n...",
+    "paraphrases": [
+      "Which files must be edited to resolve this bug report?\n\nReport: Set default FILE_UPLOAD_PERMISSION to 0o644.\nDescription\n\t\nHello,\nAs far as I can see, the \u0432\u0402\u2039File Uploads documentation page does not mention any permission issues.\nWhat I would like to see is a warning that in absence of explicitly configured FILE_UPLOAD_PERMISSIONS, the permissions for a file uploaded to FileSystemStorage might not be consistent depending on whether a MemoryUploadedFile or a TemporaryUploadedFile was used for temporary storage of the uploaded data (which, with the default FILE_UPLOAD_HANDLERS, in turn depends on the uploaded data size).\nThe tempfile.NamedTemporaryFile + os.rename sequence causes the resulting file permissions to be 0o0600 on some systems (I experience it here on CentOS 7.4.1708 and Python 3.6.5). In all probability, the implementation of Python's built-in tempfile module explicitly sets such permissions for temporary files due to security considerations.\nI found mentions of this issue \u0432\u0402\u2039on GitHub, but did not manage to find any existing bug report in Django's bug tracker.\n..."
+    ],
+    "expected_solution": "django/conf/global_settings.py",
+    "oracle_spec": {
+      "type": "string_contains",
+      "must_contain": [
+        "django/conf/global_settings.py"
+      ]
+    }
+  },
+  {
+    "id": "django__django-10924",
+    "category": "SWE-bench",
+    "query": "Given the following GitHub issue, identify the exact file paths that need to be modified to fix the issue. Print them one per line.\n\nIssue: Allow FilePathField path to accept a callable.\nDescription\n\t\nI have a special case where I want to create a model containing the path to some local files on the server/dev machine. Seeing as the place where these files are stored is different on different machines I have the following:\nimport os\nfrom django.conf import settings\nfrom django.db import models\nclass LocalFiles(models.Model):\n\tname = models.CharField(max_length=255)\n\tfile = models.FilePathField(path=os.path.join(settings.LOCAL_FILE_DIR, 'example_dir'))\nNow when running manage.py makemigrations it will resolve the path based on the machine it is being run on. Eg: /home/<username>/server_files/example_dir\nI had to manually change the migration to include the os.path.join() part to not break this when running the migration on production/other machine.\n...",
+    "paraphrases": [
+      "Which files must be edited to resolve this bug report?\n\nReport: Allow FilePathField path to accept a callable.\nDescription\n\t\nI have a special case where I want to create a model containing the path to some local files on the server/dev machine. Seeing as the place where these files are stored is different on different machines I have the following:\nimport os\nfrom django.conf import settings\nfrom django.db import models\nclass LocalFiles(models.Model):\n\tname = models.CharField(max_length=255)\n\tfile = models.FilePathField(path=os.path.join(settings.LOCAL_FILE_DIR, 'example_dir'))\nNow when running manage.py makemigrations it will resolve the path based on the machine it is being run on. Eg: /home/<username>/server_files/example_dir\nI had to manually change the migration to include the os.path.join() part to not break this when running the migration on production/other machine.\n..."
+    ],
+    "expected_solution": "django/db/models/fields/__init__.py",
+    "oracle_spec": {
+      "type": "string_contains",
+      "must_contain": [
+        "django/db/models/fields/__init__.py"
+      ]
+    }
+  },
+  {
+    "id": "django__django-11001",
+    "category": "SWE-bench",
+    "query": "Given the following GitHub issue, identify the exact file paths that need to be modified to fix the issue. Print them one per line.\n\nIssue: Incorrect removal of order_by clause created as multiline RawSQL\nDescription\n\t\nHi.\nThe SQLCompiler is ripping off one of my \"order by\" clause, because he \"thinks\" the clause was already \"seen\" (in SQLCompiler.get_order_by()). I'm using expressions written as multiline RawSQLs, which are similar but not the same. \nThe bug is located in SQLCompiler.get_order_by(), somewhere around line computing part of SQL query without ordering:\nwithout_ordering = self.ordering_parts.search(sql).group(1)\nThe sql variable contains multiline sql. As a result, the self.ordering_parts regular expression is returning just a line containing ASC or DESC words. This line is added to seen set, and because my raw queries have identical last lines, only the first clasue is returing from SQLCompiler.get_order_by().\nAs a quick/temporal fix I can suggest making sql variable clean of newline characters, like this:\nsql_oneline = ' '.join(sql.split('\\n'))\nwithout_ordering = self.ordering_parts.search(sql_oneline).group(1)\nNote: beware of unicode (Py2.x u'') and EOL dragons (\\r).\nExample of my query:\n\treturn MyModel.objects.all().order_by(\n\t\tRawSQL('''\n\t\t\tcase when status in ('accepted', 'verification')\n\t\t\t\t then 2 else 1 end''', []).desc(),\n\t\tRawSQL('''\n\t\t\tcase when status in ('accepted', 'verification')\n\t\t\t\t then (accepted_datetime, preferred_datetime)\n\t\t\t\t else null end''', []).asc(),\n\t\tRawSQL('''\n\t\t\tcase when status not in ('accepted', 'verification')\n\t\t\t\t then (accepted_datetime, preferred_datetime, created_at)\n\t\t\t\t else null end''', []).desc())\nThe ordering_parts.search is returing accordingly:\n'\t\t\t\t then 2 else 1 end)'\n'\t\t\t\t else null end'\n'\t\t\t\t else null end'\nSecond RawSQL with a\t\t\t\t else null end part is removed from query.\nThe fun thing is that the issue can be solved by workaround by adding a space or any other char to the last line. \nSo in case of RawSQL I can just say, that current implementation of avoiding duplicates in order by clause works only for special/rare cases (or does not wor...",
+    "paraphrases": [
+      "Which files must be edited to resolve this bug report?\n\nReport: Incorrect removal of order_by clause created as multiline RawSQL\nDescription\n\t\nHi.\nThe SQLCompiler is ripping off one of my \"order by\" clause, because he \"thinks\" the clause was already \"seen\" (in SQLCompiler.get_order_by()). I'm using expressions written as multiline RawSQLs, which are similar but not the same. \nThe bug is located in SQLCompiler.get_order_by(), somewhere around line computing part of SQL query without ordering:\nwithout_ordering = self.ordering_parts.search(sql).group(1)\nThe sql variable contains multiline sql. As a result, the self.ordering_parts regular expression is returning just a line containing ASC or DESC words. This line is added to seen set, and because my raw queries have identical last lines, only the first clasue is returing from SQLCompiler.get_order_by().\nAs a quick/temporal fix I can suggest making sql variable clean of newline characters, like this:\nsql_oneline = ' '.join(sql.split('\\n'))\nwithout_ordering = self.ordering_parts.search(sql_oneline).group(1)\nNote: beware of unicode (Py2.x u'') and EOL dragons (\\r).\nExample of my query:\n\treturn MyModel.objects.all().order_by(\n\t\tRawSQL('''\n\t\t\tcase when status in ('accepted', 'verification')\n\t\t\t\t then 2 else 1 end''', []).desc(),\n\t\tRawSQL('''\n\t\t\tcase when status in ('accepted', 'verification')\n\t\t\t\t then (accepted_datetime, preferred_datetime)\n\t\t\t\t else null end''', []).asc(),\n\t\tRawSQL('''\n\t\t\tcase when status not in ('accepted', 'verification')\n\t\t\t\t then (accepted_datetime, preferred_datetime, created_at)\n\t\t\t\t else null end''', []).desc())\nThe ordering_parts.search is returing accordingly:\n'\t\t\t\t then 2 else 1 end)'\n'\t\t\t\t else null end'\n'\t\t\t\t else null end'\nSecond RawSQL with a\t\t\t\t else null end part is removed from query.\nThe fun thing is that the issue can be solved by workaround by adding a space or any other char to the last line. \nSo in case of RawSQL I can just say, that current implementation of avoiding duplicates in order by clause works only for special/rare cases (or does not wor..."
+    ],
+    "expected_solution": "django/db/models/sql/compiler.py",
+    "oracle_spec": {
+      "type": "string_contains",
+      "must_contain": [
+        "django/db/models/sql/compiler.py"
+      ]
+    }
+  },
+  {
+    "id": "django__django-11019",
+    "category": "SWE-bench",
+    "query": "Given the following GitHub issue, identify the exact file paths that need to be modified to fix the issue. Print them one per line.\n\nIssue: Merging 3 or more media objects can throw unnecessary MediaOrderConflictWarnings\nDescription\n\t\nConsider the following form definition, where text-editor-extras.js depends on text-editor.js but all other JS files are independent:\nfrom django import forms\nclass ColorPicker(forms.Widget):\n\tclass Media:\n\t\tjs = ['color-picker.js']\nclass SimpleTextWidget(forms.Widget):\n\tclass Media:\n\t\tjs = ['text-editor.js']\nclass FancyTextWidget(forms.Widget):\n\tclass Media:\n\t\tjs = ['text-editor.js', 'text-editor-extras.js', 'color-picker.js']\nclass MyForm(forms.Form):\n\tbackground_color = forms.CharField(widget=ColorPicker())\n\tintro = forms.CharField(widget=SimpleTextWidget())\n\tbody = forms.CharField(widget=FancyTextWidget())\nDjango should be able to resolve the JS files for the final form into the order text-editor.js, text-editor-extras.js, color-picker.js. However, accessing MyForm().media results in:\n/projects/django/django/forms/widgets.py:145: MediaOrderConflictWarning: Detected duplicate Media files in an opposite order:\ntext-editor-extras.js\ntext-editor.js\n MediaOrderConflictWarning,\nMedia(css={}, js=['text-editor-extras.js', 'color-picker.js', 'text-editor.js'])\nThe MediaOrderConflictWarning is a result of the order that the additions happen in: ColorPicker().media + SimpleTextWidget().media produces Media(css={}, js=['color-picker.js', 'text-editor.js']), which (wrongly) imposes the constraint that color-picker.js must appear before text-editor.js.\nThe final result is particularly unintuitive here, as it's worse than the \"na\u0413\u0407ve\" result produced by Django 1.11 before order-checking was added (color-picker.js, text-editor.js, text-editor-extras.js), and the pair of files reported in the warning message seems wrong too (aren't color-picker.js and text-editor.js the wrong-ordered ones?)\n...",
+    "paraphrases": [
+      "Which files must be edited to resolve this bug report?\n\nReport: Merging 3 or more media objects can throw unnecessary MediaOrderConflictWarnings\nDescription\n\t\nConsider the following form definition, where text-editor-extras.js depends on text-editor.js but all other JS files are independent:\nfrom django import forms\nclass ColorPicker(forms.Widget):\n\tclass Media:\n\t\tjs = ['color-picker.js']\nclass SimpleTextWidget(forms.Widget):\n\tclass Media:\n\t\tjs = ['text-editor.js']\nclass FancyTextWidget(forms.Widget):\n\tclass Media:\n\t\tjs = ['text-editor.js', 'text-editor-extras.js', 'color-picker.js']\nclass MyForm(forms.Form):\n\tbackground_color = forms.CharField(widget=ColorPicker())\n\tintro = forms.CharField(widget=SimpleTextWidget())\n\tbody = forms.CharField(widget=FancyTextWidget())\nDjango should be able to resolve the JS files for the final form into the order text-editor.js, text-editor-extras.js, color-picker.js. However, accessing MyForm().media results in:\n/projects/django/django/forms/widgets.py:145: MediaOrderConflictWarning: Detected duplicate Media files in an opposite order:\ntext-editor-extras.js\ntext-editor.js\n MediaOrderConflictWarning,\nMedia(css={}, js=['text-editor-extras.js', 'color-picker.js', 'text-editor.js'])\nThe MediaOrderConflictWarning is a result of the order that the additions happen in: ColorPicker().media + SimpleTextWidget().media produces Media(css={}, js=['color-picker.js', 'text-editor.js']), which (wrongly) imposes the constraint that color-picker.js must appear before text-editor.js.\nThe final result is particularly unintuitive here, as it's worse than the \"na\u0413\u0407ve\" result produced by Django 1.11 before order-checking was added (color-picker.js, text-editor.js, text-editor-extras.js), and the pair of files reported in the warning message seems wrong too (aren't color-picker.js and text-editor.js the wrong-ordered ones?)\n..."
+    ],
+    "expected_solution": "django/forms/widgets.py",
+    "oracle_spec": {
+      "type": "string_contains",
+      "must_contain": [
+        "django/forms/widgets.py"
+      ]
+    }
+  },
+  {
+    "id": "django__django-11039",
+    "category": "SWE-bench",
+    "query": "Given the following GitHub issue, identify the exact file paths that need to be modified to fix the issue. Print them one per line.\n\nIssue: sqlmigrate wraps it's outpout in BEGIN/COMMIT even if the database doesn't support transactional DDL\nDescription\n\t \n\t\t(last modified by Simon Charette)\n\t \nThe migration executor only adds the outer BEGIN/COMMIT \u0432\u0402\u2039if the migration is atomic and \u0432\u0402\u2039the schema editor can rollback DDL but the current sqlmigrate logic only takes migration.atomic into consideration.\nThe issue can be addressed by\nChanging sqlmigrate \u0432\u0402\u2039assignment of self.output_transaction to consider connection.features.can_rollback_ddl as well.\nAdding a test in tests/migrations/test_commands.py based on \u0432\u0402\u2039an existing test for non-atomic migrations that mocks connection.features.can_rollback_ddl to False instead of overdidding MIGRATION_MODULES to point to a non-atomic migration.\nI marked the ticket as easy picking because I included the above guidelines but feel free to uncheck it if you deem it inappropriate.\n...",
+    "paraphrases": [
+      "Which files must be edited to resolve this bug report?\n\nReport: sqlmigrate wraps it's outpout in BEGIN/COMMIT even if the database doesn't support transactional DDL\nDescription\n\t \n\t\t(last modified by Simon Charette)\n\t \nThe migration executor only adds the outer BEGIN/COMMIT \u0432\u0402\u2039if the migration is atomic and \u0432\u0402\u2039the schema editor can rollback DDL but the current sqlmigrate logic only takes migration.atomic into consideration.\nThe issue can be addressed by\nChanging sqlmigrate \u0432\u0402\u2039assignment of self.output_transaction to consider connection.features.can_rollback_ddl as well.\nAdding a test in tests/migrations/test_commands.py based on \u0432\u0402\u2039an existing test for non-atomic migrations that mocks connection.features.can_rollback_ddl to False instead of overdidding MIGRATION_MODULES to point to a non-atomic migration.\nI marked the ticket as easy picking because I included the above guidelines but feel free to uncheck it if you deem it inappropriate.\n..."
+    ],
+    "expected_solution": "django/core/management/commands/sqlmigrate.py",
+    "oracle_spec": {
+      "type": "string_contains",
+      "must_contain": [
+        "django/core/management/commands/sqlmigrate.py"
+      ]
+    }
+  },
+  {
+    "id": "django__django-11049",
+    "category": "SWE-bench",
+    "query": "Given the following GitHub issue, identify the exact file paths that need to be modified to fix the issue. Print them one per line.\n\nIssue: Correct expected format in invalid DurationField error message\nDescription\n\t\nIf you enter a duration \"14:00\" into a duration field, it translates to \"00:14:00\" which is 14 minutes.\nThe current error message for invalid DurationField says that this should be the format of durations: \"[DD] [HH:[MM:]]ss[.uuuuuu]\". But according to the actual behaviour, it should be: \"[DD] [[HH:]MM:]ss[.uuuuuu]\", because seconds are mandatory, minutes are optional, and hours are optional if minutes are provided.\nThis seems to be a mistake in all Django versions that support the DurationField.\nAlso the duration fields could have a default help_text with the requested format, because the syntax is not self-explanatory.\n...",
+    "paraphrases": [
+      "Which files must be edited to resolve this bug report?\n\nReport: Correct expected format in invalid DurationField error message\nDescription\n\t\nIf you enter a duration \"14:00\" into a duration field, it translates to \"00:14:00\" which is 14 minutes.\nThe current error message for invalid DurationField says that this should be the format of durations: \"[DD] [HH:[MM:]]ss[.uuuuuu]\". But according to the actual behaviour, it should be: \"[DD] [[HH:]MM:]ss[.uuuuuu]\", because seconds are mandatory, minutes are optional, and hours are optional if minutes are provided.\nThis seems to be a mistake in all Django versions that support the DurationField.\nAlso the duration fields could have a default help_text with the requested format, because the syntax is not self-explanatory.\n..."
+    ],
+    "expected_solution": "django/db/models/fields/__init__.py",
+    "oracle_spec": {
+      "type": "string_contains",
+      "must_contain": [
+        "django/db/models/fields/__init__.py"
+      ]
+    }
+  },
+  {
+    "id": "django__django-11099",
+    "category": "SWE-bench",
+    "query": "Given the following GitHub issue, identify the exact file paths that need to be modified to fix the issue. Print them one per line.\n\nIssue: UsernameValidator allows trailing newline in usernames\nDescription\n\t\nASCIIUsernameValidator and UnicodeUsernameValidator use the regex \nr'^[\\w.@+-]+$'\nThe intent is to only allow alphanumeric characters as well as ., @, +, and -. However, a little known quirk of Python regexes is that $ will also match a trailing newline. Therefore, the user name validators will accept usernames which end with a newline. You can avoid this behavior by instead using \\A and \\Z to terminate regexes. For example, the validator regex could be changed to\nr'\\A[\\w.@+-]+\\Z'\nin order to reject usernames that end with a newline.\nI am not sure how to officially post a patch, but the required change is trivial - using the regex above in the two validators in contrib.auth.validators.\n...",
+    "paraphrases": [
+      "Which files must be edited to resolve this bug report?\n\nReport: UsernameValidator allows trailing newline in usernames\nDescription\n\t\nASCIIUsernameValidator and UnicodeUsernameValidator use the regex \nr'^[\\w.@+-]+$'\nThe intent is to only allow alphanumeric characters as well as ., @, +, and -. However, a little known quirk of Python regexes is that $ will also match a trailing newline. Therefore, the user name validators will accept usernames which end with a newline. You can avoid this behavior by instead using \\A and \\Z to terminate regexes. For example, the validator regex could be changed to\nr'\\A[\\w.@+-]+\\Z'\nin order to reject usernames that end with a newline.\nI am not sure how to officially post a patch, but the required change is trivial - using the regex above in the two validators in contrib.auth.validators.\n..."
+    ],
+    "expected_solution": "django/contrib/auth/validators.py",
+    "oracle_spec": {
+      "type": "string_contains",
+      "must_contain": [
+        "django/contrib/auth/validators.py"
+      ]
+    }
+  },
+  {
+    "id": "django__django-11133",
+    "category": "SWE-bench",
+    "query": "Given the following GitHub issue, identify the exact file paths that need to be modified to fix the issue. Print them one per line.\n\nIssue: HttpResponse doesn't handle memoryview objects\nDescription\n\t\nI am trying to write a BinaryField retrieved from the database into a HttpResponse. When the database is Sqlite this works correctly, but Postgresql returns the contents of the field as a memoryview object and it seems like current Django doesn't like this combination:\nfrom django.http import HttpResponse\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t \n# String content\nresponse = HttpResponse(\"My Content\")\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\nresponse.content\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t \n# Out: b'My Content'\n# This is correct\n# Bytes content\nresponse = HttpResponse(b\"My Content\")\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t \nresponse.content\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t \n# Out: b'My Content'\n# This is also correct\n# memoryview content\nresponse = HttpResponse(memoryview(b\"My Content\"))\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t \nresponse.content\n# Out: b'<memory at 0x7fcc47ab2648>'\n# This is not correct, I am expecting b'My Content'\n...",
+    "paraphrases": [
+      "Which files must be edited to resolve this bug report?\n\nReport: HttpResponse doesn't handle memoryview objects\nDescription\n\t\nI am trying to write a BinaryField retrieved from the database into a HttpResponse. When the database is Sqlite this works correctly, but Postgresql returns the contents of the field as a memoryview object and it seems like current Django doesn't like this combination:\nfrom django.http import HttpResponse\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t \n# String content\nresponse = HttpResponse(\"My Content\")\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\nresponse.content\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t \n# Out: b'My Content'\n# This is correct\n# Bytes content\nresponse = HttpResponse(b\"My Content\")\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t \nresponse.content\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t \n# Out: b'My Content'\n# This is also correct\n# memoryview content\nresponse = HttpResponse(memoryview(b\"My Content\"))\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t \nresponse.content\n# Out: b'<memory at 0x7fcc47ab2648>'\n# This is not correct, I am expecting b'My Content'\n..."
+    ],
+    "expected_solution": "django/http/response.py",
+    "oracle_spec": {
+      "type": "string_contains",
+      "must_contain": [
+        "django/http/response.py"
+      ]
+    }
+  },
+  {
+    "id": "django__django-11179",
+    "category": "SWE-bench",
+    "query": "Given the following GitHub issue, identify the exact file paths that need to be modified to fix the issue. Print them one per line.\n\nIssue: delete() on instances of models without any dependencies doesn't clear PKs.\nDescription\n\t\nDeleting any model with no dependencies not updates the PK on the model. It should be set to None after .delete() call.\nSee Django.db.models.deletion:276-281. Should update the model line 280.\n...",
+    "paraphrases": [
+      "Which files must be edited to resolve this bug report?\n\nReport: delete() on instances of models without any dependencies doesn't clear PKs.\nDescription\n\t\nDeleting any model with no dependencies not updates the PK on the model. It should be set to None after .delete() call.\nSee Django.db.models.deletion:276-281. Should update the model line 280.\n..."
+    ],
+    "expected_solution": "django/db/models/deletion.py",
+    "oracle_spec": {
+      "type": "string_contains",
+      "must_contain": [
+        "django/db/models/deletion.py"
+      ]
+    }
+  },
+  {
+    "id": "django__django-11283",
+    "category": "SWE-bench",
+    "query": "Given the following GitHub issue, identify the exact file paths that need to be modified to fix the issue. Print them one per line.\n\nIssue: Migration auth.0011_update_proxy_permissions fails for models recreated as a proxy.\nDescription\n\t \n\t\t(last modified by Mariusz Felisiak)\n\t \nI am trying to update my project to Django 2.2. When I launch python manage.py migrate, I get this error message when migration auth.0011_update_proxy_permissions is applying (full stacktrace is available \u0432\u0402\u2039here):\ndjango.db.utils.IntegrityError: duplicate key value violates unique constraint \"idx_18141_auth_permission_content_type_id_01ab375a_uniq\" DETAIL: Key (co.ntent_type_id, codename)=(12, add_agency) already exists.\nIt looks like the migration is trying to re-create already existing entries in the auth_permission table. At first I though it cloud because we recently renamed a model. But after digging and deleting the entries associated with the renamed model from our database in the auth_permission table, the problem still occurs with other proxy models.\nI tried to update directly from 2.0.13 and 2.1.8. The issues appeared each time. I also deleted my venv and recreated it without an effect.\nI searched for a ticket about this on the bug tracker but found nothing. I also posted this on \u0432\u0402\u2039django-users and was asked to report this here.\n...",
+    "paraphrases": [
+      "Which files must be edited to resolve this bug report?\n\nReport: Migration auth.0011_update_proxy_permissions fails for models recreated as a proxy.\nDescription\n\t \n\t\t(last modified by Mariusz Felisiak)\n\t \nI am trying to update my project to Django 2.2. When I launch python manage.py migrate, I get this error message when migration auth.0011_update_proxy_permissions is applying (full stacktrace is available \u0432\u0402\u2039here):\ndjango.db.utils.IntegrityError: duplicate key value violates unique constraint \"idx_18141_auth_permission_content_type_id_01ab375a_uniq\" DETAIL: Key (co.ntent_type_id, codename)=(12, add_agency) already exists.\nIt looks like the migration is trying to re-create already existing entries in the auth_permission table. At first I though it cloud because we recently renamed a model. But after digging and deleting the entries associated with the renamed model from our database in the auth_permission table, the problem still occurs with other proxy models.\nI tried to update directly from 2.0.13 and 2.1.8. The issues appeared each time. I also deleted my venv and recreated it without an effect.\nI searched for a ticket about this on the bug tracker but found nothing. I also posted this on \u0432\u0402\u2039django-users and was asked to report this here.\n..."
+    ],
+    "expected_solution": "django/contrib/auth/migrations/0011_update_proxy_permissions.py",
+    "oracle_spec": {
+      "type": "string_contains",
+      "must_contain": [
+        "django/contrib/auth/migrations/0011_update_proxy_permissions.py"
+      ]
+    }
+  },
+  {
+    "id": "django__django-11422",
+    "category": "SWE-bench",
+    "query": "Given the following GitHub issue, identify the exact file paths that need to be modified to fix the issue. Print them one per line.\n\nIssue: Autoreloader with StatReloader doesn't track changes in manage.py.\nDescription\n\t \n\t\t(last modified by Mariusz Felisiak)\n\t \nThis is a bit convoluted, but here we go.\nEnvironment (OSX 10.11):\n$ python -V\nPython 3.6.2\n$ pip -V\npip 19.1.1\n$ pip install Django==2.2.1\nSteps to reproduce:\nRun a server python manage.py runserver\nEdit the manage.py file, e.g. add print(): \ndef main():\n\tprint('sth')\n\tos.environ.setdefault('DJANGO_SETTINGS_MODULE', 'ticket_30479.settings')\n\t...\nUnder 2.1.8 (and prior), this will trigger the auto-reloading mechanism. Under 2.2.1, it won't. As far as I can tell from the django.utils.autoreload log lines, it never sees the manage.py itself.\n...",
+    "paraphrases": [
+      "Which files must be edited to resolve this bug report?\n\nReport: Autoreloader with StatReloader doesn't track changes in manage.py.\nDescription\n\t \n\t\t(last modified by Mariusz Felisiak)\n\t \nThis is a bit convoluted, but here we go.\nEnvironment (OSX 10.11):\n$ python -V\nPython 3.6.2\n$ pip -V\npip 19.1.1\n$ pip install Django==2.2.1\nSteps to reproduce:\nRun a server python manage.py runserver\nEdit the manage.py file, e.g. add print(): \ndef main():\n\tprint('sth')\n\tos.environ.setdefault('DJANGO_SETTINGS_MODULE', 'ticket_30479.settings')\n\t...\nUnder 2.1.8 (and prior), this will trigger the auto-reloading mechanism. Under 2.2.1, it won't. As far as I can tell from the django.utils.autoreload log lines, it never sees the manage.py itself.\n..."
+    ],
+    "expected_solution": "django/utils/autoreload.py",
+    "oracle_spec": {
+      "type": "string_contains",
+      "must_contain": [
+        "django/utils/autoreload.py"
+      ]
+    }
+  },
+  {
+    "id": "django__django-11564",
+    "category": "SWE-bench",
+    "query": "Given the following GitHub issue, identify the exact file paths that need to be modified to fix the issue. Print them one per line.\n\nIssue: Add support for SCRIPT_NAME in STATIC_URL and MEDIA_URL\nDescription\n\t \n\t\t(last modified by Rostyslav Bryzgunov)\n\t \nBy default, {% static '...' %} tag just appends STATIC_URL in the path. When running on sub-path, using SCRIPT_NAME WSGI param, it results in incorrect static URL - it doesn't prepend SCRIPT_NAME prefix.\nThis problem can be solved with prepending SCRIPT_NAME to STATIC_URL in settings.py but that doesn't work when SCRIPT_NAME is a dynamic value.\nThis can be easily added into default Django static tag and django.contrib.staticfiles tag as following:\ndef render(self, context):\n\turl = self.url(context)\n\t# Updating url here with request.META['SCRIPT_NAME'] \n\tif self.varname is None:\n\t\treturn url\n\tcontext[self.varname] = url\n\t\treturn ''\nOn more research I found that FileSystemStorage and StaticFilesStorage ignores SCRIPT_NAME as well. \nWe might have to do a lot of changes but I think it's worth the efforts.\n...",
+    "paraphrases": [
+      "Which files must be edited to resolve this bug report?\n\nReport: Add support for SCRIPT_NAME in STATIC_URL and MEDIA_URL\nDescription\n\t \n\t\t(last modified by Rostyslav Bryzgunov)\n\t \nBy default, {% static '...' %} tag just appends STATIC_URL in the path. When running on sub-path, using SCRIPT_NAME WSGI param, it results in incorrect static URL - it doesn't prepend SCRIPT_NAME prefix.\nThis problem can be solved with prepending SCRIPT_NAME to STATIC_URL in settings.py but that doesn't work when SCRIPT_NAME is a dynamic value.\nThis can be easily added into default Django static tag and django.contrib.staticfiles tag as following:\ndef render(self, context):\n\turl = self.url(context)\n\t# Updating url here with request.META['SCRIPT_NAME'] \n\tif self.varname is None:\n\t\treturn url\n\tcontext[self.varname] = url\n\t\treturn ''\nOn more research I found that FileSystemStorage and StaticFilesStorage ignores SCRIPT_NAME as well. \nWe might have to do a lot of changes but I think it's worth the efforts.\n..."
+    ],
+    "expected_solution": "django/conf/__init__.py",
+    "oracle_spec": {
+      "type": "string_contains",
+      "must_contain": [
+        "django/conf/__init__.py"
+      ]
+    }
+  },
+  {
+    "id": "django__django-11583",
+    "category": "SWE-bench",
+    "query": "Given the following GitHub issue, identify the exact file paths that need to be modified to fix the issue. Print them one per line.\n\nIssue: Auto-reloading with StatReloader very intermittently throws \"ValueError: embedded null byte\".\nDescription\n\t\nRaising this mainly so that it's tracked, as I have no idea how to reproduce it, nor why it's happening. It ultimately looks like a problem with Pathlib, which wasn't used prior to 2.2.\nStacktrace:\nTraceback (most recent call last):\n File \"manage.py\" ...\n\texecute_from_command_line(sys.argv)\n File \"/Userz/kez/path/to/venv/lib/python3.6/site-packages/django/core/management/__init__.py\", line 381, in execute_from_command_line\n\tutility.execute()\n File \"/Userz/kez/path/to/venv/lib/python3.6/site-packages/django/core/management/__init__.py\", line 375, in execute\n\tself.fetch_command(subcommand).run_from_argv(self.argv)\n File \"/Userz/kez/path/to/venv/lib/python3.6/site-packages/django/core/management/base.py\", line 323, in run_from_argv\n\tself.execute(*args, **cmd_options)\n File \"/Userz/kez/path/to/venv/lib/python3.6/site-packages/django/core/management/commands/runserver.py\", line 60, in execute\n\tsuper().execute(*args, **options)\n File \"/Userz/kez/path/to/venv/lib/python3.6/site-packages/django/core/management/base.py\", line 364, in execute\n\toutput = self.handle(*args, **options)\n File \"/Userz/kez/path/to/venv/lib/python3.6/site-packages/django/core/management/commands/runserver.py\", line 95, in handle\n\tself.run(**options)\n File \"/Userz/kez/path/to/venv/lib/python3.6/site-packages/django/core/management/commands/runserver.py\", line 102, in run\n\tautoreload.run_with_reloader(self.inner_run, **options)\n File \"/Userz/kez/path/to/venv/lib/python3.6/site-packages/django/utils/autoreload.py\", line 577, in run_with_reloader\n\tstart_django(reloader, main_func, *args, **kwargs)\n File \"/Userz/kez/path/to/venv/lib/python3.6/site-packages/django/utils/autoreload.py\", line 562, in start_django\n\treloader.run(django_main_thread)\n File \"/Userz/kez/path/to/venv/lib/python3.6/site-packages/django/utils/autoreload.py\", line 280, in run\n\tself.run_loop()\n File \"/Userz/kez/path/to/venv/lib/p...",
+    "paraphrases": [
+      "Which files must be edited to resolve this bug report?\n\nReport: Auto-reloading with StatReloader very intermittently throws \"ValueError: embedded null byte\".\nDescription\n\t\nRaising this mainly so that it's tracked, as I have no idea how to reproduce it, nor why it's happening. It ultimately looks like a problem with Pathlib, which wasn't used prior to 2.2.\nStacktrace:\nTraceback (most recent call last):\n File \"manage.py\" ...\n\texecute_from_command_line(sys.argv)\n File \"/Userz/kez/path/to/venv/lib/python3.6/site-packages/django/core/management/__init__.py\", line 381, in execute_from_command_line\n\tutility.execute()\n File \"/Userz/kez/path/to/venv/lib/python3.6/site-packages/django/core/management/__init__.py\", line 375, in execute\n\tself.fetch_command(subcommand).run_from_argv(self.argv)\n File \"/Userz/kez/path/to/venv/lib/python3.6/site-packages/django/core/management/base.py\", line 323, in run_from_argv\n\tself.execute(*args, **cmd_options)\n File \"/Userz/kez/path/to/venv/lib/python3.6/site-packages/django/core/management/commands/runserver.py\", line 60, in execute\n\tsuper().execute(*args, **options)\n File \"/Userz/kez/path/to/venv/lib/python3.6/site-packages/django/core/management/base.py\", line 364, in execute\n\toutput = self.handle(*args, **options)\n File \"/Userz/kez/path/to/venv/lib/python3.6/site-packages/django/core/management/commands/runserver.py\", line 95, in handle\n\tself.run(**options)\n File \"/Userz/kez/path/to/venv/lib/python3.6/site-packages/django/core/management/commands/runserver.py\", line 102, in run\n\tautoreload.run_with_reloader(self.inner_run, **options)\n File \"/Userz/kez/path/to/venv/lib/python3.6/site-packages/django/utils/autoreload.py\", line 577, in run_with_reloader\n\tstart_django(reloader, main_func, *args, **kwargs)\n File \"/Userz/kez/path/to/venv/lib/python3.6/site-packages/django/utils/autoreload.py\", line 562, in start_django\n\treloader.run(django_main_thread)\n File \"/Userz/kez/path/to/venv/lib/python3.6/site-packages/django/utils/autoreload.py\", line 280, in run\n\tself.run_loop()\n File \"/Userz/kez/path/to/venv/lib/p..."
+    ],
+    "expected_solution": "django/utils/autoreload.py",
+    "oracle_spec": {
+      "type": "string_contains",
+      "must_contain": [
+        "django/utils/autoreload.py"
+      ]
+    }
+  },
+  {
+    "id": "django__django-11620",
+    "category": "SWE-bench",
+    "query": "Given the following GitHub issue, identify the exact file paths that need to be modified to fix the issue. Print them one per line.\n\nIssue: When DEBUG is True, raising Http404 in a path converter's to_python method does not result in a technical response\nDescription\n\t\nThis is the response I get (plain text): \nA server error occurred. Please contact the administrator.\nI understand a ValueError should be raised which tells the URL resolver \"this path does not match, try next one\" but Http404 is what came to my mind intuitively and the error message was not very helpful.\nOne could also make a point that raising a Http404 should be valid way to tell the resolver \"this is indeed the right path but the current parameter value does not match anything so stop what you are doing and let the handler return the 404 page (including a helpful error message when DEBUG is True instead of the default 'Django tried these URL patterns')\".\nThis would prove useful for example to implement a path converter that uses get_object_or_404.\n...",
+    "paraphrases": [
+      "Which files must be edited to resolve this bug report?\n\nReport: When DEBUG is True, raising Http404 in a path converter's to_python method does not result in a technical response\nDescription\n\t\nThis is the response I get (plain text): \nA server error occurred. Please contact the administrator.\nI understand a ValueError should be raised which tells the URL resolver \"this path does not match, try next one\" but Http404 is what came to my mind intuitively and the error message was not very helpful.\nOne could also make a point that raising a Http404 should be valid way to tell the resolver \"this is indeed the right path but the current parameter value does not match anything so stop what you are doing and let the handler return the 404 page (including a helpful error message when DEBUG is True instead of the default 'Django tried these URL patterns')\".\nThis would prove useful for example to implement a path converter that uses get_object_or_404.\n..."
+    ],
+    "expected_solution": "django/views/debug.py",
+    "oracle_spec": {
+      "type": "string_contains",
+      "must_contain": [
+        "django/views/debug.py"
+      ]
+    }
+  },
+  {
+    "id": "django__django-11630",
+    "category": "SWE-bench",
+    "query": "Given the following GitHub issue, identify the exact file paths that need to be modified to fix the issue. Print them one per line.\n\nIssue: Django throws error when different apps with different models have the same name table name.\nDescription\n\t\nError message:\ntable_name: (models.E028) db_table 'table_name' is used by multiple models: base.ModelName, app2.ModelName.\nWe have a Base app that points to a central database and that has its own tables. We then have multiple Apps that talk to their own databases. Some share the same table names.\nWe have used this setup for a while, but after upgrading to Django 2.2 we're getting an error saying we're not allowed 2 apps, with 2 different models to have the same table names. \nIs this correct behavior? We've had to roll back to Django 2.0 for now.\n...",
+    "paraphrases": [
+      "Which files must be edited to resolve this bug report?\n\nReport: Django throws error when different apps with different models have the same name table name.\nDescription\n\t\nError message:\ntable_name: (models.E028) db_table 'table_name' is used by multiple models: base.ModelName, app2.ModelName.\nWe have a Base app that points to a central database and that has its own tables. We then have multiple Apps that talk to their own databases. Some share the same table names.\nWe have used this setup for a while, but after upgrading to Django 2.2 we're getting an error saying we're not allowed 2 apps, with 2 different models to have the same table names. \nIs this correct behavior? We've had to roll back to Django 2.0 for now.\n..."
+    ],
+    "expected_solution": "django/core/checks/model_checks.py",
+    "oracle_spec": {
+      "type": "string_contains",
+      "must_contain": [
+        "django/core/checks/model_checks.py"
+      ]
+    }
+  },
+  {
+    "id": "django__django-11742",
+    "category": "SWE-bench",
+    "query": "Given the following GitHub issue, identify the exact file paths that need to be modified to fix the issue. Print them one per line.\n\nIssue: Add check to ensure max_length fits longest choice.\nDescription\n\t\nThere is currently no check to ensure that Field.max_length is large enough to fit the longest value in Field.choices.\nThis would be very helpful as often this mistake is not noticed until an attempt is made to save a record with those values that are too long.\n...",
+    "paraphrases": [
+      "Which files must be edited to resolve this bug report?\n\nReport: Add check to ensure max_length fits longest choice.\nDescription\n\t\nThere is currently no check to ensure that Field.max_length is large enough to fit the longest value in Field.choices.\nThis would be very helpful as often this mistake is not noticed until an attempt is made to save a record with those values that are too long.\n..."
+    ],
+    "expected_solution": "django/db/models/fields/__init__.py",
+    "oracle_spec": {
+      "type": "string_contains",
+      "must_contain": [
+        "django/db/models/fields/__init__.py"
+      ]
+    }
+  },
+  {
+    "id": "django__django-11797",
+    "category": "SWE-bench",
+    "query": "Given the following GitHub issue, identify the exact file paths that need to be modified to fix the issue. Print them one per line.\n\nIssue: Filtering on query result overrides GROUP BY of internal query\nDescription\n\t\nfrom django.contrib.auth import models\na = models.User.objects.filter(email__isnull=True).values('email').annotate(m=Max('id')).values('m')\nprint(a.query) # good\n# SELECT MAX(\"auth_user\".\"id\") AS \"m\" FROM \"auth_user\" WHERE \"auth_user\".\"email\" IS NULL GROUP BY \"auth_user\".\"email\"\nprint(a[:1].query) # good\n# SELECT MAX(\"auth_user\".\"id\") AS \"m\" FROM \"auth_user\" WHERE \"auth_user\".\"email\" IS NULL GROUP BY \"auth_user\".\"email\" LIMIT 1\nb = models.User.objects.filter(id=a[:1])\nprint(b.query) # GROUP BY U0.\"id\" should be GROUP BY U0.\"email\"\n# SELECT ... FROM \"auth_user\" WHERE \"auth_user\".\"id\" = (SELECT U0.\"id\" FROM \"auth_user\" U0 WHERE U0.\"email\" IS NULL GROUP BY U0.\"id\" LIMIT 1)\n...",
+    "paraphrases": [
+      "Which files must be edited to resolve this bug report?\n\nReport: Filtering on query result overrides GROUP BY of internal query\nDescription\n\t\nfrom django.contrib.auth import models\na = models.User.objects.filter(email__isnull=True).values('email').annotate(m=Max('id')).values('m')\nprint(a.query) # good\n# SELECT MAX(\"auth_user\".\"id\") AS \"m\" FROM \"auth_user\" WHERE \"auth_user\".\"email\" IS NULL GROUP BY \"auth_user\".\"email\"\nprint(a[:1].query) # good\n# SELECT MAX(\"auth_user\".\"id\") AS \"m\" FROM \"auth_user\" WHERE \"auth_user\".\"email\" IS NULL GROUP BY \"auth_user\".\"email\" LIMIT 1\nb = models.User.objects.filter(id=a[:1])\nprint(b.query) # GROUP BY U0.\"id\" should be GROUP BY U0.\"email\"\n# SELECT ... FROM \"auth_user\" WHERE \"auth_user\".\"id\" = (SELECT U0.\"id\" FROM \"auth_user\" U0 WHERE U0.\"email\" IS NULL GROUP BY U0.\"id\" LIMIT 1)\n..."
+    ],
+    "expected_solution": "django/db/models/lookups.py",
+    "oracle_spec": {
+      "type": "string_contains",
+      "must_contain": [
+        "django/db/models/lookups.py"
+      ]
+    }
+  },
+  {
+    "id": "django__django-11815",
+    "category": "SWE-bench",
+    "query": "Given the following GitHub issue, identify the exact file paths that need to be modified to fix the issue. Print them one per line.\n\nIssue: Migrations uses value of enum object instead of its name.\nDescription\n\t \n\t\t(last modified by oasl)\n\t \nWhen using Enum object as a default value for a CharField, the generated migration file uses the value of the Enum object instead of the its name. This causes a problem when using Django translation on the value of the Enum object. \nThe problem is that, when the Enum object value get translated to the users language, the old migration files raise an error stating that the Enum does not have the corresponding value. (because the Enum value is translated to another language)\nExample:\nLet say we have this code in models.py:\nfrom enum import Enum\nfrom django.utils.translation import gettext_lazy as _\nfrom django.db import models\nclass Status(Enum):\n\tGOOD = _('Good') # 'Good' will be translated\n\tBAD = _('Bad') # 'Bad' will be translated\n\tdef __str__(self):\n\t\treturn self.name\nclass Item(models.Model):\n\tstatus = models.CharField(default=Status.GOOD, max_length=128)\nIn the generated migration file, the code will be:\n...\n('status', models.CharField(default=Status('Good'), max_length=128))\n...\nAfter the translation, 'Good' will be translated to another word and it will not be part of the Status Enum class any more, so the migration file will raise the error on the previous line:\nValueError: 'Good' is not a valid Status\nShouldn't the code generated by the migration uses the name of the Status Enum 'GOOD', not the value of it, since it is changeable?\nIt should be:\n('status', models.CharField(default=Status['GOOD'], max_length=128))\nThis will be correct regardless of the translated word\n...",
+    "paraphrases": [
+      "Which files must be edited to resolve this bug report?\n\nReport: Migrations uses value of enum object instead of its name.\nDescription\n\t \n\t\t(last modified by oasl)\n\t \nWhen using Enum object as a default value for a CharField, the generated migration file uses the value of the Enum object instead of the its name. This causes a problem when using Django translation on the value of the Enum object. \nThe problem is that, when the Enum object value get translated to the users language, the old migration files raise an error stating that the Enum does not have the corresponding value. (because the Enum value is translated to another language)\nExample:\nLet say we have this code in models.py:\nfrom enum import Enum\nfrom django.utils.translation import gettext_lazy as _\nfrom django.db import models\nclass Status(Enum):\n\tGOOD = _('Good') # 'Good' will be translated\n\tBAD = _('Bad') # 'Bad' will be translated\n\tdef __str__(self):\n\t\treturn self.name\nclass Item(models.Model):\n\tstatus = models.CharField(default=Status.GOOD, max_length=128)\nIn the generated migration file, the code will be:\n...\n('status', models.CharField(default=Status('Good'), max_length=128))\n...\nAfter the translation, 'Good' will be translated to another word and it will not be part of the Status Enum class any more, so the migration file will raise the error on the previous line:\nValueError: 'Good' is not a valid Status\nShouldn't the code generated by the migration uses the name of the Status Enum 'GOOD', not the value of it, since it is changeable?\nIt should be:\n('status', models.CharField(default=Status['GOOD'], max_length=128))\nThis will be correct regardless of the translated word\n..."
+    ],
+    "expected_solution": "django/db/migrations/serializer.py",
+    "oracle_spec": {
+      "type": "string_contains",
+      "must_contain": [
+        "django/db/migrations/serializer.py"
+      ]
+    }
+  },
+  {
+    "id": "django__django-11848",
+    "category": "SWE-bench",
+    "query": "Given the following GitHub issue, identify the exact file paths that need to be modified to fix the issue. Print them one per line.\n\nIssue: django.utils.http.parse_http_date two digit year check is incorrect\nDescription\n\t \n\t\t(last modified by Ad Timmering)\n\t \nRFC 850 does not mention this, but in RFC 7231 (and there's something similar in RFC 2822), there's the following quote:\nRecipients of a timestamp value in rfc850-date format, which uses a\ntwo-digit year, MUST interpret a timestamp that appears to be more\nthan 50 years in the future as representing the most recent year in\nthe past that had the same last two digits.\nCurrent logic is hard coded to consider 0-69 to be in 2000-2069, and 70-99 to be 1970-1999, instead of comparing versus the current year.\n...",
+    "paraphrases": [
+      "Which files must be edited to resolve this bug report?\n\nReport: django.utils.http.parse_http_date two digit year check is incorrect\nDescription\n\t \n\t\t(last modified by Ad Timmering)\n\t \nRFC 850 does not mention this, but in RFC 7231 (and there's something similar in RFC 2822), there's the following quote:\nRecipients of a timestamp value in rfc850-date format, which uses a\ntwo-digit year, MUST interpret a timestamp that appears to be more\nthan 50 years in the future as representing the most recent year in\nthe past that had the same last two digits.\nCurrent logic is hard coded to consider 0-69 to be in 2000-2069, and 70-99 to be 1970-1999, instead of comparing versus the current year.\n..."
+    ],
+    "expected_solution": "django/utils/http.py",
+    "oracle_spec": {
+      "type": "string_contains",
+      "must_contain": [
+        "django/utils/http.py"
+      ]
+    }
+  },
+  {
+    "id": "django__django-11905",
+    "category": "SWE-bench",
+    "query": "Given the following GitHub issue, identify the exact file paths that need to be modified to fix the issue. Print them one per line.\n\nIssue: Prevent using __isnull lookup with non-boolean value.\nDescription\n\t \n\t\t(last modified by Mariusz Felisiak)\n\t \n__isnull should not allow for non-boolean values. Using truthy/falsey doesn't promote INNER JOIN to an OUTER JOIN but works fine for a simple queries. Using non-boolean values is \u0432\u0402\u2039undocumented and untested. IMO we should raise an error for non-boolean values to avoid confusion and for consistency.\n...",
+    "paraphrases": [
+      "Which files must be edited to resolve this bug report?\n\nReport: Prevent using __isnull lookup with non-boolean value.\nDescription\n\t \n\t\t(last modified by Mariusz Felisiak)\n\t \n__isnull should not allow for non-boolean values. Using truthy/falsey doesn't promote INNER JOIN to an OUTER JOIN but works fine for a simple queries. Using non-boolean values is \u0432\u0402\u2039undocumented and untested. IMO we should raise an error for non-boolean values to avoid confusion and for consistency.\n..."
+    ],
+    "expected_solution": "django/db/models/lookups.py",
+    "oracle_spec": {
+      "type": "string_contains",
+      "must_contain": [
+        "django/db/models/lookups.py"
+      ]
+    }
+  },
+  {
+    "id": "django__django-11910",
+    "category": "SWE-bench",
+    "query": "Given the following GitHub issue, identify the exact file paths that need to be modified to fix the issue. Print them one per line.\n\nIssue: ForeignKey's to_field parameter gets the old field's name when renaming a PrimaryKey.\nDescription\n\t\nHaving these two models \nclass ModelA(models.Model):\n\tfield_wrong = models.CharField('field1', max_length=50, primary_key=True) # I'm a Primary key.\nclass ModelB(models.Model):\n\tfield_fk = models.ForeignKey(ModelA, blank=True, null=True, on_delete=models.CASCADE) \n... migrations applyed ...\nthe ModelA.field_wrong field has been renamed ... and Django recognizes the \"renaming\"\n# Primary key renamed\nclass ModelA(models.Model):\n\tfield_fixed = models.CharField('field1', max_length=50, primary_key=True) # I'm a Primary key.\nAttempts to to_field parameter. \nThe to_field points to the old_name (field_typo) and not to the new one (\"field_fixed\")\nclass Migration(migrations.Migration):\n\tdependencies = [\n\t\t('app1', '0001_initial'),\n\t]\n\toperations = [\n\t\tmigrations.RenameField(\n\t\t\tmodel_name='modela',\n\t\t\told_name='field_wrong',\n\t\t\tnew_name='field_fixed',\n\t\t),\n\t\tmigrations.AlterField(\n\t\t\tmodel_name='modelb',\n\t\t\tname='modela',\n\t\t\tfield=models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.CASCADE, to='app1.ModelB', to_field='field_wrong'),\n\t\t),\n\t]\n...",
+    "paraphrases": [
+      "Which files must be edited to resolve this bug report?\n\nReport: ForeignKey's to_field parameter gets the old field's name when renaming a PrimaryKey.\nDescription\n\t\nHaving these two models \nclass ModelA(models.Model):\n\tfield_wrong = models.CharField('field1', max_length=50, primary_key=True) # I'm a Primary key.\nclass ModelB(models.Model):\n\tfield_fk = models.ForeignKey(ModelA, blank=True, null=True, on_delete=models.CASCADE) \n... migrations applyed ...\nthe ModelA.field_wrong field has been renamed ... and Django recognizes the \"renaming\"\n# Primary key renamed\nclass ModelA(models.Model):\n\tfield_fixed = models.CharField('field1', max_length=50, primary_key=True) # I'm a Primary key.\nAttempts to to_field parameter. \nThe to_field points to the old_name (field_typo) and not to the new one (\"field_fixed\")\nclass Migration(migrations.Migration):\n\tdependencies = [\n\t\t('app1', '0001_initial'),\n\t]\n\toperations = [\n\t\tmigrations.RenameField(\n\t\t\tmodel_name='modela',\n\t\t\told_name='field_wrong',\n\t\t\tnew_name='field_fixed',\n\t\t),\n\t\tmigrations.AlterField(\n\t\t\tmodel_name='modelb',\n\t\t\tname='modela',\n\t\t\tfield=models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.CASCADE, to='app1.ModelB', to_field='field_wrong'),\n\t\t),\n\t]\n..."
+    ],
+    "expected_solution": "django/db/migrations/autodetector.py",
+    "oracle_spec": {
+      "type": "string_contains",
+      "must_contain": [
+        "django/db/migrations/autodetector.py"
+      ]
+    }
+  },
+  {
+    "id": "django__django-11964",
+    "category": "SWE-bench",
+    "query": "Given the following GitHub issue, identify the exact file paths that need to be modified to fix the issue. Print them one per line.\n\nIssue: The value of a TextChoices/IntegerChoices field has a differing type\nDescription\n\t\nIf we create an instance of a model having a CharField or IntegerField with the keyword choices pointing to IntegerChoices or TextChoices, the value returned by the getter of the field will be of the same type as the one created by enum.Enum (enum value).\nFor example, this model:\nfrom django.db import models\nfrom django.utils.translation import gettext_lazy as _\nclass MyChoice(models.TextChoices):\n\tFIRST_CHOICE = \"first\", _(\"The first choice, it is\")\n\tSECOND_CHOICE = \"second\", _(\"The second choice, it is\")\nclass MyObject(models.Model):\n\tmy_str_value = models.CharField(max_length=10, choices=MyChoice.choices)\nThen this test:\nfrom django.test import TestCase\nfrom testing.pkg.models import MyObject, MyChoice\nclass EnumTest(TestCase):\n\tdef setUp(self) -> None:\n\t\tself.my_object = MyObject.objects.create(my_str_value=MyChoice.FIRST_CHOICE)\n\tdef test_created_object_is_str(self):\n\t\tmy_object = self.my_object\n\t\tself.assertIsInstance(my_object.my_str_value, str)\n\t\tself.assertEqual(str(my_object.my_str_value), \"first\")\n\tdef test_retrieved_object_is_str(self):\n\t\tmy_object = MyObject.objects.last()\n\t\tself.assertIsInstance(my_object.my_str_value, str)\n\t\tself.assertEqual(str(my_object.my_str_value), \"first\")\nAnd then the results:\n(django30-venv) \u0432\u045b\u045a django30 ./manage.py test\nCreating test database for alias 'default'...\nSystem check identified no issues (0 silenced).\nF.\n======================================================================\nFAIL: test_created_object_is_str (testing.tests.EnumTest)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n File \"/Users/mikailkocak/Development/django30/testing/tests.py\", line 14, in test_created_object_is_str\n\tself.assertEqual(str(my_object.my_str_value), \"first\")\nAssertionError: 'MyChoice.FIRST_CHOICE' != 'first'\n- MyChoice.FIRST_CHOICE\n+ first\n--------------------------------------------------------------...",
+    "paraphrases": [
+      "Which files must be edited to resolve this bug report?\n\nReport: The value of a TextChoices/IntegerChoices field has a differing type\nDescription\n\t\nIf we create an instance of a model having a CharField or IntegerField with the keyword choices pointing to IntegerChoices or TextChoices, the value returned by the getter of the field will be of the same type as the one created by enum.Enum (enum value).\nFor example, this model:\nfrom django.db import models\nfrom django.utils.translation import gettext_lazy as _\nclass MyChoice(models.TextChoices):\n\tFIRST_CHOICE = \"first\", _(\"The first choice, it is\")\n\tSECOND_CHOICE = \"second\", _(\"The second choice, it is\")\nclass MyObject(models.Model):\n\tmy_str_value = models.CharField(max_length=10, choices=MyChoice.choices)\nThen this test:\nfrom django.test import TestCase\nfrom testing.pkg.models import MyObject, MyChoice\nclass EnumTest(TestCase):\n\tdef setUp(self) -> None:\n\t\tself.my_object = MyObject.objects.create(my_str_value=MyChoice.FIRST_CHOICE)\n\tdef test_created_object_is_str(self):\n\t\tmy_object = self.my_object\n\t\tself.assertIsInstance(my_object.my_str_value, str)\n\t\tself.assertEqual(str(my_object.my_str_value), \"first\")\n\tdef test_retrieved_object_is_str(self):\n\t\tmy_object = MyObject.objects.last()\n\t\tself.assertIsInstance(my_object.my_str_value, str)\n\t\tself.assertEqual(str(my_object.my_str_value), \"first\")\nAnd then the results:\n(django30-venv) \u0432\u045b\u045a django30 ./manage.py test\nCreating test database for alias 'default'...\nSystem check identified no issues (0 silenced).\nF.\n======================================================================\nFAIL: test_created_object_is_str (testing.tests.EnumTest)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n File \"/Users/mikailkocak/Development/django30/testing/tests.py\", line 14, in test_created_object_is_str\n\tself.assertEqual(str(my_object.my_str_value), \"first\")\nAssertionError: 'MyChoice.FIRST_CHOICE' != 'first'\n- MyChoice.FIRST_CHOICE\n+ first\n--------------------------------------------------------------..."
+    ],
+    "expected_solution": "django/db/models/enums.py",
+    "oracle_spec": {
+      "type": "string_contains",
+      "must_contain": [
+        "django/db/models/enums.py"
+      ]
+    }
+  },
+  {
+    "id": "django__django-11999",
+    "category": "SWE-bench",
+    "query": "Given the following GitHub issue, identify the exact file paths that need to be modified to fix the issue. Print them one per line.\n\nIssue: Cannot override get_FOO_display() in Django 2.2+.\nDescription\n\t\nI cannot override the get_FIELD_display function on models since version 2.2. It works in version 2.1.\nExample:\nclass FooBar(models.Model):\n\tfoo_bar = models.CharField(_(\"foo\"), choices=[(1, 'foo'), (2, 'bar')])\n\tdef __str__(self):\n\t\treturn self.get_foo_bar_display() # This returns 'foo' or 'bar' in 2.2, but 'something' in 2.1\n\tdef get_foo_bar_display(self):\n\t\treturn \"something\"\nWhat I expect is that I should be able to override this function.\n...",
+    "paraphrases": [
+      "Which files must be edited to resolve this bug report?\n\nReport: Cannot override get_FOO_display() in Django 2.2+.\nDescription\n\t\nI cannot override the get_FIELD_display function on models since version 2.2. It works in version 2.1.\nExample:\nclass FooBar(models.Model):\n\tfoo_bar = models.CharField(_(\"foo\"), choices=[(1, 'foo'), (2, 'bar')])\n\tdef __str__(self):\n\t\treturn self.get_foo_bar_display() # This returns 'foo' or 'bar' in 2.2, but 'something' in 2.1\n\tdef get_foo_bar_display(self):\n\t\treturn \"something\"\nWhat I expect is that I should be able to override this function.\n..."
+    ],
+    "expected_solution": "django/db/models/fields/__init__.py",
+    "oracle_spec": {
+      "type": "string_contains",
+      "must_contain": [
+        "django/db/models/fields/__init__.py"
+      ]
+    }
+  },
+  {
+    "id": "django__django-12113",
+    "category": "SWE-bench",
+    "query": "Given the following GitHub issue, identify the exact file paths that need to be modified to fix the issue. Print them one per line.\n\nIssue: admin_views.test_multidb fails with persistent test SQLite database.\nDescription\n\t \n\t\t(last modified by Mariusz Felisiak)\n\t \nI've tried using persistent SQLite databases for the tests (to make use of\n--keepdb), but at least some test fails with:\nsqlite3.OperationalError: database is locked\nThis is not an issue when only using TEST[\"NAME\"] with \"default\" (which is good enough in terms of performance).\ndiff --git i/tests/test_sqlite.py w/tests/test_sqlite.py\nindex f1b65f7d01..9ce4e32e14 100644\n--- i/tests/test_sqlite.py\n+++ w/tests/test_sqlite.py\n@@ -15,9 +15,15 @@\n DATABASES = {\n\t 'default': {\n\t\t 'ENGINE': 'django.db.backends.sqlite3',\n+\t\t'TEST': {\n+\t\t\t'NAME': 'test_default.sqlite3'\n+\t\t},\n\t },\n\t 'other': {\n\t\t 'ENGINE': 'django.db.backends.sqlite3',\n+\t\t'TEST': {\n+\t\t\t'NAME': 'test_other.sqlite3'\n+\t\t},\n\t }\n }\n% tests/runtests.py admin_views.test_multidb -v 3 --keepdb --parallel 1\n\u0432\u0402\u00a6\nOperations to perform:\n Synchronize unmigrated apps: admin_views, auth, contenttypes, messages, sessions, staticfiles\n Apply all migrations: admin, sites\nRunning pre-migrate handlers for application contenttypes\nRunning pre-migrate handlers for application auth\nRunning pre-migrate handlers for application sites\nRunning pre-migrate handlers for application sessions\nRunning pre-migrate handlers for application admin\nRunning pre-migrate handlers for application admin_views\nSynchronizing apps without migrations:\n Creating tables...\n\tRunning deferred SQL...\nRunning migrations:\n No migrations to apply.\nRunning post-migrate handlers for application contenttypes\nRunning post-migrate handlers for application auth\nRunning post-migrate handlers for application sites\nRunning post-migrate handlers for application sessions\nRunning post-migrate handlers for application admin\nRunning post-migrate handlers for application admin_views\nSystem check identified no issues (0 silenced).\nERROR\n======================================================================\nERROR: setUpClass (admin_views.test_multidb.MultiData...",
+    "paraphrases": [
+      "Which files must be edited to resolve this bug report?\n\nReport: admin_views.test_multidb fails with persistent test SQLite database.\nDescription\n\t \n\t\t(last modified by Mariusz Felisiak)\n\t \nI've tried using persistent SQLite databases for the tests (to make use of\n--keepdb), but at least some test fails with:\nsqlite3.OperationalError: database is locked\nThis is not an issue when only using TEST[\"NAME\"] with \"default\" (which is good enough in terms of performance).\ndiff --git i/tests/test_sqlite.py w/tests/test_sqlite.py\nindex f1b65f7d01..9ce4e32e14 100644\n--- i/tests/test_sqlite.py\n+++ w/tests/test_sqlite.py\n@@ -15,9 +15,15 @@\n DATABASES = {\n\t 'default': {\n\t\t 'ENGINE': 'django.db.backends.sqlite3',\n+\t\t'TEST': {\n+\t\t\t'NAME': 'test_default.sqlite3'\n+\t\t},\n\t },\n\t 'other': {\n\t\t 'ENGINE': 'django.db.backends.sqlite3',\n+\t\t'TEST': {\n+\t\t\t'NAME': 'test_other.sqlite3'\n+\t\t},\n\t }\n }\n% tests/runtests.py admin_views.test_multidb -v 3 --keepdb --parallel 1\n\u0432\u0402\u00a6\nOperations to perform:\n Synchronize unmigrated apps: admin_views, auth, contenttypes, messages, sessions, staticfiles\n Apply all migrations: admin, sites\nRunning pre-migrate handlers for application contenttypes\nRunning pre-migrate handlers for application auth\nRunning pre-migrate handlers for application sites\nRunning pre-migrate handlers for application sessions\nRunning pre-migrate handlers for application admin\nRunning pre-migrate handlers for application admin_views\nSynchronizing apps without migrations:\n Creating tables...\n\tRunning deferred SQL...\nRunning migrations:\n No migrations to apply.\nRunning post-migrate handlers for application contenttypes\nRunning post-migrate handlers for application auth\nRunning post-migrate handlers for application sites\nRunning post-migrate handlers for application sessions\nRunning post-migrate handlers for application admin\nRunning post-migrate handlers for application admin_views\nSystem check identified no issues (0 silenced).\nERROR\n======================================================================\nERROR: setUpClass (admin_views.test_multidb.MultiData..."
+    ],
+    "expected_solution": "django/db/backends/sqlite3/creation.py",
+    "oracle_spec": {
+      "type": "string_contains",
+      "must_contain": [
+        "django/db/backends/sqlite3/creation.py"
+      ]
+    }
+  },
+  {
+    "id": "django__django-12125",
+    "category": "SWE-bench",
+    "query": "Given the following GitHub issue, identify the exact file paths that need to be modified to fix the issue. Print them one per line.\n\nIssue: makemigrations produces incorrect path for inner classes\nDescription\n\t\nWhen you define a subclass from django.db.models.Field as an inner class of some other class, and use this field inside a django.db.models.Model class, then when you run manage.py makemigrations, a migrations file is created which refers to the inner class as if it were a top-level class of the module it is in.\nTo reproduce, create the following as your model:\nclass Outer(object):\n\tclass Inner(models.CharField):\n\t\tpass\nclass A(models.Model):\n\tfield = Outer.Inner(max_length=20)\nAfter running manage.py makemigrations, the generated migrations file contains the following:\nmigrations.CreateModel(\n\tname='A',\n\tfields=[\n\t\t('id', models.AutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),\n\t\t('field', test1.models.Inner(max_length=20)),\n\t],\n),\nNote the test1.models.Inner, which should have been test1.models.Outer.Inner.\nThe real life case involved an EnumField from django-enumfields, defined as an inner class of a Django Model class, similar to this:\nimport enum\nfrom enumfields import Enum, EnumField\nclass Thing(models.Model):\n\t@enum.unique\n\tclass State(Enum):\n\t\ton = 'on'\n\t\toff = 'off'\n\tstate = EnumField(enum=State)\nThis results in the following migrations code:\nmigrations.CreateModel(\n\tname='Thing',\n\tfields=[\n\t\t('id', models.AutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),\n\t\t('state', enumfields.fields.EnumField(enum=test1.models.State, max_length=10)),\n\t],\n),\nThis refers to test1.models.State, instead of to test1.models.Thing.State.\n...",
+    "paraphrases": [
+      "Which files must be edited to resolve this bug report?\n\nReport: makemigrations produces incorrect path for inner classes\nDescription\n\t\nWhen you define a subclass from django.db.models.Field as an inner class of some other class, and use this field inside a django.db.models.Model class, then when you run manage.py makemigrations, a migrations file is created which refers to the inner class as if it were a top-level class of the module it is in.\nTo reproduce, create the following as your model:\nclass Outer(object):\n\tclass Inner(models.CharField):\n\t\tpass\nclass A(models.Model):\n\tfield = Outer.Inner(max_length=20)\nAfter running manage.py makemigrations, the generated migrations file contains the following:\nmigrations.CreateModel(\n\tname='A',\n\tfields=[\n\t\t('id', models.AutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),\n\t\t('field', test1.models.Inner(max_length=20)),\n\t],\n),\nNote the test1.models.Inner, which should have been test1.models.Outer.Inner.\nThe real life case involved an EnumField from django-enumfields, defined as an inner class of a Django Model class, similar to this:\nimport enum\nfrom enumfields import Enum, EnumField\nclass Thing(models.Model):\n\t@enum.unique\n\tclass State(Enum):\n\t\ton = 'on'\n\t\toff = 'off'\n\tstate = EnumField(enum=State)\nThis results in the following migrations code:\nmigrations.CreateModel(\n\tname='Thing',\n\tfields=[\n\t\t('id', models.AutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),\n\t\t('state', enumfields.fields.EnumField(enum=test1.models.State, max_length=10)),\n\t],\n),\nThis refers to test1.models.State, instead of to test1.models.Thing.State.\n..."
+    ],
+    "expected_solution": "django/db/migrations/serializer.py",
+    "oracle_spec": {
+      "type": "string_contains",
+      "must_contain": [
+        "django/db/migrations/serializer.py"
+      ]
+    }
+  },
+  {
+    "id": "django__django-12184",
+    "category": "SWE-bench",
+    "query": "Given the following GitHub issue, identify the exact file paths that need to be modified to fix the issue. Print them one per line.\n\nIssue: Optional URL params crash some view functions.\nDescription\n\t\nMy use case, running fine with Django until 2.2:\nURLConf:\nurlpatterns += [\n\t...\n\tre_path(r'^module/(?P<format>(html|json|xml))?/?$', views.modules, name='modules'),\n]\nView:\ndef modules(request, format='html'):\n\t...\n\treturn render(...)\nWith Django 3.0, this is now producing an error:\nTraceback (most recent call last):\n File \"/l10n/venv/lib/python3.6/site-packages/django/core/handlers/exception.py\", line 34, in inner\n\tresponse = get_response(request)\n File \"/l10n/venv/lib/python3.6/site-packages/django/core/handlers/base.py\", line 115, in _get_response\n\tresponse = self.process_exception_by_middleware(e, request)\n File \"/l10n/venv/lib/python3.6/site-packages/django/core/handlers/base.py\", line 113, in _get_response\n\tresponse = wrapped_callback(request, *callback_args, **callback_kwargs)\nException Type: TypeError at /module/\nException Value: modules() takes from 1 to 2 positional arguments but 3 were given\n...",
+    "paraphrases": [
+      "Which files must be edited to resolve this bug report?\n\nReport: Optional URL params crash some view functions.\nDescription\n\t\nMy use case, running fine with Django until 2.2:\nURLConf:\nurlpatterns += [\n\t...\n\tre_path(r'^module/(?P<format>(html|json|xml))?/?$', views.modules, name='modules'),\n]\nView:\ndef modules(request, format='html'):\n\t...\n\treturn render(...)\nWith Django 3.0, this is now producing an error:\nTraceback (most recent call last):\n File \"/l10n/venv/lib/python3.6/site-packages/django/core/handlers/exception.py\", line 34, in inner\n\tresponse = get_response(request)\n File \"/l10n/venv/lib/python3.6/site-packages/django/core/handlers/base.py\", line 115, in _get_response\n\tresponse = self.process_exception_by_middleware(e, request)\n File \"/l10n/venv/lib/python3.6/site-packages/django/core/handlers/base.py\", line 113, in _get_response\n\tresponse = wrapped_callback(request, *callback_args, **callback_kwargs)\nException Type: TypeError at /module/\nException Value: modules() takes from 1 to 2 positional arguments but 3 were given\n..."
+    ],
+    "expected_solution": "django/urls/resolvers.py",
+    "oracle_spec": {
+      "type": "string_contains",
+      "must_contain": [
+        "django/urls/resolvers.py"
+      ]
+    }
+  },
+  {
+    "id": "django__django-12284",
+    "category": "SWE-bench",
+    "query": "Given the following GitHub issue, identify the exact file paths that need to be modified to fix the issue. Print them one per line.\n\nIssue: Model.get_FOO_display() does not work correctly with inherited choices.\nDescription\n\t \n\t\t(last modified by Mariusz Felisiak)\n\t \nGiven a base model with choices A containing 3 tuples\nChild Model inherits the base model overrides the choices A and adds 2 more tuples\nget_foo_display does not work correctly for the new tuples added\nExample:\nclass A(models.Model):\n foo_choice = [(\"A\",\"output1\"),(\"B\",\"output2\")]\n field_foo = models.CharField(max_length=254,choices=foo_choice)\n class Meta:\n\t abstract = True\nclass B(A):\n foo_choice = [(\"A\",\"output1\"),(\"B\",\"output2\"),(\"C\",\"output3\")]\n field_foo = models.CharField(max_length=254,choices=foo_choice)\nUpon invoking get_field_foo_display() on instance of B , \nFor value \"A\" and \"B\" the output works correctly i.e. returns \"output1\" / \"output2\"\nbut for value \"C\" the method returns \"C\" and not \"output3\" which is the expected behaviour\n...",
+    "paraphrases": [
+      "Which files must be edited to resolve this bug report?\n\nReport: Model.get_FOO_display() does not work correctly with inherited choices.\nDescription\n\t \n\t\t(last modified by Mariusz Felisiak)\n\t \nGiven a base model with choices A containing 3 tuples\nChild Model inherits the base model overrides the choices A and adds 2 more tuples\nget_foo_display does not work correctly for the new tuples added\nExample:\nclass A(models.Model):\n foo_choice = [(\"A\",\"output1\"),(\"B\",\"output2\")]\n field_foo = models.CharField(max_length=254,choices=foo_choice)\n class Meta:\n\t abstract = True\nclass B(A):\n foo_choice = [(\"A\",\"output1\"),(\"B\",\"output2\"),(\"C\",\"output3\")]\n field_foo = models.CharField(max_length=254,choices=foo_choice)\nUpon invoking get_field_foo_display() on instance of B , \nFor value \"A\" and \"B\" the output works correctly i.e. returns \"output1\" / \"output2\"\nbut for value \"C\" the method returns \"C\" and not \"output3\" which is the expected behaviour\n..."
+    ],
+    "expected_solution": "django/db/models/fields/__init__.py",
+    "oracle_spec": {
+      "type": "string_contains",
+      "must_contain": [
+        "django/db/models/fields/__init__.py"
+      ]
+    }
+  },
+  {
+    "id": "django__django-12286",
+    "category": "SWE-bench",
+    "query": "Given the following GitHub issue, identify the exact file paths that need to be modified to fix the issue. Print them one per line.\n\nIssue: translation.E004 shouldn't be raised on sublanguages when a base language is available.\nDescription\n\t\nAccording to Django documentation:\nIf a base language is available but the sublanguage specified is not, Django uses the base language. For example, if a user specifies de-at (Austrian German) but Django only has de available, Django uses de.\nHowever, when using Django 3.0.2, if my settings.py has\nLANGUAGE_CODE = \"de-at\"\nI get this error message:\nSystemCheckError: System check identified some issues:\nERRORS:\n?: (translation.E004) You have provided a value for the LANGUAGE_CODE setting that is not in the LANGUAGES setting.\nIf using\nLANGUAGE_CODE = \"es-ar\"\nDjango works fine (es-ar is one of the translations provided out of the box).\n...",
+    "paraphrases": [
+      "Which files must be edited to resolve this bug report?\n\nReport: translation.E004 shouldn't be raised on sublanguages when a base language is available.\nDescription\n\t\nAccording to Django documentation:\nIf a base language is available but the sublanguage specified is not, Django uses the base language. For example, if a user specifies de-at (Austrian German) but Django only has de available, Django uses de.\nHowever, when using Django 3.0.2, if my settings.py has\nLANGUAGE_CODE = \"de-at\"\nI get this error message:\nSystemCheckError: System check identified some issues:\nERRORS:\n?: (translation.E004) You have provided a value for the LANGUAGE_CODE setting that is not in the LANGUAGES setting.\nIf using\nLANGUAGE_CODE = \"es-ar\"\nDjango works fine (es-ar is one of the translations provided out of the box).\n..."
+    ],
+    "expected_solution": "django/core/checks/translation.py",
+    "oracle_spec": {
+      "type": "string_contains",
+      "must_contain": [
+        "django/core/checks/translation.py"
+      ]
+    }
+  },
+  {
+    "id": "django__django-12308",
+    "category": "SWE-bench",
+    "query": "Given the following GitHub issue, identify the exact file paths that need to be modified to fix the issue. Print them one per line.\n\nIssue: JSONField are not properly displayed in admin when they are readonly.\nDescription\n\t\nJSONField values are displayed as dict when readonly in the admin.\nFor example, {\"foo\": \"bar\"} would be displayed as {'foo': 'bar'}, which is not valid JSON.\nI believe the fix would be to add a special case in django.contrib.admin.utils.display_for_field to call the prepare_value of the JSONField (not calling json.dumps directly to take care of the InvalidJSONInput case).\n...",
+    "paraphrases": [
+      "Which files must be edited to resolve this bug report?\n\nReport: JSONField are not properly displayed in admin when they are readonly.\nDescription\n\t\nJSONField values are displayed as dict when readonly in the admin.\nFor example, {\"foo\": \"bar\"} would be displayed as {'foo': 'bar'}, which is not valid JSON.\nI believe the fix would be to add a special case in django.contrib.admin.utils.display_for_field to call the prepare_value of the JSONField (not calling json.dumps directly to take care of the InvalidJSONInput case).\n..."
+    ],
+    "expected_solution": "django/contrib/admin/utils.py",
+    "oracle_spec": {
+      "type": "string_contains",
+      "must_contain": [
+        "django/contrib/admin/utils.py"
+      ]
+    }
+  },
+  {
+    "id": "django__django-12453",
+    "category": "SWE-bench",
+    "query": "Given the following GitHub issue, identify the exact file paths that need to be modified to fix the issue. Print them one per line.\n\nIssue: `TransactionTestCase.serialized_rollback` fails to restore objects due to ordering constraints\nDescription\n\t\nI hit this problem in a fairly complex projet and haven't had the time to write a minimal reproduction case. I think it can be understood just by inspecting the code so I'm going to describe it while I have it in mind.\nSetting serialized_rollback = True on a TransactionTestCase triggers \u0432\u0402\u2039rollback emulation. In practice, for each database:\nBaseDatabaseCreation.create_test_db calls connection._test_serialized_contents = connection.creation.serialize_db_to_string()\nTransactionTestCase._fixture_setup calls connection.creation.deserialize_db_from_string(connection._test_serialized_contents)\n(The actual code isn't written that way; it's equivalent but the symmetry is less visible.)\nserialize_db_to_string orders models with serializers.sort_dependencies and serializes them. The sorting algorithm only deals with natural keys. It doesn't do anything to order models referenced by foreign keys before models containing said foreign keys. That wouldn't be possible in general because circular foreign keys are allowed.\ndeserialize_db_from_string deserializes and saves models without wrapping in a transaction. This can result in integrity errors if an instance containing a foreign key is saved before the instance it references. I'm suggesting to fix it as follows:\ndiff --git a/django/db/backends/base/creation.py b/django/db/backends/base/creation.py\nindex bca8376..7bed2be 100644\n--- a/django/db/backends/base/creation.py\n+++ b/django/db/backends/base/creation.py\n@@ -4,7 +4,7 @@ import time\n from django.apps import apps\n from django.conf import settings\n from django.core import serializers\n-from django.db import router\n+from django.db import router, transaction\n from django.utils.six import StringIO\n from django.utils.six.moves import input\n \n@@ -128,8 +128,9 @@ class BaseDatabaseCreation(object):\n\t\t the serialize_db_to_string method.\n\t\t \"\"\"\n\t\t data = StringIO(data)\n-\t\tfor obj...",
+    "paraphrases": [
+      "Which files must be edited to resolve this bug report?\n\nReport: `TransactionTestCase.serialized_rollback` fails to restore objects due to ordering constraints\nDescription\n\t\nI hit this problem in a fairly complex projet and haven't had the time to write a minimal reproduction case. I think it can be understood just by inspecting the code so I'm going to describe it while I have it in mind.\nSetting serialized_rollback = True on a TransactionTestCase triggers \u0432\u0402\u2039rollback emulation. In practice, for each database:\nBaseDatabaseCreation.create_test_db calls connection._test_serialized_contents = connection.creation.serialize_db_to_string()\nTransactionTestCase._fixture_setup calls connection.creation.deserialize_db_from_string(connection._test_serialized_contents)\n(The actual code isn't written that way; it's equivalent but the symmetry is less visible.)\nserialize_db_to_string orders models with serializers.sort_dependencies and serializes them. The sorting algorithm only deals with natural keys. It doesn't do anything to order models referenced by foreign keys before models containing said foreign keys. That wouldn't be possible in general because circular foreign keys are allowed.\ndeserialize_db_from_string deserializes and saves models without wrapping in a transaction. This can result in integrity errors if an instance containing a foreign key is saved before the instance it references. I'm suggesting to fix it as follows:\ndiff --git a/django/db/backends/base/creation.py b/django/db/backends/base/creation.py\nindex bca8376..7bed2be 100644\n--- a/django/db/backends/base/creation.py\n+++ b/django/db/backends/base/creation.py\n@@ -4,7 +4,7 @@ import time\n from django.apps import apps\n from django.conf import settings\n from django.core import serializers\n-from django.db import router\n+from django.db import router, transaction\n from django.utils.six import StringIO\n from django.utils.six.moves import input\n \n@@ -128,8 +128,9 @@ class BaseDatabaseCreation(object):\n\t\t the serialize_db_to_string method.\n\t\t \"\"\"\n\t\t data = StringIO(data)\n-\t\tfor obj..."
+    ],
+    "expected_solution": "django/db/backends/base/creation.py",
+    "oracle_spec": {
+      "type": "string_contains",
+      "must_contain": [
+        "django/db/backends/base/creation.py"
+      ]
+    }
+  },
+  {
+    "id": "django__django-12470",
+    "category": "SWE-bench",
+    "query": "Given the following GitHub issue, identify the exact file paths that need to be modified to fix the issue. Print them one per line.\n\nIssue: Inherited model doesn't correctly order by \"-pk\" when specified on Parent.Meta.ordering\nDescription\n\t\nGiven the following model definition:\nfrom django.db import models\nclass Parent(models.Model):\n\tclass Meta:\n\t\tordering = [\"-pk\"]\nclass Child(Parent):\n\tpass\nQuerying the Child class results in the following:\n>>> print(Child.objects.all().query)\nSELECT \"myapp_parent\".\"id\", \"myapp_child\".\"parent_ptr_id\" FROM \"myapp_child\" INNER JOIN \"myapp_parent\" ON (\"myapp_child\".\"parent_ptr_id\" = \"myapp_parent\".\"id\") ORDER BY \"myapp_parent\".\"id\" ASC\nThe query is ordered ASC but I expect the order to be DESC.\n...",
+    "paraphrases": [
+      "Which files must be edited to resolve this bug report?\n\nReport: Inherited model doesn't correctly order by \"-pk\" when specified on Parent.Meta.ordering\nDescription\n\t\nGiven the following model definition:\nfrom django.db import models\nclass Parent(models.Model):\n\tclass Meta:\n\t\tordering = [\"-pk\"]\nclass Child(Parent):\n\tpass\nQuerying the Child class results in the following:\n>>> print(Child.objects.all().query)\nSELECT \"myapp_parent\".\"id\", \"myapp_child\".\"parent_ptr_id\" FROM \"myapp_child\" INNER JOIN \"myapp_parent\" ON (\"myapp_child\".\"parent_ptr_id\" = \"myapp_parent\".\"id\") ORDER BY \"myapp_parent\".\"id\" ASC\nThe query is ordered ASC but I expect the order to be DESC.\n..."
+    ],
+    "expected_solution": "django/db/models/sql/compiler.py",
+    "oracle_spec": {
+      "type": "string_contains",
+      "must_contain": [
+        "django/db/models/sql/compiler.py"
+      ]
+    }
+  },
+  {
+    "id": "django__django-12497",
+    "category": "SWE-bench",
+    "query": "Given the following GitHub issue, identify the exact file paths that need to be modified to fix the issue. Print them one per line.\n\nIssue: Wrong hint about recursive relationship.\nDescription\n\t \n\t\t(last modified by Matheus Cunha Motta)\n\t \nWhen there's more than 2 ForeignKeys in an intermediary model of a m2m field and no through_fields have been set, Django will show an error with the following hint:\nhint=(\n\t'If you want to create a recursive relationship, '\n\t'use ForeignKey(\"%s\", symmetrical=False, through=\"%s\").'\nBut 'symmetrical' and 'through' are m2m keyword arguments, not ForeignKey.\nThis was probably a small mistake where the developer thought ManyToManyField but typed ForeignKey instead. And the symmetrical=False is an outdated requirement to recursive relationships with intermediary model to self, not required since 3.0. I'll provide a PR with a proposed correction shortly after.\nEdit: fixed description.\n...",
+    "paraphrases": [
+      "Which files must be edited to resolve this bug report?\n\nReport: Wrong hint about recursive relationship.\nDescription\n\t \n\t\t(last modified by Matheus Cunha Motta)\n\t \nWhen there's more than 2 ForeignKeys in an intermediary model of a m2m field and no through_fields have been set, Django will show an error with the following hint:\nhint=(\n\t'If you want to create a recursive relationship, '\n\t'use ForeignKey(\"%s\", symmetrical=False, through=\"%s\").'\nBut 'symmetrical' and 'through' are m2m keyword arguments, not ForeignKey.\nThis was probably a small mistake where the developer thought ManyToManyField but typed ForeignKey instead. And the symmetrical=False is an outdated requirement to recursive relationships with intermediary model to self, not required since 3.0. I'll provide a PR with a proposed correction shortly after.\nEdit: fixed description.\n..."
+    ],
+    "expected_solution": "django/db/models/fields/related.py",
+    "oracle_spec": {
+      "type": "string_contains",
+      "must_contain": [
+        "django/db/models/fields/related.py"
+      ]
+    }
+  },
+  {
+    "id": "django__django-12589",
+    "category": "SWE-bench",
+    "query": "Given the following GitHub issue, identify the exact file paths that need to be modified to fix the issue. Print them one per line.\n\nIssue: Django 3.0: \"GROUP BY\" clauses error with tricky field annotation\nDescription\n\t\nLet's pretend that we have next model structure with next model's relations:\nclass A(models.Model):\n\tbs = models.ManyToManyField('B',\n\t\t\t\t\t\t\t\trelated_name=\"a\",\n\t\t\t\t\t\t\t\tthrough=\"AB\")\nclass B(models.Model):\n\tpass\nclass AB(models.Model):\n\ta = models.ForeignKey(A, on_delete=models.CASCADE, related_name=\"ab_a\")\n\tb = models.ForeignKey(B, on_delete=models.CASCADE, related_name=\"ab_b\")\n\tstatus = models.IntegerField()\nclass C(models.Model):\n\ta = models.ForeignKey(\n\t\tA,\n\t\tnull=True,\n\t\tblank=True,\n\t\ton_delete=models.SET_NULL,\n\t\trelated_name=\"c\",\n\t\tverbose_name=_(\"a\")\n\t)\n\tstatus = models.IntegerField()\nLet's try to evaluate next query\nab_query = AB.objects.filter(a=OuterRef(\"pk\"), b=1)\nfilter_conditions = Q(pk=1) | Q(ab_a__b=1)\nquery = A.objects.\\\n\tfilter(filter_conditions).\\\n\tannotate(\n\t\tstatus=Subquery(ab_query.values(\"status\")),\n\t\tc_count=Count(\"c\"),\n)\nanswer = query.values(\"status\").annotate(total_count=Count(\"status\"))\nprint(answer.query)\nprint(answer)\nOn Django 3.0.4 we have an error\ndjango.db.utils.ProgrammingError: column reference \"status\" is ambiguous\nand query is next:\nSELECT (SELECT U0.\"status\" FROM \"test_app_ab\" U0 WHERE (U0.\"a_id\" = \"test_app_a\".\"id\" AND U0.\"b_id\" = 1)) AS \"status\", COUNT((SELECT U0.\"status\" FROM \"test_app_ab\" U0 WHERE (U0.\"a_id\" = \"test_app_a\".\"id\" AND U0.\"b_id\" = 1))) AS \"total_count\" FROM \"test_app_a\" LEFT OUTER JOIN \"test_app_ab\" ON (\"test_app_a\".\"id\" = \"test_app_ab\".\"a_id\") LEFT OUTER JOIN \"test_app_c\" ON (\"test_app_a\".\"id\" = \"test_app_c\".\"a_id\") WHERE (\"test_app_a\".\"id\" = 1 OR \"test_app_ab\".\"b_id\" = 1) GROUP BY \"status\"\nHowever, Django 2.2.11 processed this query properly with the next query:\nSELECT (SELECT U0.\"status\" FROM \"test_app_ab\" U0 WHERE (U0.\"a_id\" = (\"test_app_a\".\"id\") AND U0.\"b_id\" = 1)) AS \"status\", COUNT((SELECT U0.\"status\" FROM \"test_app_ab\" U0 WHERE (U0.\"a_id\" = (\"test_app_a\".\"id\") AND U0.\"b_id\" = 1))) AS \"total_count\" FROM \"test_app_a\" LEFT OUTER ...",
+    "paraphrases": [
+      "Which files must be edited to resolve this bug report?\n\nReport: Django 3.0: \"GROUP BY\" clauses error with tricky field annotation\nDescription\n\t\nLet's pretend that we have next model structure with next model's relations:\nclass A(models.Model):\n\tbs = models.ManyToManyField('B',\n\t\t\t\t\t\t\t\trelated_name=\"a\",\n\t\t\t\t\t\t\t\tthrough=\"AB\")\nclass B(models.Model):\n\tpass\nclass AB(models.Model):\n\ta = models.ForeignKey(A, on_delete=models.CASCADE, related_name=\"ab_a\")\n\tb = models.ForeignKey(B, on_delete=models.CASCADE, related_name=\"ab_b\")\n\tstatus = models.IntegerField()\nclass C(models.Model):\n\ta = models.ForeignKey(\n\t\tA,\n\t\tnull=True,\n\t\tblank=True,\n\t\ton_delete=models.SET_NULL,\n\t\trelated_name=\"c\",\n\t\tverbose_name=_(\"a\")\n\t)\n\tstatus = models.IntegerField()\nLet's try to evaluate next query\nab_query = AB.objects.filter(a=OuterRef(\"pk\"), b=1)\nfilter_conditions = Q(pk=1) | Q(ab_a__b=1)\nquery = A.objects.\\\n\tfilter(filter_conditions).\\\n\tannotate(\n\t\tstatus=Subquery(ab_query.values(\"status\")),\n\t\tc_count=Count(\"c\"),\n)\nanswer = query.values(\"status\").annotate(total_count=Count(\"status\"))\nprint(answer.query)\nprint(answer)\nOn Django 3.0.4 we have an error\ndjango.db.utils.ProgrammingError: column reference \"status\" is ambiguous\nand query is next:\nSELECT (SELECT U0.\"status\" FROM \"test_app_ab\" U0 WHERE (U0.\"a_id\" = \"test_app_a\".\"id\" AND U0.\"b_id\" = 1)) AS \"status\", COUNT((SELECT U0.\"status\" FROM \"test_app_ab\" U0 WHERE (U0.\"a_id\" = \"test_app_a\".\"id\" AND U0.\"b_id\" = 1))) AS \"total_count\" FROM \"test_app_a\" LEFT OUTER JOIN \"test_app_ab\" ON (\"test_app_a\".\"id\" = \"test_app_ab\".\"a_id\") LEFT OUTER JOIN \"test_app_c\" ON (\"test_app_a\".\"id\" = \"test_app_c\".\"a_id\") WHERE (\"test_app_a\".\"id\" = 1 OR \"test_app_ab\".\"b_id\" = 1) GROUP BY \"status\"\nHowever, Django 2.2.11 processed this query properly with the next query:\nSELECT (SELECT U0.\"status\" FROM \"test_app_ab\" U0 WHERE (U0.\"a_id\" = (\"test_app_a\".\"id\") AND U0.\"b_id\" = 1)) AS \"status\", COUNT((SELECT U0.\"status\" FROM \"test_app_ab\" U0 WHERE (U0.\"a_id\" = (\"test_app_a\".\"id\") AND U0.\"b_id\" = 1))) AS \"total_count\" FROM \"test_app_a\" LEFT OUTER ..."
+    ],
+    "expected_solution": "django/db/models/sql/query.py",
+    "oracle_spec": {
+      "type": "string_contains",
+      "must_contain": [
+        "django/db/models/sql/query.py"
+      ]
+    }
+  },
+  {
+    "id": "django__django-12700",
+    "category": "SWE-bench",
+    "query": "Given the following GitHub issue, identify the exact file paths that need to be modified to fix the issue. Print them one per line.\n\nIssue: Settings are cleaned insufficiently.\nDescription\n\t\nPosting publicly after checking with the rest of the security team.\nI just ran into a case where django.views.debug.SafeExceptionReporterFilter.get_safe_settings() would return several un-cleansed values. Looking at cleanse_setting() I realized that we \u0432\u0402\u2039only take care of `dict`s but don't take other types of iterables into account but \u0432\u0402\u2039return them as-is.\nExample:\nIn my settings.py I have this:\nMY_SETTING = {\n\t\"foo\": \"value\",\n\t\"secret\": \"value\",\n\t\"token\": \"value\",\n\t\"something\": [\n\t\t{\"foo\": \"value\"},\n\t\t{\"secret\": \"value\"},\n\t\t{\"token\": \"value\"},\n\t],\n\t\"else\": [\n\t\t[\n\t\t\t{\"foo\": \"value\"},\n\t\t\t{\"secret\": \"value\"},\n\t\t\t{\"token\": \"value\"},\n\t\t],\n\t\t[\n\t\t\t{\"foo\": \"value\"},\n\t\t\t{\"secret\": \"value\"},\n\t\t\t{\"token\": \"value\"},\n\t\t],\n\t]\n}\nOn Django 3.0 and below:\n>>> import pprint\n>>> from django.views.debug import get_safe_settings\n>>> pprint.pprint(get_safe_settings()[\"MY_SETTING\"])\n{'else': [[{'foo': 'value'}, {'secret': 'value'}, {'token': 'value'}],\n\t\t [{'foo': 'value'}, {'secret': 'value'}, {'token': 'value'}]],\n 'foo': 'value',\n 'secret': '********************',\n 'something': [{'foo': 'value'}, {'secret': 'value'}, {'token': 'value'}],\n 'token': '********************'}\nOn Django 3.1 and up:\n>>> from django.views.debug import SafeExceptionReporterFilter\n>>> import pprint\n>>> pprint.pprint(SafeExceptionReporterFilter().get_safe_settings()[\"MY_SETTING\"])\n{'else': [[{'foo': 'value'}, {'secret': 'value'}, {'token': 'value'}],\n\t\t [{'foo': 'value'}, {'secret': 'value'}, {'token': 'value'}]],\n 'foo': 'value',\n 'secret': '********************',\n 'something': [{'foo': 'value'}, {'secret': 'value'}, {'token': 'value'}],\n 'token': '********************'}\n...",
+    "paraphrases": [
+      "Which files must be edited to resolve this bug report?\n\nReport: Settings are cleaned insufficiently.\nDescription\n\t\nPosting publicly after checking with the rest of the security team.\nI just ran into a case where django.views.debug.SafeExceptionReporterFilter.get_safe_settings() would return several un-cleansed values. Looking at cleanse_setting() I realized that we \u0432\u0402\u2039only take care of `dict`s but don't take other types of iterables into account but \u0432\u0402\u2039return them as-is.\nExample:\nIn my settings.py I have this:\nMY_SETTING = {\n\t\"foo\": \"value\",\n\t\"secret\": \"value\",\n\t\"token\": \"value\",\n\t\"something\": [\n\t\t{\"foo\": \"value\"},\n\t\t{\"secret\": \"value\"},\n\t\t{\"token\": \"value\"},\n\t],\n\t\"else\": [\n\t\t[\n\t\t\t{\"foo\": \"value\"},\n\t\t\t{\"secret\": \"value\"},\n\t\t\t{\"token\": \"value\"},\n\t\t],\n\t\t[\n\t\t\t{\"foo\": \"value\"},\n\t\t\t{\"secret\": \"value\"},\n\t\t\t{\"token\": \"value\"},\n\t\t],\n\t]\n}\nOn Django 3.0 and below:\n>>> import pprint\n>>> from django.views.debug import get_safe_settings\n>>> pprint.pprint(get_safe_settings()[\"MY_SETTING\"])\n{'else': [[{'foo': 'value'}, {'secret': 'value'}, {'token': 'value'}],\n\t\t [{'foo': 'value'}, {'secret': 'value'}, {'token': 'value'}]],\n 'foo': 'value',\n 'secret': '********************',\n 'something': [{'foo': 'value'}, {'secret': 'value'}, {'token': 'value'}],\n 'token': '********************'}\nOn Django 3.1 and up:\n>>> from django.views.debug import SafeExceptionReporterFilter\n>>> import pprint\n>>> pprint.pprint(SafeExceptionReporterFilter().get_safe_settings()[\"MY_SETTING\"])\n{'else': [[{'foo': 'value'}, {'secret': 'value'}, {'token': 'value'}],\n\t\t [{'foo': 'value'}, {'secret': 'value'}, {'token': 'value'}]],\n 'foo': 'value',\n 'secret': '********************',\n 'something': [{'foo': 'value'}, {'secret': 'value'}, {'token': 'value'}],\n 'token': '********************'}\n..."
+    ],
+    "expected_solution": "django/views/debug.py",
+    "oracle_spec": {
+      "type": "string_contains",
+      "must_contain": [
+        "django/views/debug.py"
+      ]
+    }
+  },
+  {
+    "id": "django__django-12708",
+    "category": "SWE-bench",
+    "query": "Given the following GitHub issue, identify the exact file paths that need to be modified to fix the issue. Print them one per line.\n\nIssue: Migration crashes deleting an index_together if there is a unique_together on the same fields\nDescription\n\t\nHappens with Django 1.11.10\nSteps to reproduce:\n1) Create models with 2 fields, add 2 same fields to unique_together and to index_together\n2) Delete index_together -> Fail\nIt will fail at django/db/backends/base/schema.py, line 378, in _delete_composed_index(), ValueError: Found wrong number (2) of constraints for as this one will find two constraints, the _uniq and the _idx one. No way to get out of this...\nThe worst in my case is that happened as I wanted to refactor my code to use the \"new\" (Dj 1.11) Options.indexes feature. I am actually not deleting the index, just the way it is declared in my code.\nI think there are 2 different points here:\n1) The deletion of index_together should be possible alone or made coherent (migrations side?) with unique_together\n2) Moving the declaration of an index should not result in an index re-creation\n...",
+    "paraphrases": [
+      "Which files must be edited to resolve this bug report?\n\nReport: Migration crashes deleting an index_together if there is a unique_together on the same fields\nDescription\n\t\nHappens with Django 1.11.10\nSteps to reproduce:\n1) Create models with 2 fields, add 2 same fields to unique_together and to index_together\n2) Delete index_together -> Fail\nIt will fail at django/db/backends/base/schema.py, line 378, in _delete_composed_index(), ValueError: Found wrong number (2) of constraints for as this one will find two constraints, the _uniq and the _idx one. No way to get out of this...\nThe worst in my case is that happened as I wanted to refactor my code to use the \"new\" (Dj 1.11) Options.indexes feature. I am actually not deleting the index, just the way it is declared in my code.\nI think there are 2 different points here:\n1) The deletion of index_together should be possible alone or made coherent (migrations side?) with unique_together\n2) Moving the declaration of an index should not result in an index re-creation\n..."
+    ],
+    "expected_solution": "django/db/backends/base/schema.py",
+    "oracle_spec": {
+      "type": "string_contains",
+      "must_contain": [
+        "django/db/backends/base/schema.py"
+      ]
+    }
+  },
+  {
+    "id": "django__django-12747",
+    "category": "SWE-bench",
+    "query": "Given the following GitHub issue, identify the exact file paths that need to be modified to fix the issue. Print them one per line.\n\nIssue: QuerySet.Delete - inconsistent result when zero objects deleted\nDescription\n\t\nThe result format of the QuerySet.Delete method is a tuple: (X, Y) \nX - is the total amount of deleted objects (including foreign key deleted objects)\nY - is a dictionary specifying counters of deleted objects for each specific model (the key is the _meta.label of the model and the value is counter of deleted objects of this model).\nExample: <class 'tuple'>: (2, {'my_app.FileAccess': 1, 'my_app.File': 1})\nWhen there are zero objects to delete in total - the result is inconsistent:\nFor models with foreign keys - the result will be: <class 'tuple'>: (0, {})\nFor \"simple\" models without foreign key - the result will be: <class 'tuple'>: (0, {'my_app.BlockLibrary': 0})\nI would expect there will be no difference between the two cases: Either both will have the empty dictionary OR both will have dictionary with model-label keys and zero value.\n...",
+    "paraphrases": [
+      "Which files must be edited to resolve this bug report?\n\nReport: QuerySet.Delete - inconsistent result when zero objects deleted\nDescription\n\t\nThe result format of the QuerySet.Delete method is a tuple: (X, Y) \nX - is the total amount of deleted objects (including foreign key deleted objects)\nY - is a dictionary specifying counters of deleted objects for each specific model (the key is the _meta.label of the model and the value is counter of deleted objects of this model).\nExample: <class 'tuple'>: (2, {'my_app.FileAccess': 1, 'my_app.File': 1})\nWhen there are zero objects to delete in total - the result is inconsistent:\nFor models with foreign keys - the result will be: <class 'tuple'>: (0, {})\nFor \"simple\" models without foreign key - the result will be: <class 'tuple'>: (0, {'my_app.BlockLibrary': 0})\nI would expect there will be no difference between the two cases: Either both will have the empty dictionary OR both will have dictionary with model-label keys and zero value.\n..."
+    ],
+    "expected_solution": "django/db/models/deletion.py",
+    "oracle_spec": {
+      "type": "string_contains",
+      "must_contain": [
+        "django/db/models/deletion.py"
+      ]
+    }
+  },
+  {
+    "id": "django__django-12856",
+    "category": "SWE-bench",
+    "query": "Given the following GitHub issue, identify the exact file paths that need to be modified to fix the issue. Print them one per line.\n\nIssue: Add check for fields of UniqueConstraints.\nDescription\n\t \n\t\t(last modified by Marnanel Thurman)\n\t \nWhen a model gains a UniqueConstraint, makemigrations doesn't check that the fields named therein actually exist.\nThis is in contrast to the older unique_together syntax, which raises models.E012 if the fields don't exist.\nIn the attached demonstration, you'll need to uncomment \"with_unique_together\" in settings.py in order to show that unique_together raises E012.\n...",
+    "paraphrases": [
+      "Which files must be edited to resolve this bug report?\n\nReport: Add check for fields of UniqueConstraints.\nDescription\n\t \n\t\t(last modified by Marnanel Thurman)\n\t \nWhen a model gains a UniqueConstraint, makemigrations doesn't check that the fields named therein actually exist.\nThis is in contrast to the older unique_together syntax, which raises models.E012 if the fields don't exist.\nIn the attached demonstration, you'll need to uncomment \"with_unique_together\" in settings.py in order to show that unique_together raises E012.\n..."
+    ],
+    "expected_solution": "django/db/models/base.py",
+    "oracle_spec": {
+      "type": "string_contains",
+      "must_contain": [
+        "django/db/models/base.py"
+      ]
+    }
+  },
+  {
+    "id": "django__django-12908",
+    "category": "SWE-bench",
+    "query": "Given the following GitHub issue, identify the exact file paths that need to be modified to fix the issue. Print them one per line.\n\nIssue: Union queryset should raise on distinct().\nDescription\n\t \n\t\t(last modified by Sielc Technologies)\n\t \nAfter using\n.annotate() on 2 different querysets\nand then .union()\n.distinct() will not affect the queryset\n\tdef setUp(self) -> None:\n\t\tuser = self.get_or_create_admin_user()\n\t\tSample.h.create(user, name=\"Sam1\")\n\t\tSample.h.create(user, name=\"Sam2 acid\")\n\t\tSample.h.create(user, name=\"Sam3\")\n\t\tSample.h.create(user, name=\"Sam4 acid\")\n\t\tSample.h.create(user, name=\"Dub\")\n\t\tSample.h.create(user, name=\"Dub\")\n\t\tSample.h.create(user, name=\"Dub\")\n\t\tself.user = user\n\tdef test_union_annotated_diff_distinct(self):\n\t\tqs = Sample.objects.filter(user=self.user)\n\t\tqs1 = qs.filter(name='Dub').annotate(rank=Value(0, IntegerField()))\n\t\tqs2 = qs.filter(name='Sam1').annotate(rank=Value(1, IntegerField()))\n\t\tqs = qs1.union(qs2)\n\t\tqs = qs.order_by('name').distinct('name') # THIS DISTINCT DOESN'T WORK\n\t\tself.assertEqual(qs.count(), 2)\nexpected to get wrapped union\n\tSELECT DISTINCT ON (siebox_sample.name) * FROM (SELECT ... UNION SELECT ...) AS siebox_sample\n...",
+    "paraphrases": [
+      "Which files must be edited to resolve this bug report?\n\nReport: Union queryset should raise on distinct().\nDescription\n\t \n\t\t(last modified by Sielc Technologies)\n\t \nAfter using\n.annotate() on 2 different querysets\nand then .union()\n.distinct() will not affect the queryset\n\tdef setUp(self) -> None:\n\t\tuser = self.get_or_create_admin_user()\n\t\tSample.h.create(user, name=\"Sam1\")\n\t\tSample.h.create(user, name=\"Sam2 acid\")\n\t\tSample.h.create(user, name=\"Sam3\")\n\t\tSample.h.create(user, name=\"Sam4 acid\")\n\t\tSample.h.create(user, name=\"Dub\")\n\t\tSample.h.create(user, name=\"Dub\")\n\t\tSample.h.create(user, name=\"Dub\")\n\t\tself.user = user\n\tdef test_union_annotated_diff_distinct(self):\n\t\tqs = Sample.objects.filter(user=self.user)\n\t\tqs1 = qs.filter(name='Dub').annotate(rank=Value(0, IntegerField()))\n\t\tqs2 = qs.filter(name='Sam1').annotate(rank=Value(1, IntegerField()))\n\t\tqs = qs1.union(qs2)\n\t\tqs = qs.order_by('name').distinct('name') # THIS DISTINCT DOESN'T WORK\n\t\tself.assertEqual(qs.count(), 2)\nexpected to get wrapped union\n\tSELECT DISTINCT ON (siebox_sample.name) * FROM (SELECT ... UNION SELECT ...) AS siebox_sample\n..."
+    ],
+    "expected_solution": "django/db/models/query.py",
+    "oracle_spec": {
+      "type": "string_contains",
+      "must_contain": [
+        "django/db/models/query.py"
+      ]
+    }
+  },
+  {
+    "id": "django__django-12915",
+    "category": "SWE-bench",
+    "query": "Given the following GitHub issue, identify the exact file paths that need to be modified to fix the issue. Print them one per line.\n\nIssue: Add get_response_async for ASGIStaticFilesHandler\nDescription\n\t\nIt looks like the StaticFilesHandlerMixin is missing the the async response function.\nWithout this, when trying to use the ASGIStaticFilesHandler, this is the traceback:\nException inside application: 'NoneType' object is not callable\nTraceback (most recent call last):\n File \".../lib/python3.7/site-packages/daphne/cli.py\", line 30, in asgi\n\tawait self.app(scope, receive, send)\n File \".../src/django/django/contrib/staticfiles/handlers.py\", line 86, in __call__\n\treturn await super().__call__(scope, receive, send)\n File \".../src/django/django/core/handlers/asgi.py\", line 161, in __call__\n\tresponse = await self.get_response_async(request)\n File \".../src/django/django/core/handlers/base.py\", line 148, in get_response_async\n\tresponse = await self._middleware_chain(request)\nTypeError: 'NoneType' object is not callable\n...",
+    "paraphrases": [
+      "Which files must be edited to resolve this bug report?\n\nReport: Add get_response_async for ASGIStaticFilesHandler\nDescription\n\t\nIt looks like the StaticFilesHandlerMixin is missing the the async response function.\nWithout this, when trying to use the ASGIStaticFilesHandler, this is the traceback:\nException inside application: 'NoneType' object is not callable\nTraceback (most recent call last):\n File \".../lib/python3.7/site-packages/daphne/cli.py\", line 30, in asgi\n\tawait self.app(scope, receive, send)\n File \".../src/django/django/contrib/staticfiles/handlers.py\", line 86, in __call__\n\treturn await super().__call__(scope, receive, send)\n File \".../src/django/django/core/handlers/asgi.py\", line 161, in __call__\n\tresponse = await self.get_response_async(request)\n File \".../src/django/django/core/handlers/base.py\", line 148, in get_response_async\n\tresponse = await self._middleware_chain(request)\nTypeError: 'NoneType' object is not callable\n..."
+    ],
+    "expected_solution": "django/contrib/staticfiles/handlers.py",
+    "oracle_spec": {
+      "type": "string_contains",
+      "must_contain": [
+        "django/contrib/staticfiles/handlers.py"
+      ]
+    }
+  },
+  {
+    "id": "django__django-12983",
+    "category": "SWE-bench",
+    "query": "Given the following GitHub issue, identify the exact file paths that need to be modified to fix the issue. Print them one per line.\n\nIssue: Make django.utils.text.slugify() strip dashes and underscores\nDescription\n\t \n\t\t(last modified by Elinaldo do Nascimento Monteiro)\n\t \nBug generation slug\nExample:\nfrom django.utils import text\ntext.slugify(\"___This is a test ---\")\noutput: ___this-is-a-test-\nImprovement after correction\nfrom django.utils import text\ntext.slugify(\"___This is a test ---\")\noutput: this-is-a-test\n\u0432\u0402\u2039PR\n...",
+    "paraphrases": [
+      "Which files must be edited to resolve this bug report?\n\nReport: Make django.utils.text.slugify() strip dashes and underscores\nDescription\n\t \n\t\t(last modified by Elinaldo do Nascimento Monteiro)\n\t \nBug generation slug\nExample:\nfrom django.utils import text\ntext.slugify(\"___This is a test ---\")\noutput: ___this-is-a-test-\nImprovement after correction\nfrom django.utils import text\ntext.slugify(\"___This is a test ---\")\noutput: this-is-a-test\n\u0432\u0402\u2039PR\n..."
+    ],
+    "expected_solution": "django/utils/text.py",
+    "oracle_spec": {
+      "type": "string_contains",
+      "must_contain": [
+        "django/utils/text.py"
+      ]
+    }
+  },
+  {
+    "id": "django__django-13028",
+    "category": "SWE-bench",
+    "query": "Given the following GitHub issue, identify the exact file paths that need to be modified to fix the issue. Print them one per line.\n\nIssue: Queryset raises NotSupportedError when RHS has filterable=False attribute.\nDescription\n\t \n\t\t(last modified by Nicolas Baccelli)\n\t \nI'm migrating my app to django 3.0.7 and I hit a strange behavior using a model class with a field labeled filterable\nclass ProductMetaDataType(models.Model):\n\tlabel = models.CharField(max_length=255, unique=True, blank=False, null=False)\n\tfilterable = models.BooleanField(default=False, verbose_name=_(\"filterable\"))\n\tclass Meta:\n\t\tapp_label = \"adminpricing\"\n\t\tverbose_name = _(\"product meta data type\")\n\t\tverbose_name_plural = _(\"product meta data types\")\n\tdef __str__(self):\n\t\treturn self.label\nclass ProductMetaData(models.Model):\n\tid = models.BigAutoField(primary_key=True)\n\tproduct = models.ForeignKey(\n\t\tProduit, null=False, blank=False, on_delete=models.CASCADE\n\t)\n\tvalue = models.TextField(null=False, blank=False)\n\tmarketplace = models.ForeignKey(\n\t\tPlateforme, null=False, blank=False, on_delete=models.CASCADE\n\t)\n\tdate_created = models.DateTimeField(null=True, default=timezone.now)\n\tmetadata_type = models.ForeignKey(\n\t\tProductMetaDataType, null=False, blank=False, on_delete=models.CASCADE\n\t)\n\tclass Meta:\n\t\tapp_label = \"adminpricing\"\n\t\tverbose_name = _(\"product meta data\")\n\t\tverbose_name_plural = _(\"product meta datas\")\nError happened when filtering ProductMetaData with a metadata_type :\nProductMetaData.objects.filter(value=\"Dark Vador\", metadata_type=self.brand_metadata)\nError traceback :\nTraceback (most recent call last):\n File \"/backoffice/backoffice/adminpricing/tests/test_pw.py\", line 481, in test_checkpolicywarning_by_fields\n\tfor p in ProductMetaData.objects.filter(\n File \"/usr/local/lib/python3.8/site-packages/django/db/models/manager.py\", line 82, in manager_method\n\treturn getattr(self.get_queryset(), name)(*args, **kwargs)\n File \"/usr/local/lib/python3.8/site-packages/django/db/models/query.py\", line 904, in filter\n\treturn self._filter_or_exclude(False, *args, **kwargs)\n File \"/usr/local/lib/python3.8/site-packages/django/db/mode...",
+    "paraphrases": [
+      "Which files must be edited to resolve this bug report?\n\nReport: Queryset raises NotSupportedError when RHS has filterable=False attribute.\nDescription\n\t \n\t\t(last modified by Nicolas Baccelli)\n\t \nI'm migrating my app to django 3.0.7 and I hit a strange behavior using a model class with a field labeled filterable\nclass ProductMetaDataType(models.Model):\n\tlabel = models.CharField(max_length=255, unique=True, blank=False, null=False)\n\tfilterable = models.BooleanField(default=False, verbose_name=_(\"filterable\"))\n\tclass Meta:\n\t\tapp_label = \"adminpricing\"\n\t\tverbose_name = _(\"product meta data type\")\n\t\tverbose_name_plural = _(\"product meta data types\")\n\tdef __str__(self):\n\t\treturn self.label\nclass ProductMetaData(models.Model):\n\tid = models.BigAutoField(primary_key=True)\n\tproduct = models.ForeignKey(\n\t\tProduit, null=False, blank=False, on_delete=models.CASCADE\n\t)\n\tvalue = models.TextField(null=False, blank=False)\n\tmarketplace = models.ForeignKey(\n\t\tPlateforme, null=False, blank=False, on_delete=models.CASCADE\n\t)\n\tdate_created = models.DateTimeField(null=True, default=timezone.now)\n\tmetadata_type = models.ForeignKey(\n\t\tProductMetaDataType, null=False, blank=False, on_delete=models.CASCADE\n\t)\n\tclass Meta:\n\t\tapp_label = \"adminpricing\"\n\t\tverbose_name = _(\"product meta data\")\n\t\tverbose_name_plural = _(\"product meta datas\")\nError happened when filtering ProductMetaData with a metadata_type :\nProductMetaData.objects.filter(value=\"Dark Vador\", metadata_type=self.brand_metadata)\nError traceback :\nTraceback (most recent call last):\n File \"/backoffice/backoffice/adminpricing/tests/test_pw.py\", line 481, in test_checkpolicywarning_by_fields\n\tfor p in ProductMetaData.objects.filter(\n File \"/usr/local/lib/python3.8/site-packages/django/db/models/manager.py\", line 82, in manager_method\n\treturn getattr(self.get_queryset(), name)(*args, **kwargs)\n File \"/usr/local/lib/python3.8/site-packages/django/db/models/query.py\", line 904, in filter\n\treturn self._filter_or_exclude(False, *args, **kwargs)\n File \"/usr/local/lib/python3.8/site-packages/django/db/mode..."
+    ],
+    "expected_solution": "django/db/models/sql/query.py",
+    "oracle_spec": {
+      "type": "string_contains",
+      "must_contain": [
+        "django/db/models/sql/query.py"
+      ]
+    }
+  },
+  {
+    "id": "django__django-13033",
+    "category": "SWE-bench",
+    "query": "Given the following GitHub issue, identify the exact file paths that need to be modified to fix the issue. Print them one per line.\n\nIssue: Self referencing foreign key doesn't correctly order by a relation \"_id\" field.\nDescription\n\t\nInitially discovered on 2.2.10 but verified still happens on 3.0.6. Given the following models:\nclass OneModel(models.Model):\n\tclass Meta:\n\t\tordering = (\"-id\",)\n\tid = models.BigAutoField(primary_key=True)\n\troot = models.ForeignKey(\"OneModel\", on_delete=models.CASCADE, null=True)\n\toneval = models.BigIntegerField(null=True)\nclass TwoModel(models.Model):\n\tid = models.BigAutoField(primary_key=True)\n\trecord = models.ForeignKey(OneModel, on_delete=models.CASCADE)\n\ttwoval = models.BigIntegerField(null=True)\nThe following queryset gives unexpected results and appears to be an incorrect SQL query:\nqs = TwoModel.objects.filter(record__oneval__in=[1,2,3])\nqs = qs.order_by(\"record__root_id\")\nprint(qs.query)\nSELECT \"orion_twomodel\".\"id\", \"orion_twomodel\".\"record_id\", \"orion_twomodel\".\"twoval\" FROM \"orion_twomodel\" INNER JOIN \"orion_onemodel\" ON (\"orion_twomodel\".\"record_id\" = \"orion_onemodel\".\"id\") LEFT OUTER JOIN \"orion_onemodel\" T3 ON (\"orion_onemodel\".\"root_id\" = T3.\"id\") WHERE \"orion_onemodel\".\"oneval\" IN (1, 2, 3) ORDER BY T3.\"id\" DESC\nThe query has an unexpected DESCENDING sort. That appears to come from the default sort order on the OneModel class, but I would expect the order_by() to take prececence. The the query has two JOINS, which is unnecessary. It appears that, since OneModel.root is a foreign key to itself, that is causing it to do the unnecessary extra join. In fact, testing a model where root is a foreign key to a third model doesn't show the problem behavior.\nNote also that the queryset with order_by(\"record__root\") gives the exact same SQL.\nThis queryset gives correct results and what looks like a pretty optimal SQL:\nqs = TwoModel.objects.filter(record__oneval__in=[1,2,3])\nqs = qs.order_by(\"record__root__id\")\nprint(qs.query)\nSELECT \"orion_twomodel\".\"id\", \"orion_twomodel\".\"record_id\", \"orion_twomodel\".\"twoval\" FROM \"orion_twomodel\" INNER JOIN \"orion_onemodel\" ON (\"orio...",
+    "paraphrases": [
+      "Which files must be edited to resolve this bug report?\n\nReport: Self referencing foreign key doesn't correctly order by a relation \"_id\" field.\nDescription\n\t\nInitially discovered on 2.2.10 but verified still happens on 3.0.6. Given the following models:\nclass OneModel(models.Model):\n\tclass Meta:\n\t\tordering = (\"-id\",)\n\tid = models.BigAutoField(primary_key=True)\n\troot = models.ForeignKey(\"OneModel\", on_delete=models.CASCADE, null=True)\n\toneval = models.BigIntegerField(null=True)\nclass TwoModel(models.Model):\n\tid = models.BigAutoField(primary_key=True)\n\trecord = models.ForeignKey(OneModel, on_delete=models.CASCADE)\n\ttwoval = models.BigIntegerField(null=True)\nThe following queryset gives unexpected results and appears to be an incorrect SQL query:\nqs = TwoModel.objects.filter(record__oneval__in=[1,2,3])\nqs = qs.order_by(\"record__root_id\")\nprint(qs.query)\nSELECT \"orion_twomodel\".\"id\", \"orion_twomodel\".\"record_id\", \"orion_twomodel\".\"twoval\" FROM \"orion_twomodel\" INNER JOIN \"orion_onemodel\" ON (\"orion_twomodel\".\"record_id\" = \"orion_onemodel\".\"id\") LEFT OUTER JOIN \"orion_onemodel\" T3 ON (\"orion_onemodel\".\"root_id\" = T3.\"id\") WHERE \"orion_onemodel\".\"oneval\" IN (1, 2, 3) ORDER BY T3.\"id\" DESC\nThe query has an unexpected DESCENDING sort. That appears to come from the default sort order on the OneModel class, but I would expect the order_by() to take prececence. The the query has two JOINS, which is unnecessary. It appears that, since OneModel.root is a foreign key to itself, that is causing it to do the unnecessary extra join. In fact, testing a model where root is a foreign key to a third model doesn't show the problem behavior.\nNote also that the queryset with order_by(\"record__root\") gives the exact same SQL.\nThis queryset gives correct results and what looks like a pretty optimal SQL:\nqs = TwoModel.objects.filter(record__oneval__in=[1,2,3])\nqs = qs.order_by(\"record__root__id\")\nprint(qs.query)\nSELECT \"orion_twomodel\".\"id\", \"orion_twomodel\".\"record_id\", \"orion_twomodel\".\"twoval\" FROM \"orion_twomodel\" INNER JOIN \"orion_onemodel\" ON (\"orio..."
+    ],
+    "expected_solution": "django/db/models/sql/compiler.py",
+    "oracle_spec": {
+      "type": "string_contains",
+      "must_contain": [
+        "django/db/models/sql/compiler.py"
+      ]
+    }
+  },
+  {
+    "id": "django__django-13158",
+    "category": "SWE-bench",
+    "query": "Given the following GitHub issue, identify the exact file paths that need to be modified to fix the issue. Print them one per line.\n\nIssue: QuerySet.none() on combined queries returns all results.\nDescription\n\t\nI came across this issue on Stack Overflow. I'm not 100% sure it's a bug, but it does seem strange. With this code (excuse the bizarre example filtering):\nclass Publication(models.Model):\n\tpass\nclass Article(models.Model):\n\tpublications = models.ManyToManyField(to=Publication, blank=True, null=True)\nclass ArticleForm(forms.ModelForm):\n\tpublications = forms.ModelMultipleChoiceField(\n\t\tPublication.objects.filter(id__lt=2) | Publication.objects.filter(id__gt=5),\n\t\trequired=False,\n\t)\n\tclass Meta:\n\t\tmodel = Article\n\t\tfields = [\"publications\"]\nclass ArticleAdmin(admin.ModelAdmin):\n\tform = ArticleForm\nThis works well. However, changing the ModelMultipleChoiceField queryset to use union() breaks things.\npublications = forms.ModelMultipleChoiceField(\n\tPublication.objects.filter(id__lt=2).union(\n\t\tPublication.objects.filter(id__gt=5)\n\t),\n\trequired=False,\n)\nThe form correctly shows only the matching objects. However, if you submit this form while empty (i.e. you didn't select any publications), ALL objects matching the queryset will be added. Using the OR query, NO objects are added, as I'd expect.\n...",
+    "paraphrases": [
+      "Which files must be edited to resolve this bug report?\n\nReport: QuerySet.none() on combined queries returns all results.\nDescription\n\t\nI came across this issue on Stack Overflow. I'm not 100% sure it's a bug, but it does seem strange. With this code (excuse the bizarre example filtering):\nclass Publication(models.Model):\n\tpass\nclass Article(models.Model):\n\tpublications = models.ManyToManyField(to=Publication, blank=True, null=True)\nclass ArticleForm(forms.ModelForm):\n\tpublications = forms.ModelMultipleChoiceField(\n\t\tPublication.objects.filter(id__lt=2) | Publication.objects.filter(id__gt=5),\n\t\trequired=False,\n\t)\n\tclass Meta:\n\t\tmodel = Article\n\t\tfields = [\"publications\"]\nclass ArticleAdmin(admin.ModelAdmin):\n\tform = ArticleForm\nThis works well. However, changing the ModelMultipleChoiceField queryset to use union() breaks things.\npublications = forms.ModelMultipleChoiceField(\n\tPublication.objects.filter(id__lt=2).union(\n\t\tPublication.objects.filter(id__gt=5)\n\t),\n\trequired=False,\n)\nThe form correctly shows only the matching objects. However, if you submit this form while empty (i.e. you didn't select any publications), ALL objects matching the queryset will be added. Using the OR query, NO objects are added, as I'd expect.\n..."
+    ],
+    "expected_solution": "django/db/models/sql/query.py",
+    "oracle_spec": {
+      "type": "string_contains",
+      "must_contain": [
+        "django/db/models/sql/query.py"
+      ]
+    }
+  },
+  {
+    "id": "django__django-13220",
+    "category": "SWE-bench",
+    "query": "Given the following GitHub issue, identify the exact file paths that need to be modified to fix the issue. Print them one per line.\n\nIssue: Allow ValidationErrors to equal each other when created identically\nDescription\n\t \n\t\t(last modified by kamni)\n\t \nCurrently ValidationErrors (django.core.exceptions.ValidationError) that have identical messages don't equal each other, which is counter-intuitive, and can make certain kinds of testing more complicated. Please add an __eq__ method that allows two ValidationErrors to be compared. \nIdeally, this would be more than just a simple self.messages == other.messages. It would be most helpful if the comparison were independent of the order in which errors were raised in a field or in non_field_errors.\n...",
+    "paraphrases": [
+      "Which files must be edited to resolve this bug report?\n\nReport: Allow ValidationErrors to equal each other when created identically\nDescription\n\t \n\t\t(last modified by kamni)\n\t \nCurrently ValidationErrors (django.core.exceptions.ValidationError) that have identical messages don't equal each other, which is counter-intuitive, and can make certain kinds of testing more complicated. Please add an __eq__ method that allows two ValidationErrors to be compared. \nIdeally, this would be more than just a simple self.messages == other.messages. It would be most helpful if the comparison were independent of the order in which errors were raised in a field or in non_field_errors.\n..."
+    ],
+    "expected_solution": "django/core/exceptions.py",
+    "oracle_spec": {
+      "type": "string_contains",
+      "must_contain": [
+        "django/core/exceptions.py"
+      ]
+    }
+  }
+]

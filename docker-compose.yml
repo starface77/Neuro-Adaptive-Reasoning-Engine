@@ -1,0 +1,44 @@
+version: '3.8'
+
+services:
+  vare-swebench:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: vare-swebench-submission
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+    volumes:
+      # Mount output directories to host
+      - ./predictions.json:/app/predictions.json
+      - ./predictions_stats.json:/app/predictions_stats.json
+      - ./logs_submission:/app/logs_submission
+      - ./memory_swe_submission:/app/memory_swe_submission
+    command: >
+      python generate_predictions.py
+      --tasks benchmarks/swebench_real.json
+      --persist-dir memory_swe_submission
+      --output predictions.json
+      --log-dir logs_submission
+    restart: "no"
+    mem_limit: 8g
+    cpus: 4
+
+  # Optional: Run a single task for testing
+  vare-test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: vare-swebench-test
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+    volumes:
+      - ./test_output:/app/test_output
+    command: >
+      python -c "
+      from nare.agent import NAREProductionAgent;
+      from nare.config import DEFAULT_CONFIG;
+      agent = NAREProductionAgent(config=DEFAULT_CONFIG, embedding_dim=3072);
+      print('[OK] VARE initialized successfully')
+      "
+    restart: "no"

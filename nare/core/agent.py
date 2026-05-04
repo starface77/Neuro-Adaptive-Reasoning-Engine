@@ -33,9 +33,14 @@ class NAREProductionAgent:
             persist_dir=persist_dir,
             embedding_dim=embedding_dim,
         )
+
+        # CRITICAL: Load existing memory from disk
+        self.memory.load()
+        logging.info(f"[Agent] Loaded memory: {len(self.memory.episodes)} episodes, {len(self.memory.compiled_skills)} skills")
+
         self.critic = Critic()
         self.metrics = MetricsTracker(persist_dir=self.memory.persist_dir)
-        
+
         # Core components
         self.router = ReasoningRouter(
             memory=self.memory,
@@ -71,19 +76,55 @@ class NAREProductionAgent:
         oracle: Optional[Callable] = None,
         expected_hint: Optional[str] = None,
         oracle_spec: Optional[Dict[str, Any]] = None,
+        file_provider: Optional[Callable] = None,
+        thinking_display=None,
+        working_dir: str = ".",
+        chat_history: Optional[str] = None,
+        repo_map: Optional[str] = None,
+        intent: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Solve a query by delegating to the Router."""
-        
+        """Solve a query by delegating to the Router.
+
+        Parameters
+        ----------
+        file_provider
+            Optional ``(path) -> Optional[str]`` callback. When the LLM
+            responds with ``CANNOT_FIX: need file <path>``, the Verified
+            Synthesis loop calls this to fetch the file and inject it
+            into the next attempt's context.  This is the minimal
+            agentic capability: the system requests missing context
+            without a full agent loop.
+        working_dir
+            Working directory for file operations (default: current directory)
+        chat_history
+            String of previous conversation turns to provide context
+        repo_map
+            String representation of repository directory structure
+        """
+
         # Build functional oracle from spec if needed
         if oracle is None and oracle_spec is not None:
             from .oracle import build_oracle_from_spec
             oracle = build_oracle_from_spec(oracle_spec)
 
         # Route query through the 4-tier pipeline
-        result = self.router.route(query, oracle, expected_hint)
+        result = self.router.route(
+            query=query,
+            oracle=oracle,
+            expected_hint=expected_hint,
+            file_provider=file_provider,
+            thinking_display=thinking_display,
+            working_dir=working_dir,
+            chat_history=chat_history,
+            repo_map=repo_map,
+            intent=intent
+        )
         
-        # Post-solve actions
-        self._after_solve(query, result)
+        # Post-solve actions (best-effort — never crash the user's answer)
+        try:
+            self._after_solve(query, result)
+        except Exception as e:
+            logging.warning(f"[Agent] Post-solve error (non-fatal): {e}")
 
         return result
 

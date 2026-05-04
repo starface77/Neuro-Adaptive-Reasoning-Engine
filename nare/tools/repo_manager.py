@@ -51,10 +51,59 @@ class RepoManager:
         branch_name = f"swe-bench-{task_id}"
         self._create_branch(repo_path, branch_name)
 
+        # Install dependencies for testing
+        self._install_dependencies(repo_path, repo_name)
+
         self.active_tasks[task_id] = str(repo_path)
         logging.info(f"[RepoManager] Task {task_id} ready at {repo_path}")
 
         return str(repo_path)
+
+    def _install_dependencies(self, repo_path: Path, repo_name: str):
+        """Install test dependencies for repository.
+
+        Args:
+            repo_path: Path to repository
+            repo_name: Repository name (e.g., "astropy/astropy")
+        """
+        # CRITICAL: Always install dependencies for each task
+        # Don't use marker file - each task may need different commit's dependencies
+        logging.info(f"[RepoManager] Installing dependencies for {repo_name}")
+
+        try:
+            # First, install the project itself in editable mode
+            # This ensures all project dependencies are available
+            install_result = subprocess.run(
+                ["pip", "install", "-q", "-e", "."],
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                timeout=300
+            )
+
+            if install_result.returncode == 0:
+                logging.info(f"[RepoManager] Project installed successfully")
+            else:
+                logging.warning(f"[RepoManager] Failed to install project: {install_result.stderr[:200]}")
+
+            # Then install common test dependencies
+            common_deps = ["pytest", "pytest-cov", "hypothesis"]
+
+            result = subprocess.run(
+                ["pip", "install", "-q"] + common_deps,
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                timeout=300
+            )
+
+            if result.returncode == 0:
+                logging.info(f"[RepoManager] Test dependencies installed successfully")
+            else:
+                logging.warning(f"[RepoManager] Failed to install test dependencies: {result.stderr[:200]}")
+
+        except Exception as e:
+            logging.warning(f"[RepoManager] Error installing dependencies: {e}")
 
     def _ensure_repo(self, repo_name: str) -> Path:
         """Ensure repository is cloned.
@@ -103,6 +152,32 @@ class RepoManager:
             commit: Commit hash or branch name
         """
         logging.info(f"[RepoManager] Checking out {commit}")
+
+        # CRITICAL: Reset any local changes before checkout
+        # This prevents "would be overwritten by checkout" errors
+        reset_result = subprocess.run(
+            ["git", "reset", "--hard"],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+
+        if reset_result.returncode != 0:
+            logging.warning(f"[RepoManager] Failed to reset: {reset_result.stderr}")
+
+        # CRITICAL: Remove untracked files left by test_patch
+        # Without this, checkout fails with "untracked working tree files would be overwritten"
+        clean_result = subprocess.run(
+            ["git", "clean", "-fd"],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+
+        if clean_result.returncode != 0:
+            logging.warning(f"[RepoManager] Failed to clean: {clean_result.stderr}")
 
         result = subprocess.run(
             ["git", "checkout", commit],
@@ -191,74 +266,105 @@ class RepoManager:
     def _parse_solution(self, solution: str) -> Dict[str, str]:
         """Parse solution text to extract file changes.
 
-        Supports multiple formats:
-        1. File: path/to/file.py followed by code block
-        2. Plain file paths with code blocks
-        3. Markdown headers with file paths
+        Supports:
+        1. File sections with context (preferred)
+        2. Complete file content in code blocks
 
         Args:
             solution: Solution text
 
         Returns:
-            Dict of file_path -> content
+            Dict of file_path -> content (complete file after merging changes)
         """
         changes = {}
         import re
 
-        # Pattern 1: File: <path> followed by code block (more flexible)
-        # Matches: "File: path" with optional newlines before code block
-        pattern1 = r'File:\s*([^\n]+?)(?:\s*\n+\s*)?```(?:python|py)?\s*\n(.*?)```'
-        matches = re.findall(pattern1, solution, re.DOTALL | re.IGNORECASE)
+        # Pattern: File: <path> followed by ```python block
+        pattern = r'File:\s*([^\n]+?)(?:\s*\n+\s*)?```(?:python|py)?\s*\n(.*?)```'
+        matches = re.findall(pattern, solution, re.DOTALL | re.IGNORECASE)
 
         for file_path, content in matches:
             file_path = file_path.strip()
-            # Remove trailing content after actual path
-            file_path = file_path.split()[0] if file_path else file_path
-            changes[file_path] = content.strip()
+            # Skip if no valid path (e.g., just "File:" with no path)
+            if not file_path or file_path == ':':
+                continue
+            # Extract first word as path (remove any trailing text)
+            file_path = file_path.split()[0] if file_path.split() else ''
+            if not file_path or not file_path.endswith('.py'):
+                continue
+            content = content.strip()
 
-        # Pattern 2: File path in text followed by code block
-        # e.g., "The file astropy/modeling/separable.py should be modified:"
-        pattern2 = r'([a-zA-Z0-9_/\-\.]+\.py)(?:[:\s]+)?```(?:python|py)?\s*\n(.*?)```'
-        matches2 = re.findall(pattern2, solution, re.DOTALL | re.IGNORECASE)
+            # Try to merge with original file if this looks like a section
+            task_id = self._get_task_for_path(file_path)
+            if task_id:
+                original = self.get_file_content(task_id, file_path)
+                if original:
+                    merged = self._merge_section(original, content)
+                    if merged:
+                        changes[file_path] = merged
+                        logging.info(f"[RepoManager] Merged section into {file_path}")
+                        continue
 
-        for file_path, content in matches2:
-            if file_path not in changes:
-                changes[file_path] = content.strip()
-
-        # Pattern 3: Just extract all code blocks and try to infer file from context
-        # Look for file paths mentioned before code blocks
-        lines = solution.split('\n')
-        current_file = None
-        in_code_block = False
-        code_lines = []
-
-        for i, line in enumerate(lines):
-            # Check for file path mentions
-            file_match = re.search(r'([a-zA-Z0-9_/\-]+/[a-zA-Z0-9_/\-]+\.py)', line)
-            if file_match and not in_code_block:
-                current_file = file_match.group(1)
-
-            # Check for code block start
-            if line.strip().startswith('```'):
-                if not in_code_block:
-                    in_code_block = True
-                    code_lines = []
-                else:
-                    # End of code block
-                    in_code_block = False
-                    if current_file and current_file not in changes:
-                        changes[current_file] = '\n'.join(code_lines)
-                    current_file = None
-            elif in_code_block:
-                code_lines.append(line)
+            # Fallback: treat as complete file
+            changes[file_path] = content
 
         logging.info(f"[RepoManager] Parsed {len(changes)} file changes from solution")
 
-        # Debug: log first 500 chars if parsing failed
         if not changes:
             logging.warning(f"[RepoManager] Parsing failed. Solution preview:\n{solution[:500]}")
 
         return changes
+
+    def _get_task_for_path(self, file_path: str) -> Optional[str]:
+        """Find task_id that contains this file path."""
+        for task_id, repo_path in self.active_tasks.items():
+            full_path = Path(repo_path) / file_path
+            if full_path.exists():
+                return task_id
+        return None
+
+    def _merge_section(self, original: str, section: str) -> Optional[str]:
+        """Merge a modified section back into the original file.
+
+        Finds the section in the original by matching context lines,
+        then replaces it with the modified section.
+
+        Returns:
+            Complete file with merged changes, or None if merge failed
+        """
+        orig_lines = original.split('\n')
+        section_lines = section.split('\n')
+
+        if len(section_lines) < 3:
+            # Too short to be a section with context, treat as complete file
+            return None
+
+        # Try to find where this section belongs by matching first/last lines
+        first_line = section_lines[0].strip()
+        last_line = section_lines[-1].strip()
+
+        # Find matching range in original
+        start_idx = None
+        end_idx = None
+
+        for i, line in enumerate(orig_lines):
+            if line.strip() == first_line:
+                # Check if last line also matches at expected distance
+                expected_end = i + len(section_lines) - 1
+                if expected_end < len(orig_lines):
+                    if orig_lines[expected_end].strip() == last_line:
+                        start_idx = i
+                        end_idx = expected_end
+                        break
+
+        if start_idx is not None and end_idx is not None:
+            # Replace the section
+            result_lines = orig_lines[:start_idx] + section_lines + orig_lines[end_idx+1:]
+            return '\n'.join(result_lines)
+
+        # Fallback: couldn't find matching section
+        logging.warning(f"[RepoManager] Could not locate section in original file")
+        return None
 
     def run_tests(self, task_id: str, test_command: str, timeout: int = 300) -> Tuple[bool, str]:
         """Run tests in repository.

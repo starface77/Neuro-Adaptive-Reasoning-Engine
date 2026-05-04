@@ -1,11 +1,11 @@
 [build-system]
 requires = ["setuptools>=68.0", "wheel"]
-build-backend = "setuptools.backends._legacy:_Backend"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "nare"
-version = "1.0.0"
-description = "NARE — Non-parametric Amortized Reasoning Evolution. A Skill-Based Cognitive Architecture for deterministic routing of logic tasks via semantic compression and executable reflexes."
+version = "0.2.0"
+description = "Skill-based reasoning engine with verified synthesis, semantic memory, and library learning."
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.10"
@@ -13,10 +13,16 @@ dependencies = [
     "faiss-cpu>=1.7.0",
     "numpy>=1.24.0",
     "python-dotenv>=1.0.0",
+    "rich>=13.0.0",
+    "prompt_toolkit>=3.0.0",
 ]
 
+[project.optional-dependencies]
+embeddings = ["sentence-transformers>=2.2.0"]
+
 [project.scripts]
-nare = "main:main"
+nare = "nare.cli.app:main"
 
 [tool.setuptools.packages.find]
 include = ["nare*"]
+exclude = ["tests*", "benchmarks*", "docs*"]

@@ -77,7 +77,7 @@ def main():
 
     parser = argparse.ArgumentParser(
         prog="nare",
-        description="NARE — Non-parametric Amortized Reasoning Evolution",
+        description="NARE — Neural Amortized Reasoning Engine (legacy entrypoint)",
     )
     parser.add_argument(
         "mode",
@@ -99,14 +99,15 @@ def main():
     )
     args = parser.parse_args()
 
-    if not os.getenv("GEMINI_API_KEY"):
-        print("[Error] GEMINI_API_KEY is not set.")
+    if not os.getenv("GEMINI_API_KEY") and not os.getenv("ANTHROPIC_API_KEY"):
+        print("[Error] No API key configured.")
         print("  1. Copy .env.example to .env")
-        print("  2. Add your key: GEMINI_API_KEY=your_key_here")
-        print("  3. Get a key at: https://aistudio.google.com/apikey")
+        print("  2. Set ONE of:")
+        print("     GEMINI_API_KEY=...      # https://aistudio.google.com/apikey")
+        print("     ANTHROPIC_API_KEY=...   # standard or proxy endpoint")
         sys.exit(1)
 
-    print("Initializing NARE Production Architecture (Gemini Engine)...")
+    print("Initializing NARE...")
     agent = NAREProductionAgent()
 
     if args.query:

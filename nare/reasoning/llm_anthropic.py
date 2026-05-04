@@ -1,18 +1,18 @@
-"""Anthropic API client for ARC-AGI tasks."""
+"""Streaming HTTP client for ARC-AGI tasks against the configured LLM endpoint."""
 
 import os
 import json
 import urllib.request
 import logging
 
-# Anthropic API configuration via environment variables
+# LLM endpoint configuration via environment variables.
 ANTHROPIC_BASE_URL = os.getenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
-ANTHROPIC_AUTH_TOKEN = os.getenv("ANTHROPIC_API_KEY")
+ANTHROPIC_AUTH_TOKEN = os.getenv("ANTHROPIC_API_KEY", "")
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")
 
 
 def _post_anthropic(endpoint: str, payload: dict, retries: int = 5) -> str:
-    """POST to Anthropic API via local proxy and parse SSE stream."""
+    """POST to the configured LLM endpoint and parse the SSE stream."""
     import random
 
     url = f"{ANTHROPIC_BASE_URL}/{endpoint}"
@@ -68,17 +68,17 @@ def _post_anthropic(endpoint: str, payload: dict, retries: int = 5) -> str:
 
             # Exponential backoff for other errors
             wait_time = min(5 * (2 ** attempt), 30)
-            logging.warning(f"Anthropic API error (attempt {attempt+1}/{retries}): {e}")
+            logging.warning(f"LLM API error (attempt {attempt+1}/{retries}): {e}")
 
             if attempt < retries - 1:
                 import time
                 time.sleep(wait_time)
 
-    raise Exception("Max retries exceeded for Anthropic API")
+    raise Exception("Max retries exceeded for LLM API")
 
 
 def generate_arc_solution(prompt: str, temperature: float = 0.7, use_extended_thinking: bool = True) -> str:
-    """Generate solution using Anthropic API for ARC tasks.
+    """Generate a solution for ARC-style tasks via the LLM endpoint.
 
     Args:
         prompt: Task description
@@ -109,7 +109,7 @@ def generate_arc_solution(prompt: str, temperature: float = 0.7, use_extended_th
 
 
 def generate_arc_samples(prompt: str, n: int = 3, temperature: float = 0.8) -> list:
-    """Generate multiple solution candidates for ARC tasks."""
+    """Generate multiple solution candidates for ARC-style tasks."""
     samples = []
 
     for i in range(n):
@@ -117,7 +117,7 @@ def generate_arc_samples(prompt: str, n: int = 3, temperature: float = 0.8) -> l
             solution = generate_arc_solution(prompt, temperature=temperature)
             samples.append({
                 'solution': solution,
-                'reasoning': 'Generated via Anthropic proxy',
+                'reasoning': 'Generated via LLM endpoint',
                 'abstract_signature': None
             })
         except Exception as e:

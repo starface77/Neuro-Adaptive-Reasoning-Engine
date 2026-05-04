@@ -56,7 +56,7 @@ class MetricsTracker:
         self._save()
 
     def compute_deltas(self) -> Dict[str, float]:
-        """Compute Δ between VARE and baseline (MemoryBench metrics)."""
+        """Compute Δ between NARE and baseline (MemoryBench metrics)."""
         if not self.baseline_results or not self.history:
             return {}
 

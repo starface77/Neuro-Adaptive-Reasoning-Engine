@@ -1,20 +1,44 @@
-# Environment variables
+# Environment
 .env
+.env.*
+!.env.example
 
-# Virtual Environment
+# Virtual envs
 venv/
 env/
 .venv/
 
-# Python Cache
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
 
-# Memory Store (Ignore contents but keep the folder via .gitkeep)
-memory_store/*
-!memory_store/.gitkeep
+# NARE / VARE runtime artifacts
+.nare_history
+.nare_memory/
+.vare_history
+.vare_memory/
+memory_store/
+predictions*.json
+predictions*.jsonl
+logs_submission/
+memory_swe_submission/
 
-# OS generated files
+# Editor / OS
 .DS_Store
 Thumbs.db
+.idea/
+.vscode/
+
+# Coverage / test
+.coverage
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local scratch / experiments
+scratch/

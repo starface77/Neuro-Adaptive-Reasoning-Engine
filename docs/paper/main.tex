@@ -1,0 +1,76 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[english]{babel}
+\usepackage{amsmath}
+\usepackage{amsfonts}
+\usepackage{amssymb}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{booktabs}
+
+\title{NARE: Neuro-Adaptive Reasoning Engine \\ \large Deterministic Routing of Logic Tasks via Semantic Compression and Executable Reflexes}
+\author{NARE Contributors \\ \texttt{github.com/starface77/Neuro-Adaptive-Reasoning-Engine}}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Large Language Models (LLMs) have demonstrated remarkable capabilities in complex reasoning (System 2 thinking), yet they remain computationally expensive and prone to stochastic errors in repetitive logical tasks. We propose the Non-parametric Amortized Reasoning Evolution (NARE), a cognitive architecture that transitions high-latency neural inference into low-latency procedural execution. NARE autonomously consolidates episodic reasoning trajectories into executable Python-based "reflexes" (System 1 thinking). Our architecture implements a dynamic 4-way routing protocol—REFLEX, FAST, HYBRID, and SLOW—to optimize for both accuracy and computational efficiency. Empirical results demonstrate that NARE can amortize up to 71.4\% of reasoning tasks into pure procedural execution, achieving 100\% token conservation on those tasks with millisecond-scale latency.
+\end{abstract}
+
+\section{Introduction}
+The duality of human cognition, often categorized as System 1 (fast, instinctive) and System 2 (slow, analytical), serves as the inspiration for modern agentic architectures. Current LLM agents predominantly rely on System 2 reasoning (Chain-of-Thought) for every task, leading to "reasoning tax"—unnecessary computational cost for tasks that are structurally repetitive.
+
+NARE (Neuro-Adaptive Reasoning Engine) addresses this by implementing an \textit{amortized reasoning} pipeline. By identifying patterns in episodic memory, the system "crystallizes" successful reasoning paths into deterministic code, effectively building a library of skills that bypass neural inference in future encounters.
+
+\section{Architecture}
+The NARE architecture is governed by a hierarchical routing protocol that selects the most efficient path for any given stimulus.
+
+\subsection{The 4-Way Routing Protocol}
+\begin{enumerate}
+    \item \textbf{REFLEX (System 1)}: Direct execution of compiled Python skills. This path provides $O(1)$ latency and zero API cost.
+    \item \textbf{FAST (Cache)}: Semantic retrieval of exact or near-exact matches from prior successful episodes using dense vector similarity (FAISS).
+    \item \textbf{HYBRID (Delta-Reasoning)}: Contextualized inference that leverages past traces to solve minor variations of known problems, reducing the reasoning steps required.
+    \item \textbf{SLOW (System 2)}: Full exploratory reasoning (Chain-of-Thought) with multi-candidate sampling and internal validation via a Hybrid Critic.
+\end{enumerate}
+
+\section{Methodology: From Episodes to Reflexes}
+The transition from neural inference to procedural execution occurs in three distinct phases.
+
+\subsection{Episodic Encoding}
+Every successful interaction is stored as an "episode" containing the query, the reasoning trace, and the solution. These are embedded using a dense vector model and stored in a non-parametric memory.
+
+\subsection{Consolidation (Sleep Phase)}
+When the density of semantically similar episodes in memory reaches a critical threshold, the system initiates a \textit{Sleep Phase}. During this consolidation, the system analyzes the cluster of traces to extract a general heuristic. This heuristic is then compiled into a Python-based reflex consisting of a \texttt{trigger(query)} function (semantic boundary detection) and an \texttt{execute(query)} function (algorithmic implementation).
+
+\subsection{Validation and Confidence Gating}
+To ensure fault tolerance, every compiled reflex undergoes rigorous validation against the original episodes. If a reflex fails to reproduce the correct results or raises runtime exceptions, it is discarded. Successfully validated reflexes are assigned a confidence score, which governs their priority in the routing hierarchy.
+
+\section{Empirical Evaluation}
+We evaluated NARE on a suite of structural logic and sequence derivation tasks.
+
+\begin{table}[h]
+\centering
+\caption{Routing Efficiency and Performance}
+\begin{tabular}{lrr}
+\toprule
+Route & Frequency (\%) & Latency (Rel.) \\
+\midrule
+SLOW (Full LLM) & 14.3\% & 1.00x \\
+HYBRID (Delta) & 14.3\% & 0.41x \\
+REFLEX (Executable) & 71.4\% & $<$0.01x \\
+FAST (Cache) & 0.0\% & $<$0.01x \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The system successfully amortized 71.4\% of tasks into the REFLEX path, resulting in an exponential speedup and 100\% saving of generation tokens for those specific instances.
+
+\section{Conclusion}
+NARE demonstrates a viable path toward self-evolving autonomous agents that become more efficient over time. By shifting the burden of reasoning from stochastic neural networks to deterministic procedural code, we achieve a system that is not only faster and cheaper but also more reliable in structured domains. Future work will focus on cross-domain skill generalization and hardened sandboxing for code execution.
+
+\end{document}

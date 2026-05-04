@@ -67,17 +67,17 @@ class ImmuneSystemConfig:
 @dataclass(frozen=True)
 class RoutingConfig:
     # Adaptive thresholds - auto-calibrate based on task domain
-    tau_fast: float = 0.85  # Balanced default
-    tau_hybrid: float = 0.92  # Only use delta reasoning for very similar tasks
-    tau_reflex: float = 0.60
-    tau_min: float = 0.70
-    tau_max: float = 0.98
+    tau_fast: float = 0.50  # Lowered significantly for faster hits
+    tau_hybrid: float = 0.60  # Lowered to trigger delta reasoning easier
+    tau_reflex: float = 0.50
+    tau_min: float = 0.40
+    tau_max: float = 0.85
     calibration_lr: float = 0.02
 
     # Domain-specific overrides (auto-detected)
-    tau_fast_code: float = 0.95  # Code tasks (SWE-bench) - high precision
-    tau_fast_pattern: float = 0.75  # Pattern tasks (ARC-AGI) - allow generalization
-    tau_fast_reasoning: float = 0.85  # Reasoning tasks - balanced
+    tau_fast_code: float = 0.65  # Code tasks - lowered from 0.80
+    tau_fast_pattern: float = 0.50
+    tau_fast_reasoning: float = 0.60
     skill_min_confidence: float = 0.40
     semantic_inject_min_sim: float = 0.85
     semantic_inject_min_conf: float = 0.70

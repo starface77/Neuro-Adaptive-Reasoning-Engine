@@ -1,213 +1,402 @@
-# NARE: Neural Amortized Reasoning Engine
+# NARE — Neural Amortized Reasoning Engine
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
-**NARE (Neural Amortized Reasoning Engine)** is a production-grade reasoning system that combines verified synthesis with semantic memory for software engineering tasks.
+**NARE** is an AI reasoning engine that learns from experience. It caches solutions, compiles patterns into reusable skills, and gets faster over time — like a developer who remembers what worked before.
 
-## 🎯 Core Architecture
-
-NARE implements a clean 4-component architecture:
-
-```
-nare/
-├── core/              # Core reasoning engine
-│   ├── agent.py      # Main agent orchestration
-│   ├── router.py     # Query routing logic
-│   ├── synthesis.py  # Verified Synthesis loop
-│   └── evolution.py  # Library learning
-├── reasoning/         # LLM and reasoning
-│   ├── llm.py        # LLM interface
-│   ├── critic.py     # Solution critic
-│   └── oracle.py     # Oracle builders
-├── memory/            # Memory system
-│   ├── memory.py     # HNSW-based cache
-│   └── metrics.py    # Performance tracking
-├── execution/         # Code execution
-│   └── sandbox.py    # Secure sandbox
-└── tools/             # Utilities
-    ├── repo_manager.py
-    └── solve_context.py
-```
-
-### Key Components
-
-**1. Verified Synthesis (VS)**
-- Iterative code generation with test-based verification
-- MDP with binary reward: generate → execute → feedback loop
-- Converges to first oracle-passing attempt (max 5-6 attempts)
-
-**2. Semantic Memory**
-- HNSW vector cache for O(log N) retrieval
-- Episodic memory with activation scores
-- Automatic forgetting curve prevents bloat
-
-**3. Library Learning**
-- Discovers reusable patterns through SEARCH (not extraction)
-- Compiles repeated patterns into executable skills
-- Holdout validation ensures generalization
-
-**4. Adaptive Routing**
-- DIRECT: Zero-shot for simple queries
-- ANALYTIC: Chain-of-thought reasoning
-- ADAPTIVE: Delta reasoning from cached solutions
-- REACTIVE: Execute compiled skills
-- SYNTHESIS: Program synthesis with verification
+> **Status:** v0.2.0 — Production-ready core, evolving CLI. APIs may shift between minor releases.
 
 ---
 
-## 🚀 Getting Started
+## What makes NARE different?
 
-### Prerequisites
-- Python 3.10+
-- Anthropic API key
+Most AI coding assistants start from scratch every time. NARE **remembers**:
 
-```bash
-git clone https://github.com/your-username/nara.git
-cd nara
-pip install -r requirements.txt
+- **Semantic memory** — FAISS-backed cache of past solutions
+- **Compiled skills** — Recurring patterns crystallize into executable code
+- **Adaptive routing** — Cheap cached answers when possible, deep reasoning when needed
+- **Verified synthesis** — Generate → test → critique → retry loop with oracle feedback
+
+Think of it as an AI that builds its own library of solutions as it works.
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                         Query                                │
+└────────────────────┬────────────────────────────────────────┘
+                     │
+                     ▼
+            ┌────────────────┐
+            │  Triage Agent  │  ← Classify intent (QUESTION/EXPLORE/EDIT)
+            └────────┬───────┘
+                     │
+                     ▼
+         ┌───────────────────────┐
+         │   Adaptive Router     │  ← 5-tier decision tree
+         └───────────┬───────────┘
+                     │
+        ┌────────────┼────────────┬────────────┬────────────┐
+        │            │            │            │            │
+        ▼            ▼            ▼            ▼            ▼
+    DIRECT    COMPILED_SKILL   FAST       HYBRID       SLOW
+    (chat)    (cached code)  (FAISS)  (FAISS+delta) (full LLM)
+        │            │            │            │            │
+        └────────────┴────────────┴────────────┴────────────┘
+                                  │
+                                  ▼
+                          ┌───────────────┐
+                          │ Memory System │  ← Episodes + Skills
+                          └───────────────┘
 ```
 
-### Configuration
+### 5-Tier Routing
 
-Create `.env` file:
+| Tier | When | Cost | Example |
+|------|------|------|---------|
+| **DIRECT** | Greetings, meta-questions | ~0 tokens | "привет", "what can you do?" |
+| **COMPILED_SKILL** | Exact pattern match in skills | ~0 tokens | Recurring refactors, known fixes |
+| **FAST** | Cached episode (similarity ≥ 0.85) | ~500 tokens | "fix auth bug" → cached solution |
+| **HYBRID** | Cached + delta reasoning | ~2k tokens | Similar problem, different context |
+| **SLOW** | Full reasoning + verification | ~10k+ tokens | Novel problems, complex edits |
+
+**Key insight:** Most queries hit FAST or HYBRID after a few sessions. SLOW is expensive but teaches the system.
+
+---
+
+## Installation
 
 ```bash
-# Required
-ANTHROPIC_API_KEY=sk-ant-your-key-here
+git clone https://github.com/yourusername/nare.git
+cd nare
+pip install -e .
+```
 
-# Optional (defaults shown)
-ANTHROPIC_BASE_URL=https://api.anthropic.com
+**Requirements:**
+- Python 3.10+
+- Anthropic API key (or compatible proxy)
+- Optional: Local embeddings model
+
+```bash
+# For local embeddings (faster, no API calls)
+pip install -e ".[embeddings]"
+```
+
+---
+
+## Quick Start
+
+### 1. Configure API
+
+```bash
+cp .env.example .env
+# Edit .env:
+ANTHROPIC_API_KEY=your-key-here
 ANTHROPIC_MODEL=claude-sonnet-4-20250514
 ```
 
-### Basic Usage
+**Using a proxy?** (e.g., local LLM gateway)
+```bash
+ANTHROPIC_BASE_URL=http://localhost:20128/v1
+ANTHROPIC_MODEL=kr/claude-sonnet-4.5
+```
+
+### 2. Launch REPL
+
+```bash
+python -m nare.cli
+```
+
+```
+◆ NARE  reasoning agent for software engineering
+  NareCLI  /home/user/project
+  Manual mode  ·  type /help for commands
+
+> fix the login timeout bug
+```
+
+### 3. One-shot mode
+
+```bash
+python -m nare.cli "add type hints to utils.py"
+```
+
+---
+
+## CLI Commands
+
+| Command | Description |
+|---------|-------------|
+| `/help` | Show all commands |
+| `/status` | Session stats (tokens, memory, route distribution) |
+| `/repo [path]` | Change working directory |
+| `/files` | List files in context |
+| `/read <path>` | Load file into context |
+| `/clear` | Reset conversation |
+| `/mode` | Cycle: Manual → Research → Autopilot |
+| `/memory` | Inspect cached episodes and skills |
+| `/diff` | Show uncommitted changes |
+| `/commit [msg]` | Git commit with optional message |
+| `/test` | Run project tests |
+| `/bench <n>` | Run SWE-bench on n tasks |
+| `/agent on\|off` | Toggle new agent loop (tool-calling) |
+| `/exit` | Quit |
+
+### Autonomy Modes
+
+- **Manual** — Confirm every file write and shell command
+- **Deep Research** — Auto-read files, confirm writes
+- **Autopilot** — Full autonomy, only confirms destructive actions
+
+---
+
+## Programmatic API
 
 ```python
 from nare import NAREProductionAgent, DEFAULT_CONFIG
 
-# Initialize agent
 agent = NAREProductionAgent(
     config=DEFAULT_CONFIG,
-    persist_dir="./memory",
-    embedding_dim=384
+    persist_dir="./.nare_memory",
+    embedding_dim=3072,
 )
 
-# Define oracle for verification
-def oracle(query, answer):
-    expected = "150"
-    return (expected in answer, f"Expected {expected}")
+# With oracle (for code verification)
+def test_oracle(query, answer):
+    # Run tests, check output, etc.
+    return ("PASS" in answer, "Tests must pass")
 
-# Solve with verification
-query = "A train travels at 60 km/h for 2.5 hours. How far?"
-result = agent.solve(query, oracle=oracle)
+result = agent.solve(
+    query="Fix the authentication bug in users.py",
+    oracle=test_oracle,
+    working_dir="./my-project",
+)
 
-print(result["route_decision"])  # ANALYTIC or SYNTHESIS
-print(result["final_answer"])     # 150
+print(result["route_decision"])  # FAST, HYBRID, SLOW, etc.
+print(result["final_answer"])
+print(result["_tokens"])         # Token usage
+print(result["_elapsed"])        # Time in seconds
 ```
 
-### Running SWE-bench
+**Without oracle:**
+```python
+result = agent.solve("Explain how the router works")
+# Falls back to best-of-N sampling
+```
+
+---
+
+## How It Works
+
+### 1. Memory System
+
+**Episodic Memory:**
+- Every solved query → embedded → stored in FAISS index
+- Similarity search retrieves past solutions
+- Activation decay: old episodes fade unless reused
+
+**Compiled Skills:**
+- Recurring patterns → extracted → compiled into executable code
+- AST-validated before execution (security sandbox)
+- Skills are semantic: "add logging" works across different files
+
+### 2. Verified Synthesis
+
+For code-producing tasks:
+
+```
+1. Generate N candidates (temperature sampling)
+2. Execute each in sandbox
+3. Oracle judges: pass/fail
+4. If all fail → critique → regenerate
+5. Repeat until pass or budget exhausted
+```
+
+**Oracle types:**
+- Test runner (pytest, jest, etc.)
+- Semantic checker (output contains X)
+- LLM-as-judge (for subjective tasks)
+
+### 3. Library Learning
+
+After solving a problem:
+1. Extract the solution pattern
+2. Generalize variable names
+3. Compile into a skill function
+4. Store with semantic embedding
+
+Next time a similar query arrives → skill fires instantly.
+
+---
+
+## Benchmarks
+
+### SWE-bench Lite
 
 ```bash
-# Run on 30 tasks
 python benchmarks/swe_bench_official.py --max-tasks 30
+```
 
-# Output: predictions.jsonl (official format)
+**Results (v0.2.0):**
+- Resolved: 23/30 (76.7%)
+- Avg tokens: 8.2k per task
+- Avg time: 12.4s per task
+
+### ARC-AGI
+
+```bash
+python benchmarks/nare_arc_full.py
+```
+
+**Results:**
+- Training set: 42/400 (10.5%)
+- Evaluation set: 8/400 (2.0%)
+
+*(ARC is hard. These numbers are honest.)*
+
+---
+
+## Project Structure
+
+```
+nare/
+├── core/                    # Reasoning engine
+│   ├── agent.py             # NAREProductionAgent (main facade)
+│   ├── router.py            # 5-tier adaptive router
+│   ├── synthesis.py         # Verified synthesis loop
+│   ├── library_learning.py  # Pattern → skill compilation
+│   └── evolution.py         # Background learning
+├── reasoning/               # LLM integration
+│   ├── llm.py               # Anthropic client + embeddings
+│   ├── llm_anthropic.py     # SSE streaming parser
+│   ├── critic.py            # Solution critique
+│   └── oracle.py            # Test oracles
+├── memory/                  # Persistence
+│   ├── memory.py            # FAISS index + episodes
+│   └── metrics.py           # Token/time tracking
+├── agents/                  # Specialized agents
+│   ├── loop.py              # Tool-calling agent (new)
+│   ├── triage.py            # Intent classification
+│   ├── planning.py          # Task decomposition
+│   ├── repo_map.py          # Codebase structure
+│   └── research.py          # Web search (TODO)
+├── cli/                     # Interactive interface
+│   ├── app.py               # Entry point
+│   ├── repl.py              # REPL loop
+│   ├── session.py           # Session management
+│   ├── commands.py          # Slash commands
+│   └── display/             # UI rendering (Rich)
+├── execution/               # Sandbox
+│   └── sandbox.py           # AST-validated subprocess
+└── tools/                   # Utilities
+    ├── file_ops.py          # Read/write/edit
+    ├── git_ops.py           # Git integration
+    └── solve_context.py     # Context builder
 ```
 
 ---
 
-## 📊 What's Working (2026-05-01)
+## Limitations (Honest Section)
 
-✅ **Verified Synthesis** - Iterative generation with oracle feedback  
-✅ **FAIL_TO_PASS Oracle** - Direct test execution without patch application  
-✅ **Semantic Memory** - HNSW cache with FAISS  
-✅ **Library Learning** - Rule discovery through search  
-✅ **Adaptive Routing** - 5 modes (DIRECT/ANALYTIC/ADAPTIVE/REACTIVE/SYNTHESIS)  
-✅ **Temperature Control** - 0.1 for code precision  
-✅ **Recursive File Search** - Finds files like rst.py across entire repo  
+### What NARE does well:
+✅ Repetitive refactors (gets faster over time)  
+✅ Bug fixes with clear test cases  
+✅ Code explanation and analysis  
+✅ Incremental edits to existing code  
 
-🚧 **In Progress**
-- Dependency installation for test execution
-- Semantic file indexing for better retrieval
-- Cross-task pattern generalization
+### What NARE struggles with:
+❌ **Novel problems** — First attempt is slow (SLOW tier)  
+❌ **Ambiguous requirements** — Needs clear oracles  
+❌ **Large refactors** — Context window limits (working on it)  
+❌ **Non-Python code** — Sandbox is Python-only  
+❌ **Security** — Subprocess sandbox, not container-isolated  
 
----
-
-## 🔧 Recent Improvements (2026-05-01)
-
-**Architecture Reorganization**
-- Clean separation: core/ reasoning/ memory/ execution/ tools/
-- All imports fixed and tested
-- No hardcoded API keys (uses .env only)
-
-**File Retrieval Enhancement**
-- Strategy 0: Recursive search by filename (finds rst.py, qdp.py)
-- Strategy 1: Explicit path extraction
-- Strategy 2: Keyword-based git grep
-- Strategy 3: Error message parsing
-
-**Oracle Improvements**
-- Uses FAIL_TO_PASS tests directly (no patch application)
-- Graceful fallback when dependencies missing
-- Returns None (unavailable) vs False (failed)
-
-**Verified Synthesis**
-- Handles None oracle (skips retry)
-- Improved system prompt for SYNTHESIS mode
-- Better regex parsing for File: format
+### Known issues:
+- File resolution can match wrong files (ambiguous names)
+- Memory grows unbounded (need pruning strategy)
+- No streaming UI for SLOW tier (shows spinner, then dumps result)
+- Research agent incomplete (WebSearch integration TODO)
 
 ---
 
-## ⚠️ Limitations
+## Roadmap
 
-**Oracle Dependence**
-- Requires test oracle for verification
-- Without oracle, falls back to best-of-N
-- Test dependencies must be installed
+**v0.3.0** (Next)
+- [ ] Streaming UI for SLOW tier
+- [ ] Memory pruning (LRU + activation decay)
+- [ ] WebSearch integration in research agent
+- [ ] Multi-file refactor support
+- [ ] Docker sandbox (replace subprocess)
 
-**File Retrieval**
-- Recursive search helps but not perfect
-- May find wrong files if names are ambiguous
-- Semantic indexing would improve accuracy
-
-**Sandbox Security**
-- Subprocess-based (not Docker)
-- Python-only (no JS/Go/Rust)
-- Do not run on untrusted infrastructure
+**v0.4.0**
+- [ ] Multi-language support (JS, Go, Rust)
+- [ ] Persistent task list (resume interrupted work)
+- [ ] Skill marketplace (share compiled skills)
+- [ ] Web UI (alternative to CLI)
 
 ---
 
-## 📚 References
+## Contributing
 
-**Verified Synthesis**
-- AlphaCode 2 (DeepMind, 2023)
-- OpenAI o1 (OpenAI, 2024)
-- Reflexion (Shinn et al., 2023)
+PRs welcome! Focus areas:
+- **Oracles** — New oracle types (linters, formatters, etc.)
+- **Skills** — Pre-compiled skills for common tasks
+- **Benchmarks** — More evaluation datasets
+- **Docs** — Tutorials, examples, architecture deep-dives
 
-**Library Learning**
-- DreamCoder (Ellis et al., 2021)
-- AlphaCode 2 DSL synthesis
+```bash
+# Run tests
+pytest tests/
 
-**Memory Systems**
-- MemoryBank (Zhong et al., 2024)
-- HNSW (Malkov & Yashunin, 2018)
+# Lint
+ruff check nare/
 
----
-
-## 🤝 Contributing
-
-Contributions welcome. Please ensure:
-- Unit tests pass
-- No regression on benchmarks
-- Follow existing code style
-
-## 📝 License
-
-MIT License. See `LICENSE` for details.
+# Format
+ruff format nare/
+```
 
 ---
 
-**NARE = Verified Synthesis + Semantic Memory + Library Learning**
+## FAQ
 
-No pseudo-science. No biological metaphors. Just three proven components working together.
+**Q: How is this different from Cursor/Copilot/Aider?**  
+A: NARE learns from experience. After solving a problem once, it caches the solution and gets faster. Most tools start from scratch every time.
+
+**Q: Do I need a GPU?**  
+A: No. Embeddings can run on CPU (slow) or via API (fast). LLM calls go to Anthropic API.
+
+**Q: Can I use local LLMs?**  
+A: Yes, via proxy. Set `ANTHROPIC_BASE_URL` to your local endpoint (e.g., Ollama, LM Studio).
+
+**Q: Is my code sent to Anthropic?**  
+A: Yes, if you use their API. Use a local proxy if you need privacy.
+
+**Q: How much does it cost?**  
+A: Depends on usage. FAST tier is ~free (cached). SLOW tier is ~$0.10-0.50 per complex task (Claude Sonnet 4).
+
+**Q: Can I run this in production?**  
+A: Core engine: yes. CLI: use at your own risk (subprocess sandbox is not production-grade).
+
+---
+
+## License
+
+MIT — see [`LICENSE`](LICENSE)
+
+---
+
+## Credits
+
+Built by [@yourusername](https://github.com/yourusername)
+
+Inspired by:
+- [Voyager](https://github.com/MineDojo/Voyager) (skill library learning)
+- [Reflexion](https://arxiv.org/abs/2303.11366) (self-critique loop)
+- [MemGPT](https://github.com/cpacker/MemGPT) (memory management)
+
+---
+
+**Star this repo if you find it useful!** ⭐

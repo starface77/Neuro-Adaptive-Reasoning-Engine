@@ -605,13 +605,7 @@ class MemorySystem:
 
             if len(kept_episodes) < len(self.episodes):
                 removed = len(self.episodes) - len(kept_episodes)
-                logging.info(f"[Memory] Pruned {removed} low-quality/stale episodes")
-                self.episodes = kept_episodes
-                self._rebuild_episodic_index()
-
-            if len(kept_episodes) < len(self.episodes):
-                removed = len(self.episodes) - len(kept_episodes)
-                logging.info(f"[Memory] Pruned {removed} low-activation episodes")
+                logging.info(f"[Memory] Pruned {removed} low-quality/stale/activation episodes")
                 self.episodes = kept_episodes
                 self._rebuild_episodic_index()
                 self.save()
