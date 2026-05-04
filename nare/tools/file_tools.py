@@ -8,7 +8,41 @@ Provides safe, validated file operations that the LLM can call:
 """
 
 import os
+from pathlib import Path
 from typing import Optional, Tuple
+
+# Import safety layer for path validation
+from nare.tools.safety import get_safety
+
+def _validate_path(filepath: str, operation: str = "read") -> Path:
+    """Validate file path for security.
+
+    Args:
+        filepath: Path to validate
+        operation: Operation type ("read", "write", "delete")
+
+    Returns:
+        Resolved Path object
+
+    Raises:
+        ValueError: If path is unsafe
+    """
+    try:
+        # Resolve to absolute path and check for traversal
+        resolved = Path(filepath).resolve()
+
+        # Get safety layer
+        safety = get_safety()
+
+        # Check if path is within working directory
+        if operation in ("write", "delete"):
+            ok, reason = safety.check_path_write(str(resolved))
+            if not ok:
+                raise ValueError(reason)
+
+        return resolved
+    except Exception as e:
+        raise ValueError(f"Invalid path '{filepath}': {e}")
 
 def read_file(filepath: str, start_line: Optional[int] = None, end_line: Optional[int] = None) -> str:
     """Read file contents safely.
@@ -23,13 +57,16 @@ def read_file(filepath: str, start_line: Optional[int] = None, end_line: Optiona
 
     Raises:
         FileNotFoundError: If file doesn't exist
-        ValueError: If line range is invalid
+        ValueError: If line range is invalid or path is unsafe
     """
-    if not os.path.exists(filepath):
+    # Validate path
+    resolved = _validate_path(filepath, "read")
+
+    if not resolved.exists():
         raise FileNotFoundError(f"File not found: {filepath}")
 
     try:
-        with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
+        with open(resolved, 'r', encoding='utf-8', errors='replace') as f:
             lines = f.readlines()
 
         if len(lines) > 500 and start_line is None and end_line is None:
@@ -62,20 +99,28 @@ def create_file(filepath: str, content: str, stream_callback=None) -> bool:
 
     Raises:
         FileExistsError: If file already exists
+        ValueError: If path is unsafe
         RuntimeError: If creation fails
     """
-    if os.path.exists(filepath):
+    # Validate path
+    resolved = _validate_path(filepath, "write")
+
+    if resolved.exists():
         raise FileExistsError(f"File already exists: {filepath}. Use edit_file to modify it.")
 
     try:
-
-        parent = os.path.dirname(filepath)
+        # Create parent directories
+        parent = resolved.parent
         if parent:
-            os.makedirs(parent, exist_ok=True)
+            parent.mkdir(parents=True, exist_ok=True)
 
-        with open(filepath, 'w', encoding='utf-8') as f:
+        # Take snapshot for rollback
+        safety = get_safety()
+        safety.snapshot(str(resolved))
+
+        with open(resolved, 'w', encoding='utf-8') as f:
             if stream_callback:
-
+                # Stream content in chunks
                 chunk_size = 50
                 for i in range(0, len(content), chunk_size):
                     chunk = content[i:i+chunk_size]
@@ -106,15 +151,21 @@ def edit_file(filepath: str, target_block: str, replacement_block: str, stream_c
 
     Raises:
         FileNotFoundError: If file doesn't exist
-        ValueError: If target_block not found or appears multiple times
+        ValueError: If target_block not found, appears multiple times, or path is unsafe
         RuntimeError: If edit fails
     """
-    if not os.path.exists(filepath):
+    # Validate path
+    resolved = _validate_path(filepath, "write")
+
+    if not resolved.exists():
         raise FileNotFoundError(f"File not found: {filepath}")
 
     try:
+        # Take snapshot for rollback
+        safety = get_safety()
+        safety.snapshot(str(resolved))
 
-        with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
+        with open(resolved, 'r', encoding='utf-8', errors='replace') as f:
             content = f.read()
 
         count = content.count(target_block)
@@ -128,8 +179,8 @@ def edit_file(filepath: str, target_block: str, replacement_block: str, stream_c
         diff = list(difflib.unified_diff(
             target_block.splitlines(keepends=True),
             replacement_block.splitlines(keepends=True),
-            fromfile=f"a/{os.path.basename(filepath)}",
-            tofile=f"b/{os.path.basename(filepath)}",
+            fromfile=f"a/{resolved.name}",
+            tofile=f"b/{resolved.name}",
             n=3
         ))
 
@@ -150,7 +201,7 @@ def edit_file(filepath: str, target_block: str, replacement_block: str, stream_c
                         diff_text.append(line)
 
                 ui.console.print()
-                ui.console.print(f"[bold yellow]Proposed changes for {os.path.basename(filepath)}:[/]")
+                ui.console.print(f"[bold yellow]Proposed changes for {resolved.name}:[/]")
                 ui.console.print(diff_text)
 
                 from nare.cli.modes import get_mode_config
@@ -161,17 +212,17 @@ def edit_file(filepath: str, target_block: str, replacement_block: str, stream_c
                     get_thinking_display()._stop_live_and_spinner()
 
                     from rich.prompt import Confirm
-                    if not Confirm.ask(f"[bold yellow]Apply these changes to {os.path.basename(filepath)}?[/]"):
+                    if not Confirm.ask(f"[bold yellow]Apply these changes to {resolved.name}?[/]"):
                         raise RuntimeError("User rejected the changes.")
             except ImportError:
-
+                # CLI not available, proceed without confirmation
                 pass
 
         new_content = content.replace(target_block, replacement_block)
 
-        with open(filepath, 'w', encoding='utf-8') as f:
+        with open(resolved, 'w', encoding='utf-8') as f:
             if stream_callback:
-
+                # Stream content in chunks
                 chunk_size = 50
                 for i in range(0, len(replacement_block), chunk_size):
                     chunk = replacement_block[i:i+chunk_size]
@@ -220,9 +271,21 @@ def run_command(command: str, cwd: str = ".") -> dict:
         Dict with stdout, stderr, returncode
 
     Raises:
+        ValueError: If command is blocked by safety layer
         RuntimeError: If command fails
     """
     import subprocess
+
+    # Validate command with safety layer
+    safety = get_safety()
+    ok, reason = safety.check_command(command)
+    if not ok:
+        raise ValueError(f"Command blocked: {reason}")
+
+    # Log warning if command is potentially dangerous
+    if reason:
+        import logging
+        logging.warning(f"Running potentially dangerous command: {command}")
 
     try:
         result = subprocess.run(
