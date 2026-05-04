@@ -136,7 +136,7 @@ class ReasoningRouter:
                             skill_id = skill.get('skill_id', 0)
                             if 0 <= skill_id < len(self.memory.compiled_skills):
                                 self.memory.increment_skill_usage(skill_id)
-                                self.memory.save()
+                                self.memory._mark_dirty()
 
                             self.metrics.record(
                                 query=query, route="COMPILED_SKILL",
@@ -161,40 +161,60 @@ class ReasoningRouter:
 
             fast_emb = query_emb
             fast_vec = np.array([fast_emb], dtype=np.float32)
-            faiss.normalize_L2(fast_vec)
-            sims, indices = self.memory.episodic_index.search(fast_vec, 1)
 
-            if sims[0][0] >= adaptive_tau_fast:
-                if thinking_display:
-                    thinking_display.update_waiting(f"FAST route: validating cached solution (sim: {sims[0][0]:.2f})")
+            # Verify dimension matches index
+            if fast_vec.shape[1] != self.memory.episodic_index.d:
+                logging.warning(f"[ROUTER] Query embedding dim {fast_vec.shape[1]} != index dim {self.memory.episodic_index.d}, skipping FAST route")
+            else:
+                faiss.normalize_L2(fast_vec)
+                sims, indices = self.memory.episodic_index.search(fast_vec, 1)
 
-                idx = int(indices[0][0])
-                if 0 <= idx < len(self.memory.episodes):
-                    ep = self.memory.episodes[idx]
-                    logging.info(f"[ROUTER] FAST candidate found: score={ep.get('score', 0)}")
-                    if ep.get('score', 0) >= 0.80:
-                        fast_answer = self._post_process_answer(ep.get('solution', ''), "FAST", log)
+                if sims[0][0] >= adaptive_tau_fast:
+                    if thinking_display:
+                        thinking_display.update_waiting(f"FAST route: validating cached solution (sim: {sims[0][0]:.2f})")
 
-                        if oracle:
-                            if thinking_display:
-                                thinking_display.update_waiting("Validating with oracle...")
+                    idx = int(indices[0][0])
+                    if 0 <= idx < len(self.memory.episodes):
+                        ep = self.memory.episodes[idx]
+                        logging.info(f"[ROUTER] FAST candidate found: score={ep.get('score', 0)}")
+                        if ep.get('score', 0) >= 0.80:
+                            fast_answer = self._post_process_answer(ep.get('solution', ''), "FAST", log)
 
-                            ok, info = oracle(query, fast_answer)
-                            if not ok:
-                                logging.warning(f"[ROUTER] FAST cache INVALID: {info} - falling back to HYBRID/SLOW")
-
-                                self.memory.update_episode_validation(idx, success=False)
-                                self.memory.save()
-                                log.append(f"FAST validation failed: {info} - trying HYBRID")
-
+                            if oracle:
                                 if thinking_display:
-                                    thinking_display.update_waiting("FAST failed, trying HYBRID...")
+                                    thinking_display.update_waiting("Validating with oracle...")
 
+                                ok, info = oracle(query, fast_answer)
+                                if not ok:
+                                    logging.warning(f"[ROUTER] FAST cache INVALID: {info} - falling back to HYBRID/SLOW")
+
+                                    self.memory.update_episode_validation(idx, success=False)
+                                    self.memory._mark_dirty()
+                                    log.append(f"FAST validation failed: {info} - trying HYBRID")
+
+                                    if thinking_display:
+                                        thinking_display.update_waiting("FAST failed, trying HYBRID...")
+
+                                else:
+                                    logging.info(f"[ROUTER] FAST cache validated by oracle")
+
+                                    self.memory.update_episode_validation(idx, success=True)
+                                    self.memory._mark_dirty()
+
+                                    self.metrics.record(
+                                        query=query, route="FAST",
+                                        elapsed=time.time() - _solve_start,
+                                        tokens_used=0,
+                                        similarity=float(sims[0][0]),
+                                        answer=fast_answer,
+                                        score=ep.get('score', 0.8),
+                                    )
+                                    return self._wrap_result("FAST", fast_answer, [ep], [], log, float(sims[0][0]), _solve_start, 0,
+                                                            query=query, chat_history=chat_history, repo_map=repo_map, intent=intent)
                             else:
-                                logging.info(f"[ROUTER] FAST cache validated by oracle")
-
+                                logging.info(f"[ROUTER] Taking FAST route (no oracle validation)")
                                 self.memory.update_episode_validation(idx, success=True)
-                                self.memory.save()
+                                self.memory._mark_dirty()
 
                                 self.metrics.record(
                                     query=query, route="FAST",
@@ -206,26 +226,10 @@ class ReasoningRouter:
                                 )
                                 return self._wrap_result("FAST", fast_answer, [ep], [], log, float(sims[0][0]), _solve_start, 0,
                                                         query=query, chat_history=chat_history, repo_map=repo_map, intent=intent)
-                        else:
+                    else:
+                        logging.info(f"[ROUTER] FAST idx out of bounds: {idx} >= {len(self.memory.episodes)}")
 
-                            logging.info(f"[ROUTER] Taking FAST route (no oracle validation)")
-                            self.memory.update_episode_validation(idx, success=True)
-                            self.memory.save()
-
-                            self.metrics.record(
-                                query=query, route="FAST",
-                                elapsed=time.time() - _solve_start,
-                                tokens_used=0,
-                                similarity=float(sims[0][0]),
-                                answer=fast_answer,
-                                score=ep.get('score', 0.8),
-                            )
-                            return self._wrap_result("FAST", fast_answer, [ep], [], log, float(sims[0][0]), _solve_start, 0,
-                                                    query=query, chat_history=chat_history, repo_map=repo_map, intent=intent)
-                else:
-                    logging.info(f"[ROUTER] FAST idx out of bounds: {idx} >= {len(self.memory.episodes)}")
-
-        reflex_result = self._try_reflex_path(query, oracle, log, _solve_start)
+        reflex_result = self._try_reflex_path(query, query_emb, oracle, log, _solve_start)
         if reflex_result:
             return reflex_result
 
@@ -310,7 +314,7 @@ class ReasoningRouter:
             prompt = query
             logging.info(f"[ROUTER] Using original SWE-bench prompt (format instructions detected)")
         else:
-            prompt = self._build_slow_prompt(full_query_context, retrieved_eps)
+            prompt = self._build_slow_prompt(full_query_context, query_emb, retrieved_eps)
 
         if oracle:
             max_attempts = adaptive_params.get('max_attempts', self.config.synthesis.max_attempts)
@@ -602,8 +606,8 @@ Provide your corrected answer."""
         return self._wrap_result("ERROR", "No solution found", [], [], log, 0.0, _solve_start, _solve_tokens,
                                 query=query, chat_history=chat_history, repo_map=repo_map, intent=intent)
 
-    def _try_reflex_path(self, query: str, oracle, log, start_time):
-        rules = self.memory.retrieve_semantics(llm.get_embedding(query), k=3)
+    def _try_reflex_path(self, query: str, query_emb, oracle, log, start_time):
+        rules = self.memory.retrieve_semantics(query_emb, k=3)
         for rule in rules:
             if rule.get('confidence', 0) < self.config.routing.tau_reflex: continue
             if safe_call_trigger(rule['python_code'], query):
@@ -729,10 +733,9 @@ Extreme: novel patterns, 12 attempts, breadth 8, temp 0.9"""
         p += "Done! Added greeting to ui.py.\n"
         return p
 
-    def _build_slow_prompt(self, query, retrieved_eps):
+    def _build_slow_prompt(self, query, query_emb, retrieved_eps):
         p = f"Task: {query}\n\n"
 
-        query_emb = llm.get_embedding(query)
         learned_rules = self.memory.retrieve_semantics(query_emb, k=2)
 
         if learned_rules:

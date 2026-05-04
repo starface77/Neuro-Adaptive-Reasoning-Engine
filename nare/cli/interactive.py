@@ -22,7 +22,7 @@ def ask_choice(
     choices: List[tuple[str, str]],
     default: Optional[str] = None
 ) -> Optional[str]:
-    """Ask user to choose from options using arrow keys.
+    """Ask user to choose from options inline in CLI.
 
     Args:
         question: Question to ask
@@ -43,14 +43,33 @@ def ask_choice(
             default="yes"
         )
     """
+    console = Console()
+
+    console.print()
+    console.print(f"  [#D77757]{question}[/]")
+    console.print()
+
+    for i, (value, label) in enumerate(choices, 1):
+        marker = "→" if value == default else " "
+        console.print(f"  {marker} [{i}] {label}")
+
+    console.print()
+
     try:
-        result = radiolist_dialog(
-            title=question,
-            text="Use arrow keys to select, Enter to confirm:",
-            values=choices,
-            default=default
-        ).run()
-        return result
+        while True:
+            response = input("  Choice (number or Enter for default): ").strip()
+
+            if not response and default:
+                return default
+
+            try:
+                idx = int(response) - 1
+                if 0 <= idx < len(choices):
+                    return choices[idx][0]
+                else:
+                    console.print(f"  [#FF5555]Invalid choice. Enter 1-{len(choices)}[/]")
+            except ValueError:
+                console.print(f"  [#FF5555]Invalid input. Enter a number or press Enter[/]")
     except (KeyboardInterrupt, EOFError):
         return None
 

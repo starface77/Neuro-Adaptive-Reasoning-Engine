@@ -37,7 +37,7 @@ class AutonomousRunner:
         self.session = session
         self.is_running = False
         self.max_iterations = 50
-        self.max_errors = 5
+        self.max_errors = 3
         self.error_count = 0
 
     def should_run_autonomously(self, query: str) -> bool:
@@ -103,7 +103,7 @@ class AutonomousRunner:
         last_result = None
 
         ui.console.print()
-        ui.console.print("  [#00FFFF]◆ Autonomous mode activated[/]")
+        ui.console.print("  [#D77757]◆ Autonomous mode activated[/]")
         ui.console.print(f"  [#666666]Press Ctrl+C anytime to pause[/]")
         ui.console.print()
 
@@ -175,18 +175,23 @@ class AutonomousRunner:
                 log.error(f"[Autonomous] Error: {e}")
                 self.error_count += 1
 
+                if self.error_count >= self.max_errors:
+                    ui.console.print()
+                    ui.console.print(f"  [#FF0000]Too many errors ({self.max_errors}), stopping autonomous mode[/]")
+                    ui.console.print()
+                    break
+
                 ui.console.print()
+                ui.console.print(f"  [#FF5555]Error:[/] {str(e)[:100]}")
+                ui.console.print(f"  [#666666]Retries so far: {self.error_count}[/]")
+                ui.console.print()
+
                 action = ask_continue_after_error(str(e), self.error_count)
 
                 if action == "retry":
-                    if self.error_count >= self.max_errors:
-                        ui.console.print(f"  [#FF0000]Too many errors ({self.max_errors}), stopping[/]")
-                        break
-
                     time.sleep(2)
                     continue
                 elif action == "skip":
-
                     if last_result:
                         next_task = self._extract_next_task(last_result)
                         if next_task:

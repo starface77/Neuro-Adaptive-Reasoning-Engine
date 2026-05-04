@@ -188,17 +188,11 @@ def get_embedding(text: str) -> list:
 
     if _embedding_model == "FAILED":
         import numpy as np
-        return np.zeros(3072, dtype=np.float32).tolist()
+        return np.zeros(1024, dtype=np.float32).tolist()
 
     emb = _embedding_model.encode(text, convert_to_numpy=True, show_progress_bar=False)
 
-    if len(emb) < 3072:
-        import numpy as np
-        padding = np.zeros(3072 - len(emb))
-        emb = np.concatenate([emb, padding])
-    elif len(emb) > 3072:
-        emb = emb[:3072]
-
+    # BGE-large produces 1024-dim embeddings - use native dimension
     return emb.tolist()
 
 def generate_samples(prompt: str, n: int = 3, temperature: float = 0.8, mode: str = "ANALYTIC", thinking_display=None):

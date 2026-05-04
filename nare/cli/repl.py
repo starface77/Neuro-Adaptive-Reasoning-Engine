@@ -168,10 +168,13 @@ def run_query(session: NareSession, query: str):
 
     autonomous = AutonomousRunner(session)
     if autonomous.should_run_autonomously(query):
+        console.print()
+        console.print(f"  [#FFA500]◆ This looks like a multi-step task[/]")
+        console.print()
 
-        console.print(f"  [#FFA500]This looks like a multi-step task[/]")
-        if ask_yes_no("Work on this autonomously?", default=True):
+        user_choice = ask_yes_no("Work on this autonomously?", default=False)
 
+        if user_choice:
             if mode_config.show_thinking:
                 with show_thinking() as thinking:
                     thinking.start_waiting("Thinking")
@@ -180,6 +183,9 @@ def run_query(session: NareSession, query: str):
             else:
                 result = autonomous.run(query, thinking_display=None)
         else:
+            console.print()
+            console.print(f"  [#666666]Continuing in manual mode...[/]")
+            console.print()
 
             if mode_config.show_thinking:
                 with show_thinking() as thinking:

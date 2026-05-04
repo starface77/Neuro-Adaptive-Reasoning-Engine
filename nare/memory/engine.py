@@ -67,6 +67,10 @@ class MemorySystem:
 
         self._query_epoch = 0
 
+        # Deferred persistence
+        self._dirty = False
+        self._flush_timer = None
+
         # Disable quantization - IndexIVFPQ requires training which complicates cold start
         # Use HNSW for all cases (fast enough for <100k episodes)
         self.episodic_index = make_hnsw_index(embedding_dim)
@@ -95,6 +99,38 @@ class MemorySystem:
             if stored_dim != embedding_dim:
                 logging.warning(f"[Memory] Dimension mismatch: stored={stored_dim}, requested={embedding_dim}. Rebuilding index.")
                 self._rebuild_index()
+
+        # Filter compiled skills with wrong embedding dimension
+        if self.compiled_skills:
+            valid_skills = []
+            for skill in self.compiled_skills:
+                emb = skill.get('trigger_embedding', [])
+                if len(emb) == embedding_dim:
+                    valid_skills.append(skill)
+                else:
+                    logging.warning(f"[Memory] Removing skill with wrong embedding dim: {len(emb)} != {embedding_dim}")
+            self.compiled_skills = valid_skills
+            if len(valid_skills) < len(self.compiled_skills):
+                self._mark_dirty()
+
+        # Filter semantic rules with wrong embedding dimension
+        if self.semantic_rules:
+            valid_rules = []
+            for rule in self.semantic_rules:
+                emb = rule.get('embedding', [])
+                if len(emb) == embedding_dim:
+                    valid_rules.append(rule)
+                else:
+                    logging.warning(f"[Memory] Removing semantic rule with wrong embedding dim: {len(emb)} != {embedding_dim}")
+            if len(valid_rules) != len(self.semantic_rules):
+                self.semantic_rules = valid_rules
+                # Rebuild semantic index
+                self.semantic_index = faiss.IndexFlatIP(embedding_dim)
+                if valid_rules:
+                    rule_embs = np.array([r['embedding'] for r in valid_rules], dtype=np.float32)
+                    faiss.normalize_L2(rule_embs)
+                    self.semantic_index.add(rule_embs)
+                self._mark_dirty()
 
     def add_episode(self, episode_data: Dict[str, Any], embedding: np.ndarray):
         """Episode Schema: {query, context, solution, reasoning_trace, score, timestamp}.
@@ -140,7 +176,7 @@ class MemorySystem:
 
             self.episodic_index.add(vector)
             self.episodes.append(episode_data)
-            self.save()
+            self._mark_dirty()
             return True
 
     def find_episode_indices_by_keys(self, keys: List[str]) -> List[int]:
@@ -208,7 +244,7 @@ class MemorySystem:
             if removed:
                 logging.info(f"[Immune] Removed {removed} untrusted episodes (τ < {theta})")
                 self._rebuild_episodic_index()
-                self.save()
+                self._mark_dirty()
 
     @staticmethod
     def _suppression_hash(text: str) -> str:
@@ -236,7 +272,7 @@ class MemorySystem:
             self.suppression_rules.append(rule)
             if len(self.suppression_rules) > max_rules:
                 self.suppression_rules = self.suppression_rules[-max_rules:]
-            self.save()
+            self._mark_dirty()
         logging.info(f"[Immune] Suppression rule added for query: {query[:60]}")
 
     def is_suppressed(self, query: str, answer: str) -> bool:
@@ -293,18 +329,32 @@ class MemorySystem:
                 )
                 self.episodes = kept_episodes
                 self._rebuild_episodic_index()
-                self.save()
+                self._mark_dirty()
 
     def _rebuild_episodic_index(self):
         """Rebuild the HNSW episodic index from current episode list."""
         self.episodic_index = make_hnsw_index(self.embedding_dim)
         if self.episodes:
-            vecs = np.array(
-                [ep['embedding'] for ep in self.episodes],
-                dtype=np.float32,
-            )
-            # Embeddings already normalized in add_episode, no need to normalize again
-            self.episodic_index.add(vecs)
+            # Filter episodes with correct embedding dimension
+            valid_episodes = []
+            for ep in self.episodes:
+                emb = ep.get('embedding', [])
+                if len(emb) == self.embedding_dim:
+                    valid_episodes.append(ep)
+                else:
+                    logging.warning(f"[Memory] Skipping episode with wrong embedding dim: {len(emb)} != {self.embedding_dim}")
+
+            if valid_episodes:
+                self.episodes = valid_episodes
+                vecs = np.array(
+                    [ep['embedding'] for ep in valid_episodes],
+                    dtype=np.float32,
+                )
+                # Embeddings already normalized in add_episode, no need to normalize again
+                self.episodic_index.add(vecs)
+            else:
+                logging.warning("[Memory] No valid episodes after dimension filter, starting fresh")
+                self.episodes = []
 
     def retrieve_episodes(self, query_emb: np.ndarray, k: int = 3) -> List[Dict[str, Any]]:
         """Retrieve top-k episodes, filtering suppressed pairs.
@@ -406,7 +456,7 @@ class MemorySystem:
 
             self.semantic_index.add(vector)
             self.semantic_rules.append(rule_data)
-            self.save()
+            self._mark_dirty()
             return False
 
     def update_semantic_rule(self, idx: int, rule_data: Dict[str, Any], new_embedding: np.ndarray = None):
@@ -426,7 +476,7 @@ class MemorySystem:
                     v = v.reshape(1, -1)
                     faiss.normalize_L2(v)
                     self.semantic_index.add(v)
-            self.save()
+            self._mark_dirty()
 
     def retrieve_semantics(self, query_emb: np.ndarray, k: int = 2) -> List[Dict[str, Any]]:
         with self._lock:
@@ -476,7 +526,7 @@ class MemorySystem:
             )
             self.factual_index.add(vector)
             self.facts.append(fact_data)
-            self.save()
+            self._mark_dirty()
             return True
 
     def retrieve_facts(self, query_emb: np.ndarray, k: int = 3) -> List[Dict[str, Any]]:
@@ -516,6 +566,29 @@ class MemorySystem:
                 json.dump(self.suppression_rules, f, ensure_ascii=False, indent=2)
             with open(os.path.join(self.persist_dir, "compiled_skills.json"), "w", encoding="utf-8") as f:
                 json.dump(self.compiled_skills, f, ensure_ascii=False, indent=2)
+
+    def _mark_dirty(self):
+        """Mark memory as dirty and schedule flush."""
+        self._dirty = True
+        if self._flush_timer is None:
+            self._flush_timer = threading.Timer(5.0, self._flush)
+            self._flush_timer.daemon = True
+            self._flush_timer.start()
+
+    def _flush(self):
+        """Background flush of dirty memory."""
+        with self._lock:
+            if self._dirty:
+                self._mark_dirty()
+                self._dirty = False
+            self._flush_timer = None
+
+    def force_save(self):
+        """Force immediate save (for shutdown)."""
+        if self._flush_timer:
+            self._flush_timer.cancel()
+            self._flush_timer = None
+        self.save()
 
     def load(self):
         ep_index = os.path.join(self.persist_dir, "episodic.faiss")
@@ -595,7 +668,7 @@ class MemorySystem:
                     else:
                         self.episodic_index = make_hnsw_index(self.embedding_dim)
 
-                self.save()
+                self._mark_dirty()
 
         return removed
 
@@ -628,19 +701,8 @@ class MemorySystem:
                         faiss.normalize_L2(emb)
                         self.factual_index.add(emb)
 
-            self.save()
+            self._mark_dirty()
             logging.info("[Memory] Defragmentation complete")
-
-    def _rebuild_episodic_index(self) -> None:
-        """Rebuild episodic FAISS index from embeddings."""
-        # Always use HNSW - quantized index requires training
-        self.episodic_index = make_hnsw_index(self.embedding_dim)
-
-        if len(self.episode_embeddings) > 0:
-
-            embeddings = self.episode_embeddings.copy()
-            faiss.normalize_L2(embeddings)
-            self.episodic_index.add(embeddings)
 
     def get_memory_stats(self) -> Dict[str, Any]:
         """Get memory system statistics.
@@ -719,7 +781,7 @@ class MemorySystem:
                 logging.info(f"[Memory] Pruned {removed} low-quality/stale/activation episodes")
                 self.episodes = kept_episodes
                 self._rebuild_episodic_index()
-                self.save()
+                self._mark_dirty()
 
     def _rebuild_index(self):
         """Rebuild FAISS index with current embedding dimension."""
@@ -736,7 +798,7 @@ class MemorySystem:
                 'created_at': time.time()
             })
             logging.info(f"[LibraryLearning] Compiled skill: {pattern}")
-            self.save()
+            self._mark_dirty()
 
     def retrieve_skills(self, query_emb: np.ndarray, k: int = 3) -> List[Dict]:
         """Retrieve top-k compiled skills by similarity."""
@@ -744,7 +806,13 @@ class MemorySystem:
             if not self.compiled_skills:
                 return []
 
-            skill_embs = np.array([s['trigger_embedding'] for s in self.compiled_skills], dtype=np.float32)
+            # Filter skills with correct embedding dimension
+            valid_skills = [s for s in self.compiled_skills if len(s.get('trigger_embedding', [])) == self.embedding_dim]
+            if not valid_skills:
+                logging.warning("[Memory] No valid skills with correct embedding dimension")
+                return []
+
+            skill_embs = np.array([s['trigger_embedding'] for s in valid_skills], dtype=np.float32)
             faiss.normalize_L2(skill_embs)
 
             query_vec = np.array(query_emb, dtype=np.float32)
@@ -755,13 +823,13 @@ class MemorySystem:
             temp_index = faiss.IndexFlatIP(skill_embs.shape[1])
             temp_index.add(skill_embs)
 
-            k_search = min(k, len(self.compiled_skills))
+            k_search = min(k, len(valid_skills))
             sims, indices = temp_index.search(query_vec, k_search)
 
             results = []
             for sim, idx in zip(sims[0], indices[0]):
-                if idx >= 0 and idx < len(self.compiled_skills):
-                    skill = self.compiled_skills[idx].copy()
+                if idx >= 0 and idx < len(valid_skills):
+                    skill = valid_skills[idx].copy()
                     skill['similarity'] = float(sim)
                     skill['skill_id'] = int(idx)
                     results.append(skill)

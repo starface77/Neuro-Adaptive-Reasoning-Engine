@@ -149,7 +149,7 @@ class NareSession:
         self.agent = NAREProductionAgent(
             config=config,
             persist_dir=persist_dir,
-            embedding_dim=3072,
+            embedding_dim=1024,
         )
 
         self.triage = TriageAgent()

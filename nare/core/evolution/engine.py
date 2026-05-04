@@ -213,7 +213,7 @@ class EvolutionEngine:
                     if 0 <= idx < len(self.memory.compiled_skills):
                         removed = self.memory.compiled_skills.pop(idx)
                         logging.info(f"[SKILL VALIDATION] Removed skill: {removed.get('pattern', 'unknown')}")
-                self.memory.save()
+                self.memory.force_save()
 
         logging.info(f"[SKILL VALIDATION] Validation complete. {len(self.memory.compiled_skills)} skills remaining")
 
