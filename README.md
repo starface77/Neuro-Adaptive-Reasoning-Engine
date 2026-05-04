@@ -280,7 +280,7 @@ MIT — see [`LICENSE`](LICENSE)
 
 ## Credits
 
-Built by [@yourusername](https://github.com/yourusername)
+Built by github.com/starface77
 
 Inspired by:
 - [Voyager](https://github.com/MineDojo/Voyager) (skill library learning)
