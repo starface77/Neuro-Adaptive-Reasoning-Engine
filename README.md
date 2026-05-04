@@ -70,9 +70,9 @@ Think of it as an AI that builds its own library of solutions as it works.
 ## Installation
 
 ```bash
-git clone https://github.com/yourusername/nare.git
-cd nare
-pip install -e .
+git clone https://github.com/starface77/Neuro-Adaptive-Reasoning-Engine
+cd Neuro-Adaptive-Reasoning-Engine
+pip install -r requirements.txt
 ```
 
 **Requirements:**
