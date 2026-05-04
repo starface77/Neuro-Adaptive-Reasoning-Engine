@@ -43,10 +43,7 @@ class AutonomousRunner:
     def should_run_autonomously(self, query: str) -> bool:
         """Detect if query needs autonomous execution.
 
-        Indicators:
-        - Multiple steps mentioned ("first", "then", "after")
-        - Long-running tasks ("refactor all", "implement", "create")
-        - Explicit request ("do this automatically", "work on this")
+        Uses LLM to understand user intent for autonomous mode.
 
         Args:
             query: User query
@@ -54,28 +51,68 @@ class AutonomousRunner:
         Returns:
             True if should run autonomously
         """
+        from nare.reasoning import llm
+
+        # Quick heuristic check first (fast path)
         query_lower = query.lower()
 
+        # Explicit autonomous keywords
+        explicit_keywords = [
+            "автономн", "автоматическ", "работай сам", "сделай сам",
+            "automatically", "autonomously", "work on this"
+        ]
+        if any(kw in query_lower for kw in explicit_keywords):
+            return True
+
+        # Multi-step indicators
         multi_step_words = [
             "first", "then", "after", "next", "finally",
-            "step 1", "step 2", "1.", "2.", "3."
+            "step 1", "step 2", "1.", "2.", "3.",
+            "сначала", "потом", "затем", "далее"
         ]
         if any(word in query_lower for word in multi_step_words):
             return True
 
+        # Long tasks
         long_tasks = [
             "refactor all", "implement", "create", "build",
-            "fix all", "update all", "migrate", "convert all"
+            "fix all", "update all", "migrate", "convert all",
+            "исправь все", "реализуй", "создай", "построй"
         ]
         if any(task in query_lower for task in long_tasks):
             return True
 
-        autonomous_words = [
-            "automatically", "autonomously", "work on this",
-            "do this for me", "complete this", "finish this"
-        ]
-        if any(word in query_lower for word in autonomous_words):
-            return True
+        # LLM-based intent detection (slow path, only for ambiguous cases)
+        # Skip if query is very short (likely not autonomous)
+        if len(query.split()) < 5:
+            return False
+
+        try:
+            prompt = f"""Analyze if this user request requires autonomous multi-step execution.
+
+User request: "{query}"
+
+Answer with ONLY "yes" or "no".
+
+Answer "yes" if:
+- User explicitly asks for autonomous/automatic work
+- Task requires multiple sequential steps
+- Task is complex and will take multiple iterations
+- User wants you to work independently on something
+
+Answer "no" if:
+- Simple question or single action
+- User wants to guide each step
+- Conversational query
+
+Answer:"""
+
+            response = llm.generate_samples(prompt, n=1, temperature=0.0, mode="DIRECT")
+            if response and len(response) > 0:
+                answer = response[0].get('text', '').strip().lower()
+                return 'yes' in answer
+        except:
+            pass
 
         return False
 
@@ -120,6 +157,7 @@ class AutonomousRunner:
 
                 self.error_count = 0
 
+                # Check if task is complete
                 if self._is_task_complete(result):
                     ui.console.print()
                     ui.console.print("  [#00FF00]✓ Task completed successfully[/]")
@@ -130,11 +168,9 @@ class AutonomousRunner:
                     if action == "done":
                         break
                     elif action == "review":
-
                         self.is_running = False
                         break
                     elif action == "next":
-
                         next_task = self._extract_next_task(result)
                         if next_task:
                             current_query = next_task
@@ -143,23 +179,59 @@ class AutonomousRunner:
                             ui.console.print("  [#666666]No more tasks found[/]")
                             break
 
+                # Task not complete - check if there's more work
                 next_task = self._extract_next_task(result)
-                if next_task:
-                    ui.console.print()
-                    action = ask_autonomous_action(next_task)
 
-                    if action == "continue":
-                        current_query = next_task
+                # If no explicit next task found, but answer suggests continuation, keep going
+                if not next_task:
+                    answer = result.get("final_answer", "").lower()
+
+                    # First check if LLM wants to continue
+                    continuation_phrases = [
+                        "начинаю", "продолжаю", "далее", "теперь", "следующий шаг", "сейчас",
+                        "starting", "continuing", "next", "now", "proceeding", "first", "firstly"
+                    ]
+                    wants_to_continue = any(phrase in answer for phrase in continuation_phrases)
+
+                    # Check for hallucinations
+                    hallucination_indicators = [
+                        "backend/", "frontend/", "server.js", "app.jsx", "database.js",
+                        "auth.js", "users.js", "config.js", "middleware/", "routes.js"
+                    ]
+                    is_hallucinating = any(indicator in answer for indicator in hallucination_indicators)
+
+                    if is_hallucinating:
+                        log.warning("[Autonomous] Hallucination detected - skipping iteration")
+                        # Skip hallucinated response but continue if LLM wants to
+                        if wants_to_continue:
+                            time.sleep(1)
+                            continue
+                        else:
+                            break
+
+                    if wants_to_continue:
+                        # Continue with same query to let LLM proceed
+                        ui.console.print()
+                        ui.console.print("  [#666666]Continuing work...[/]")
+                        time.sleep(1)
                         continue
-                    elif action == "pause":
-                        ui.console.print("  [#FFA500]⊙ Paused - returning to prompt[/]")
-                        self.is_running = False
+                    else:
+                        # No continuation detected, stop
                         break
-                    elif action == "stop":
-                        ui.console.print("  [#FF0000]⊘ Stopped by user[/]")
-                        break
-                else:
 
+                # Found explicit next task - ask user
+                ui.console.print()
+                action = ask_autonomous_action(next_task)
+
+                if action == "continue":
+                    current_query = next_task
+                    continue
+                elif action == "pause":
+                    ui.console.print("  [#FFA500]⊙ Paused - returning to prompt[/]")
+                    self.is_running = False
+                    break
+                elif action == "stop":
+                    ui.console.print("  [#FF0000]⊘ Stopped by user[/]")
                     break
 
             except KeyboardInterrupt:

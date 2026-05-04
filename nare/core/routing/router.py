@@ -863,6 +863,43 @@ Extreme: novel patterns, 12 attempts, breadth 8, temp 0.9"""
 
         return False
 
+    def _get_hardcoded_response(self, query: str) -> str:
+        """Get instant hardcoded response for common greetings.
+
+        Avoids LLM call for trivial 1-token responses (ISSUE #1 from audit).
+        Returns None if no hardcoded response available.
+        """
+        q = query.strip().lower()
+
+        # Russian greetings
+        russian_greetings = {
+            'ку': 'Привет! Чем могу помочь?',
+            'привет': 'Привет! Чем могу помочь?',
+            'хай': 'Привет! Чем могу помочь?',
+            'здарова': 'Привет! Чем могу помочь?',
+            'здравствуйте': 'Здравствуйте! Чем могу помочь?',
+            'добрый день': 'Добрый день! Чем могу помочь?',
+            'доброе утро': 'Доброе утро! Чем могу помочь?',
+            'добрый вечер': 'Добрый вечер! Чем могу помочь?',
+        }
+
+        # English greetings
+        english_greetings = {
+            'hi': 'Hi! How can I help?',
+            'hello': 'Hello! How can I help?',
+            'hey': 'Hey! How can I help?',
+            'yo': 'Hey! What can I do for you?',
+            'sup': 'Hey! What can I do for you?',
+            'howdy': 'Howdy! How can I help?',
+        }
+
+        if q in russian_greetings:
+            return russian_greetings[q]
+        if q in english_greetings:
+            return english_greetings[q]
+
+        return None
+
     def _wrap_result(self, route, answer, memories, candidates, log, alpha, start_time, tokens, alpha_t=0.0, query="", chat_history="", repo_map="", intent=""):
         result = {
             "route_decision": route,

@@ -49,12 +49,37 @@ _CHILD_RUNNER = """
 import json
 import sys
 
+# Import AST validator for defense in depth
+try:
+    from nare.execution.sandboxes.base import validate_code, SecurityError
+    HAS_VALIDATOR = True
+except ImportError:
+    HAS_VALIDATOR = False
+
 req = json.loads(sys.stdin.read())
 code = req["code"]
 query = req["query"]
 mode = req.get("mode", "execute")  # 'trigger', 'execute', or 'execute_if_trigger'
 
-ns = {"__builtins__": __builtins__}
+# Defense in depth: validate code in child process too
+if HAS_VALIDATOR:
+    try:
+        validate_code(code)
+    except SecurityError as e:
+        print(json.dumps({"ok": False, "error": "AST validation failed: " + str(e)}))
+        sys.exit(0)
+
+# Use restricted builtins
+restricted_builtins = {
+    'abs': abs, 'all': all, 'any': any, 'bool': bool, 'dict': dict,
+    'enumerate': enumerate, 'filter': filter, 'float': float, 'int': int,
+    'len': len, 'list': list, 'map': map, 'max': max, 'min': min,
+    'range': range, 'reversed': reversed, 'set': set, 'sorted': sorted,
+    'str': str, 'sum': sum, 'tuple': tuple, 'zip': zip,
+    'Exception': Exception, 'ValueError': ValueError, 'TypeError': TypeError,
+}
+
+ns = {"__builtins__": restricted_builtins}
 try:
     exec(code, ns)
 except Exception as e:

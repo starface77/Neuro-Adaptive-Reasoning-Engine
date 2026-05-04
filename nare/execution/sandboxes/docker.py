@@ -234,10 +234,18 @@ class DockerSandbox:
         Returns:
             Dict with stdout, stderr, exit_code
         """
+        # Sanitize filename to prevent command injection
+        import re
+        safe_filename = re.sub(r'[^a-zA-Z0-9._-]', '', code_filename)
+        if safe_filename != code_filename:
+            log.warning(f"Sanitized filename: {code_filename} -> {safe_filename}")
+            code_filename = safe_filename
+
         run_cmd = self.config['run_cmd'].format(file=code_filename)
 
         if stdin_file:
-            run_cmd = f"{run_cmd} < {stdin_file.name}"
+            safe_stdin = re.sub(r'[^a-zA-Z0-9._-]', '', stdin_file.name)
+            run_cmd = f"{run_cmd} < {safe_stdin}"
 
         container = self.client.containers.run(
             self.config['image'],
@@ -249,10 +257,12 @@ class DockerSandbox:
             network_disabled=self.network_disabled,
             detach=True,
             remove=False,
-
+            # Security hardening
             security_opt=['no-new-privileges'],
             cap_drop=['ALL'],
-            read_only=False,
+            read_only=True,  # Make root filesystem read-only
+            tmpfs={'/tmp': 'size=100m,mode=1777'},  # Allow /tmp writes
+            user='nobody',  # Run as non-root user
         )
 
         try:
