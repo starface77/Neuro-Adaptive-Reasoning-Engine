@@ -17,16 +17,14 @@ from nare.cli.session import NareSession
 from nare.cli.repl import repl, run_query
 from nare.cli.display import ui
 
-
 def main():
-    # Fix Windows encoding and disable buffering
+
     if hasattr(sys.stdout, "reconfigure"):
         try:
             sys.stdout.reconfigure(encoding="utf-8", line_buffering=True)
         except Exception:
             pass
 
-    # Disable output buffering for real-time streaming
     import os
     os.environ['PYTHONUNBUFFERED'] = '1'
 
@@ -48,7 +46,6 @@ def main():
 
     args = parser.parse_args()
 
-    # Configure logging based on debug flag
     if args.debug:
         logging.basicConfig(
             level=logging.DEBUG,
@@ -56,13 +53,12 @@ def main():
             datefmt="%H:%M:%S",
         )
     else:
-        # Silent mode - only show critical errors
+
         logging.basicConfig(
             level=logging.CRITICAL,
             format="%(message)s",
         )
 
-    # Benchmark mode
     if args.bench is not None:
         from nare.cli.commands import BenchCommand
         BenchCommand().execute(NareSession(args.repo), str(args.bench))
@@ -70,7 +66,6 @@ def main():
 
     session = NareSession(repo_path=args.repo)
 
-    # One-shot mode
     if args.query:
         ui.print_banner()
         ui.print_status("repo", session.repo_path, "info")
@@ -83,17 +78,16 @@ def main():
             sys.exit(130)
         except Exception as e:
             if args.debug:
-                # Show full traceback in debug mode
+
                 import traceback
                 ui.console.print(f"[error]✖ Error:[/] {e}")
                 ui.console.print(traceback.format_exc())
             else:
-                # Clean error message in normal mode
+
                 ui.print_error(str(e))
             sys.exit(1)
         return
 
-    # Interactive REPL
     try:
         repl(session)
     except KeyboardInterrupt:
@@ -107,7 +101,6 @@ def main():
         else:
             ui.print_error(f"Fatal error: {e}")
         sys.exit(1)
-
 
 if __name__ == "__main__":
     main()

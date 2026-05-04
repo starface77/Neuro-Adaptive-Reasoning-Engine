@@ -26,10 +26,6 @@ from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 
-
-# Colors are duplicated from theme.py rather than imported to keep this
-# module side-effect-free at import time. Theme overrides apply through
-# the shared `console` instance from ui.py.
 ACCENT = "#D77757"
 ACCENT_DIM = "#a25a40"
 TEXT = "#FFFFFF"
@@ -48,10 +44,6 @@ ROUTE_PALETTE = {
     "SLOW-PATH-FIX":  "#D77757",
     "AGENT":          "#D77757",
 }
-
-
-# ── Banner ────────────────────────────────────────────────────────────
-
 
 def render_banner(console: Console, repo_path: str, mode: str = "Manual") -> None:
     """Render the welcome banner.
@@ -133,10 +125,6 @@ def render_banner(console: Console, repo_path: str, mode: str = "Manual") -> Non
         )
     console.print()
 
-
-# ── Tool blocks ───────────────────────────────────────────────────────
-
-
 @dataclass
 class ToolBlock:
     """A single tool-call block.
@@ -166,9 +154,9 @@ class ToolBlock:
     summary: Optional[str] = None
     body: Optional[str] = None
     body_lang: Optional[str] = None
-    state: str = "ok"  # ok | running | error
-    expandable: bool = False  # Adds `(ctrl+o to expand)` hint to header
-    body_numbered: bool = False  # Number body lines starting from 1
+    state: str = "ok"
+    expandable: bool = False
+    body_numbered: bool = False
 
     _STATE_DOT = {
         "ok":      ("●", ACCENT),
@@ -179,12 +167,8 @@ class ToolBlock:
     def render(self, console: Console, max_body_lines: int = 8) -> None:
         dot, dot_color = self._STATE_DOT.get(self.state, self._STATE_DOT["ok"])
 
-        # Truncate the target so the header line never wraps. We keep
-        # at least the first 8 chars and the last 12 chars and drop the
-        # middle. Long paths like `nare/cli/display/components.py`
-        # become `nare/cli/display/com…ts.py` on a 60-col terminal.
         width = max(20, console.size.width if hasattr(console, "size") else 80)
-        # Reserve room for "  ◌ Verb()" plus a tiny right-side gutter.
+
         budget = max(8, width - len(self.verb) - 6)
         target = self.target
         if len(target) > budget:
@@ -198,13 +182,9 @@ class ToolBlock:
         header.append(f"{self.verb}(", style=TEXT)
         header.append(safe_target, style=ACCENT)
         header.append(")", style=TEXT)
-        # The `(ctrl+o to expand)` hint was decorative — there is no
-        # actual key binding behind it — and the user found it noisy.
-        # We just drop it; the truncation suffix below already tells
-        # them how many lines were elided.
+
         console.print(header)
 
-        # Summary line uses `└` continuation, matching the reference look.
         if self.summary:
             summary = Text()
             summary.append("    └ ", style=TEXT_FAINT)
@@ -243,7 +223,6 @@ class ToolBlock:
                 tail.append(f"    … +{extra} lines", style=TEXT_FAINT)
                 console.print(tail)
 
-
 def render_running(console: Console, verb: str, target: str) -> None:
     """Print a tool-call block in the running state.
 
@@ -253,7 +232,6 @@ def render_running(console: Console, verb: str, target: str) -> None:
           └ Running…
     """
     ToolBlock(verb, target, summary="Running…", state="running").render(console)
-
 
 def render_read(
     console: Console,
@@ -266,7 +244,6 @@ def render_read(
     ToolBlock(
         "Read", path, summary=summary, expandable=expandable,
     ).render(console)
-
 
 def render_write(
     console: Console,
@@ -298,7 +275,6 @@ def render_write(
         body_numbered=True,
     ).render(console, max_body_lines=preview_lines)
 
-
 def render_edit(
     console: Console,
     path: str,
@@ -323,7 +299,6 @@ def render_edit(
         body_lang="diff",
     ).render(console)
 
-
 def render_bash(
     console: Console,
     command: str,
@@ -335,10 +310,10 @@ def render_bash(
     has_output = bool(output and output.strip())
 
     if state == "error":
-        # Errors: lead with exit code so it can't be missed.
+
         summary = f"exit {exit_code}"
     elif has_output:
-        summary = None  # Body speaks for itself, summary would be noise.
+        summary = None
     else:
         summary = "Done"
 
@@ -349,7 +324,6 @@ def render_bash(
         body=output if has_output else None,
         state=state,
     ).render(console)
-
 
 def render_grep(
     console: Console,
@@ -364,13 +338,8 @@ def render_grep(
     )
     ToolBlock("Grep", target, summary=summary).render(console)
 
-
-# ── Batch action headers ──────────────────────────────────────────────
-
-
 def _pluralize(n: int, singular: str, plural: Optional[str] = None) -> str:
     return singular if n == 1 else (plural or singular + "s")
-
 
 def render_batch_header(
     console: Console,
@@ -388,12 +357,9 @@ def render_batch_header(
     """
     line = Text("  ")
     line.append(escape(text), style=TEXT)
-    # `expandable` is kept on the signature for backward compat but
-    # we no longer print the `(ctrl+o to expand)` hint — it was
-    # decorative and the user found it noisy.
+
     _ = expandable
     console.print(line)
-
 
 def render_reading_files(
     console: Console,
@@ -415,7 +381,6 @@ def render_reading_files(
             )
         )
 
-
 def render_searching(
     console: Console,
     pattern: str,
@@ -433,7 +398,6 @@ def render_searching(
             (escape(repr(pattern)), TEXT_MUTED),
         )
     )
-
 
 def render_listing_directory(
     console: Console,
@@ -453,10 +417,6 @@ def render_listing_directory(
             (escape(path), TEXT),
         )
     )
-
-
-# ── Diff ──────────────────────────────────────────────────────────────
-
 
 def render_diff(
     console: Console,
@@ -491,7 +451,7 @@ def render_diff(
     shown = diff[:max_lines]
     for line in shown:
         if line.startswith("+++") or line.startswith("---"):
-            continue  # filename headers already shown
+            continue
         if line.startswith("@@"):
             console.print(f"    {escape(line)}", style=TEXT_FAINT)
         elif line.startswith("+"):
@@ -507,10 +467,6 @@ def render_diff(
             style=TEXT_FAINT,
         )
     console.print()
-
-
-# ── Status line ───────────────────────────────────────────────────────
-
 
 def render_status_line(
     console: Console,
@@ -532,7 +488,7 @@ def render_status_line(
 
     Empty fields are skipped silently.
     """
-    # Each entry: (priority, Text). Lower priority = drop first when narrow.
+
     entries: list[tuple[int, Text]] = []
 
     if mode:
@@ -554,7 +510,7 @@ def render_status_line(
         right.append(route, style=color)
         if elapsed is not None:
             right.append(f"  {elapsed:.1f}s", style=TEXT_FAINT)
-        # Route + elapsed is the most important field — never drop.
+
         entries.append((4, right))
 
     if not entries:
@@ -570,9 +526,6 @@ def render_status_line(
             line.append(p)
         return line
 
-    # Try fitting the whole line; if too long, drop low-priority entries
-    # in ascending order until it fits or only the highest-priority ones
-    # remain. Keeps the most useful info (route + mode) visible.
     sorted_entries = sorted(range(len(entries)), key=lambda i: entries[i][0])
     drop = 0
     while True:
@@ -583,10 +536,6 @@ def render_status_line(
             break
         drop += 1
     console.print(line, soft_wrap=True)
-
-
-# ── Todo panel ────────────────────────────────────────────────────────
-
 
 def render_todos(
     console: Console,
@@ -626,14 +575,10 @@ def render_todos(
             line.append("▸", style=ACCENT)
             line.append("] ", style=TEXT_FAINT)
             line.append(escape(text), style=TEXT)
-        else:  # pending / unknown
+        else:
             line.append("[ ] ", style=TEXT_FAINT)
             line.append(escape(text), style=TEXT_MUTED)
         console.print(line)
-
-
-# ── Slash command help ────────────────────────────────────────────────
-
 
 def render_command_table(
     console: Console, commands: Iterable[tuple[str, Sequence[str], str]]
@@ -656,10 +601,6 @@ def render_command_table(
     console.print(Padding(table, (0, 0, 0, 2)))
     console.print()
 
-
-# ── Confirmation ──────────────────────────────────────────────────────
-
-
 def confirm(console: Console, prompt: str, default_yes: bool = True) -> bool:
     """Ask for `Y/n` (or `y/N`) confirmation. Empty input takes the default."""
     suffix = "(Y/n)" if default_yes else "(y/N)"
@@ -679,7 +620,6 @@ def confirm(console: Console, prompt: str, default_yes: bool = True) -> bool:
     if not raw:
         return default_yes
     return raw in ("y", "yes", "д", "да")
-
 
 def confirm_action(
     console: Console,
@@ -759,15 +699,11 @@ def confirm_action(
         idx = int(raw) - 1
         if 0 <= idx < len(options):
             return idx
-    # Treat first letter match (y/yes etc.) — case-insensitive prefix match.
+
     for i, opt in enumerate(options):
         if opt.lower().startswith(raw):
             return i
     return -1
-
-
-# ── Live status footer ────────────────────────────────────────────────
-
 
 class LiveStatus:
     """Animated single-line footer shown while the agent is working.
@@ -792,7 +728,6 @@ class LiveStatus:
 
     SPINNER_FRAMES = ["+", "✦", "*", "·"]
 
-    # Neutral verb pool — used when caller doesn't pin one explicitly.
     DEFAULT_VERBS = (
         "Thinking",
         "Reasoning",
@@ -810,7 +745,7 @@ class LiveStatus:
         console: Optional[Console] = None,
         refresh_per_second: int = 8,
     ):
-        from rich.live import Live  # local import to avoid hard dep at module load
+        from rich.live import Live
 
         self._console = console
         self._verb = verb
@@ -821,8 +756,6 @@ class LiveStatus:
         self._live: Optional[Live] = None
         self._refresh = refresh_per_second
 
-    # ---- public API ------------------------------------------------
-
     def update(self, *, verb: Optional[str] = None) -> None:
         if verb is not None:
             self._verb = verb
@@ -832,8 +765,6 @@ class LiveStatus:
         self._tokens_in += in_
         self._tokens_out += out
         self._render()
-
-    # ---- context manager ------------------------------------------
 
     def __enter__(self) -> "LiveStatus":
         import time
@@ -853,8 +784,6 @@ class LiveStatus:
         if self._live is not None:
             self._live.__exit__(exc_type, exc_val, exc_tb)
         self._live = None
-
-    # ---- internals -------------------------------------------------
 
     def _render(self) -> None:
         if self._live is not None:
@@ -880,10 +809,6 @@ class LiveStatus:
         line.append(")", style=TEXT_FAINT)
         return line
 
-
-# ── Helpers ───────────────────────────────────────────────────────────
-
-
 def _ext_lang(path: str) -> Optional[str]:
     """Best-effort syntax language from a file extension."""
     ext = (os.path.splitext(path)[1] or "").lower().lstrip(".")
@@ -902,7 +827,6 @@ def _ext_lang(path: str) -> Optional[str]:
         "sql": "sql",
     }
     return mapping.get(ext)
-
 
 def _human_tokens(n: int) -> str:
     """Format a token count as `1.2k` / `34k` / `2.1M`."""

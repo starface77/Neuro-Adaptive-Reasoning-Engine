@@ -5,11 +5,11 @@ import numpy as np
 from typing import List, Dict, Any, Callable, Optional, Tuple
 
 from ..config import DEFAULT_CONFIG, NareConfig
-from ..memory.memory import MemorySystem
-from ..memory.metrics import MetricsTracker
-from ..reasoning.critic import Critic
-from .router import ReasoningRouter
-from .evolution import EvolutionEngine
+from ..memory.engine import MemorySystem
+from ..memory.analytics.metrics import MetricsTracker
+from ..reasoning.generation.ranker import Critic
+from .routing.router import ReasoningRouter
+from .evolution.engine import EvolutionEngine
 from ..reasoning import llm
 
 class NAREProductionAgent:
@@ -34,14 +34,12 @@ class NAREProductionAgent:
             embedding_dim=embedding_dim,
         )
 
-        # CRITICAL: Load existing memory from disk
         self.memory.load()
         logging.info(f"[Agent] Loaded memory: {len(self.memory.episodes)} episodes, {len(self.memory.compiled_skills)} skills")
 
         self.critic = Critic()
         self.metrics = MetricsTracker(persist_dir=self.memory.persist_dir)
 
-        # Core components
         self.router = ReasoningRouter(
             memory=self.memory,
             critic=self.critic,
@@ -102,12 +100,10 @@ class NAREProductionAgent:
             String representation of repository directory structure
         """
 
-        # Build functional oracle from spec if needed
         if oracle is None and oracle_spec is not None:
             from .oracle import build_oracle_from_spec
             oracle = build_oracle_from_spec(oracle_spec)
 
-        # Route query through the 4-tier pipeline
         result = self.router.route(
             query=query,
             oracle=oracle,
@@ -119,8 +115,7 @@ class NAREProductionAgent:
             repo_map=repo_map,
             intent=intent
         )
-        
-        # Post-solve actions (best-effort — never crash the user's answer)
+
         try:
             self._after_solve(query, result)
         except Exception as e:
@@ -136,26 +131,21 @@ class NAREProductionAgent:
             best = result["generated_candidates"][0]
             solve_ctx = best.get("solve_context")
 
-            # Save high-quality solutions (80%+) to main memory
             if best.get("final_score", 0) >= 0.80:
                 self._save_episode(query, best)
 
-                # Check if this pattern should be compiled as a skill
                 query_emb = llm.get_embedding(query)
                 similar_eps = self.memory.retrieve_episodes(np.array([query_emb], dtype=np.float32), k=5)
 
-                # Count episodes with high similarity (>0.85)
                 high_sim_count = sum(1 for ep in similar_eps if ep.get('similarity', 0) > 0.85)
 
                 if high_sim_count >= 3:
-                    # Compile as skill
+
                     self._compile_skill(query, best['solution'], query_emb)
 
-            # Save partial solutions (95%+ IoU but didn't fully converge)
             elif solve_ctx is not None and solve_ctx.partial_solutions:
                 self._save_partial_solutions(query, solve_ctx)
 
-        # Prune memory periodically
         if len(self.memory.episodes) > 100:
             self.memory.prune_memory()
 
@@ -168,7 +158,7 @@ class NAREProductionAgent:
             "query": query,
             "solution": best_cand['solution'],
             "reasoning_trace": best_cand.get('reasoning', 'N/A'),
-            "score": best_cand.get('final_score', 0.5),  # Conservative fallback
+            "score": best_cand.get('final_score', 0.5),
             "embedding": query_emb,
             "timestamp": time.time()
         }
@@ -185,12 +175,10 @@ class NAREProductionAgent:
 
         code_block = extract_python_block(solution)
         if not code_block:
-            return  # Can't compile non-code solutions
+            return
 
-        # Extract pattern (first line of query as trigger)
         pattern = query.split('\n')[0][:100]
 
-        # Store as compiled skill
         self.memory.add_compiled_skill(
             pattern=pattern,
             code=code_block,
@@ -210,7 +198,7 @@ class NAREProductionAgent:
                 "score": partial['iou'],
                 "embedding": query_emb,
                 "timestamp": time.time(),
-                "partial": True  # Mark as partial for future retrieval
+                "partial": True
             }
             self.memory.add_episode(episode_data, np.array([query_emb], dtype=np.float32))
             logging.info(f"[Memory] Saved partial solution (IoU: {partial['iou']:.2%})")

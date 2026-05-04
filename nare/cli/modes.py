@@ -20,7 +20,6 @@ from enum import Enum
 from dataclasses import dataclass
 from typing import Optional
 
-
 class Mode(Enum):
     """Available CLI modes.
 
@@ -32,7 +31,6 @@ class Mode(Enum):
     FOCUS = "Focus"
     VERBOSE = "Verbose"
     INTERACTIVE = "Interactive"
-
 
 @dataclass
 class ModeConfig:
@@ -55,13 +53,9 @@ class ModeConfig:
     ask_before_edit: bool = True
     ask_before_create: bool = True
     max_auto_iterations: int = 5
-    # Auto-commit defaults to OFF — committing after every prompt was
-    # noisy and clobbered the user's git history. Toggle with
-    # `/autocommit on` when you actually want it.
+
     auto_commit: bool = False
 
-
-# Mode configurations
 MODE_CONFIGS = {
     Mode.MANUAL: ModeConfig(
         auto_execute=False,
@@ -119,8 +113,6 @@ MODE_CONFIGS = {
     ),
 }
 
-
-# Mode descriptions for UI
 MODE_DESCRIPTIONS = {
     Mode.MANUAL: "Full control - confirm every action",
     Mode.RESEARCH: "Auto-explore, suggest solutions, ask before executing",
@@ -130,8 +122,6 @@ MODE_DESCRIPTIONS = {
     Mode.INTERACTIVE: "Step-by-step with feedback",
 }
 
-
-# Mode symbols for UI (removed emojis)
 MODE_SYMBOLS = {
     Mode.MANUAL: "",
     Mode.RESEARCH: "",
@@ -140,7 +130,6 @@ MODE_SYMBOLS = {
     Mode.VERBOSE: "",
     Mode.INTERACTIVE: "",
 }
-
 
 class ModeManager:
     """Manages CLI mode state and transitions.
@@ -232,10 +221,7 @@ class ModeManager:
         """
         return MODE_DESCRIPTIONS.get(self._current_mode, "")
 
-
-# Global mode manager instance
 _mode_manager: Optional[ModeManager] = None
-
 
 def get_mode_manager() -> ModeManager:
     """Get global mode manager instance.
@@ -248,7 +234,6 @@ def get_mode_manager() -> ModeManager:
         _mode_manager = ModeManager()
     return _mode_manager
 
-
 def get_current_mode() -> Mode:
     """Get current mode.
 
@@ -256,7 +241,6 @@ def get_current_mode() -> Mode:
         Current Mode
     """
     return get_mode_manager().current_mode
-
 
 def set_mode(mode: Mode) -> None:
     """Set current mode.
@@ -266,7 +250,6 @@ def set_mode(mode: Mode) -> None:
     """
     get_mode_manager().set_mode(mode)
 
-
 def cycle_mode() -> Mode:
     """Cycle to next mode.
 
@@ -274,7 +257,6 @@ def cycle_mode() -> Mode:
         New current mode
     """
     return get_mode_manager().cycle_mode()
-
 
 def get_mode_config() -> ModeConfig:
     """Get current mode configuration.

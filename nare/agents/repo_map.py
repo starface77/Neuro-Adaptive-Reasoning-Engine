@@ -17,21 +17,18 @@ from collections import defaultdict
 
 log = logging.getLogger("nare.agents.repo_map")
 
-# Directories to always skip (even in non-git repos)
 _SKIP_DIRS = {
     '__pycache__', '.git', '.venv', 'venv', 'node_modules',
     '.tox', '.mypy_cache', '.pytest_cache', 'dist', 'build',
     '.eggs', '*.egg-info', '.vare_memory', 'memory_store',
 }
 
-# Extensions we care about for code repos
 _CODE_EXTS = {
     '.py', '.js', '.ts', '.tsx', '.jsx', '.go', '.rs', '.java',
     '.c', '.cpp', '.h', '.hpp', '.rb', '.php', '.swift', '.kt',
     '.yaml', '.yml', '.toml', '.json', '.md', '.txt', '.cfg',
     '.ini', '.sh', '.bat', '.ps1', '.sql', '.html', '.css',
 }
-
 
 def generate_repo_map(
     repo_path: str,
@@ -62,12 +59,11 @@ def generate_repo_map(
     if not files:
         return "(empty repository)"
 
-    # Build tree structure
     tree = defaultdict(list)
     for f in files[:max_files]:
         parts = f.replace('\\', '/').split('/')
         if len(parts) > max_depth + 1:
-            # Collapse deep paths: show parent/…/filename
+
             key = '/'.join(parts[:max_depth])
             tree[key].append('.../' + parts[-1])
         elif len(parts) > 1:
@@ -76,7 +72,6 @@ def generate_repo_map(
         else:
             tree['.'].append(parts[0])
 
-    # Render
     lines = [f"Repository: {os.path.basename(repo_path)}/"]
     lines.append(f"({len(files)} tracked files)\n")
 
@@ -95,10 +90,9 @@ def generate_repo_map(
 
     return result
 
-
 def _get_file_list(repo_path: str) -> list:
     """Get list of relevant files, preferring git ls-files."""
-    # Try git first
+
     try:
         result = subprocess.run(
             ['git', 'ls-files'],
@@ -109,7 +103,7 @@ def _get_file_list(repo_path: str) -> list:
         )
         if result.returncode == 0 and result.stdout.strip():
             files = result.stdout.strip().split('\n')
-            # Filter to code-relevant files
+
             return [
                 f for f in files
                 if _is_relevant(f) and '/test' not in f.lower()
@@ -117,10 +111,9 @@ def _get_file_list(repo_path: str) -> list:
     except Exception as e:
         log.debug(f"git ls-files failed: {e}")
 
-    # Fallback: os.walk
     files = []
     for root, dirs, filenames in os.walk(repo_path):
-        # Skip hidden/irrelevant dirs
+
         dirs[:] = [d for d in dirs if d not in _SKIP_DIRS and not d.startswith('.')]
 
         rel_root = os.path.relpath(root, repo_path)
@@ -140,13 +133,12 @@ def _get_file_list(repo_path: str) -> list:
 
     return files
 
-
 def _is_relevant(path: str) -> bool:
     """Check if a file path is relevant for code analysis."""
     _, ext = os.path.splitext(path)
     if ext.lower() in _CODE_EXTS:
         return True
-    # Include extensionless files that look like configs
+
     basename = os.path.basename(path)
     if basename in ('Makefile', 'Dockerfile', 'Procfile', 'Gemfile',
                     'Rakefile', 'LICENSE', 'MANIFEST.in'):

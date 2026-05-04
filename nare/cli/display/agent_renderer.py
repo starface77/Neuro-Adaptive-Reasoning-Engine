@@ -15,7 +15,7 @@ from rich.console import Console
 from rich.text import Text
 from rich.markup import escape
 
-from nare.agents.events import (
+from nare.core.events import (
     Event,
     EventBus,
     IterationCompleted,
@@ -31,19 +31,13 @@ from nare.agents.events import (
 )
 from . import blocks
 
-
-# ─────────────────────────────────────────────────────────────────────
-# Public entry point
-# ─────────────────────────────────────────────────────────────────────
-
-
 def attach_renderer(
     bus: EventBus,
     console: Optional[Console] = None,
 ) -> Callable[[], None]:
     """Wire the bus into the CLI; returns an unsubscribe callable."""
     console = console or Console()
-    state: dict = {"started": 0.0, "tokens": 0, "streaming": False}
+    state: dict = {"started": 0.0, "tokens": 0, "streaming": False, "progress_bar": None}
 
     def on_event(ev: Event) -> None:
         if isinstance(ev, TaskStarted):
@@ -61,8 +55,7 @@ def attach_renderer(
         elif isinstance(ev, TokenStreamed):
             _on_token_streamed(console, state, ev)
         elif isinstance(ev, IterationCompleted):
-            # Reserved for a future progress bar; no immediate render.
-            pass
+            _on_iteration_completed(console, state, ev)
         elif isinstance(ev, TodoUpdated):
             _on_todos(console, ev)
         elif isinstance(ev, TaskFinished):
@@ -70,20 +63,11 @@ def attach_renderer(
 
     return bus.subscribe(on_event)
 
-
-# ─────────────────────────────────────────────────────────────────────
-# Per-event handlers
-# ─────────────────────────────────────────────────────────────────────
-
-
 def _on_task_started(console: Console, state: dict, ev: TaskStarted) -> None:
     import time
     state["started"] = time.time()
     state["tokens"] = 0
 
-    # The REPL prompt already echoed the user's input, so we skip the
-    # duplicate `❯ <query>` line and only show the (optional) intent
-    # tag for debugging context.
     console.print()
     if ev.intent:
         tag = Text()
@@ -93,6 +77,24 @@ def _on_task_started(console: Console, state: dict, ev: TaskStarted) -> None:
         console.print(tag)
         console.print()
 
+    route = getattr(ev, 'route', None)
+    if route:
+        route_tag = Text()
+        route_tag.append("  ● ", style=blocks.ACCENT)
+        route_tag.append(f"Route: ", style=blocks.TEXT)
+
+        route_colors = {
+            "DIRECT": "#888888",
+            "COMPILED_SKILL": "#4EBA65",
+            "FAST": "#4EBA65",
+            "HYBRID": "#FFC107",
+            "SLOW": "#D77757",
+            "AGENT": "#D77757",
+        }
+        route_color = route_colors.get(route, blocks.TEXT_MUTED)
+        route_tag.append(route, style=route_color)
+        console.print(route_tag)
+        console.print()
 
 def _on_plan(console: Console, ev: PlanProposed) -> None:
     if not ev.steps:
@@ -114,21 +116,16 @@ def _on_plan(console: Console, ev: PlanProposed) -> None:
         console.print(files)
     console.print()
 
-
 def _on_thought(console: Console, ev: Thought) -> None:
     if not ev.text.strip():
         return
-    line = Text()
-    line.append("  ● ", style=blocks.ACCENT)
-    line.append(escape(ev.text), style=blocks.TEXT)
-    console.print(line)
-    console.print()
 
+    console.print(ev.text, style="#666666", end="")
 
 def _on_todos(console: Console, ev: TodoUpdated) -> None:
     if not ev.items:
         return
-    # Coerce items to (state, text) tuples; tolerate dict input from tools.
+
     coerced: list[tuple[str, str]] = []
     for it in ev.items:
         if isinstance(it, dict):
@@ -143,11 +140,9 @@ def _on_todos(console: Console, ev: TodoUpdated) -> None:
         blocks.render_todos(console, coerced, title=ev.title or "Update todos")
         console.print()
 
-
 def _on_tool_start(console: Console, ev: ToolStart) -> None:
     target = _format_target(ev.name, ev.args)
     blocks.render_running(console, ev.display_verb or _verb_for(ev.name), target)
-
 
 def _on_tool_end(console: Console, ev: ToolEnd) -> None:
     name = ev.name
@@ -191,7 +186,7 @@ def _on_tool_end(console: Console, ev: ToolEnd) -> None:
             matches=ev.meta.get("matches"),
         )
     elif name == "list_dir":
-        # Reuse the batch-header shape for parity with the reference UI.
+
         path = args.get("path", ".")
         blocks.render_listing_directory(console, path)
         if ev.body:
@@ -212,7 +207,7 @@ def _on_tool_end(console: Console, ev: ToolEnd) -> None:
             state=state,
         ).render(console)
     else:
-        # Generic fallback for any other tool.
+
         target = _format_target(name, args)
         blocks.ToolBlock(
             verb=verb,
@@ -224,14 +219,34 @@ def _on_tool_end(console: Console, ev: ToolEnd) -> None:
         ).render(console)
     console.print()
 
-
 def _on_token_streamed(console: Console, state: dict, ev: TokenStreamed) -> None:
     if not state.get("streaming"):
         console.print()
-        console.print("  ", end="")  # Small left padding for the answer text
+        console.print("  ", end="")
         state["streaming"] = True
     console.print(ev.text, end="", style="white")
 
+def _on_iteration_completed(console: Console, state: dict, ev: IterationCompleted) -> None:
+    """Show progress for long-running tasks."""
+
+    if ev.n < 5:
+        return
+
+    iter_progress = (ev.n / ev.budget_iterations) * 100 if ev.budget_iterations else 0
+    token_progress = (ev.used_tokens / ev.budget_tokens) * 100 if ev.budget_tokens else 0
+
+    if ev.n % 5 == 0:
+        progress_text = Text()
+        progress_text.append("  ", style=blocks.TEXT_FAINT)
+        progress_text.append(f"[{ev.n}/{ev.budget_iterations} iterations", style=blocks.TEXT_FAINT)
+
+        if ev.used_tokens >= 1000:
+            token_str = f"{ev.used_tokens / 1000:.1f}k".replace(".0k", "k")
+        else:
+            token_str = str(ev.used_tokens)
+
+        progress_text.append(f" · {token_str} tokens]", style=blocks.TEXT_FAINT)
+        console.print(progress_text)
 
 def _on_task_finished(console: Console, state: dict, ev: TaskFinished) -> None:
     import time
@@ -240,11 +255,9 @@ def _on_task_finished(console: Console, state: dict, ev: TaskFinished) -> None:
         console.print()
         state["streaming"] = False
 
-    # Render token count and elapsed time in one beautiful line
     tokens = ev.tokens or state.get("tokens", 0)
     elapsed = ev.elapsed or (time.time() - state.get("started", time.time()))
 
-    # Format tokens nicely: 782, 1.2k, 51k, etc.
     if tokens >= 1000:
         token_str = f"{tokens / 1000:.1f}k".replace(".0k", "k")
     else:
@@ -258,12 +271,6 @@ def _on_task_finished(console: Console, state: dict, ev: TaskFinished) -> None:
     console.print(status_line)
     console.print()
 
-
-# ─────────────────────────────────────────────────────────────────────
-# Helpers
-# ─────────────────────────────────────────────────────────────────────
-
-
 def _verb_for(name: str) -> str:
     return {
         "read_file": "Read",
@@ -275,7 +282,6 @@ def _verb_for(name: str) -> str:
         "find_files": "Find",
         "git_status": "Git",
     }.get(name, name.replace("_", " ").title().replace(" ", ""))
-
 
 def _format_target(name: str, args: dict) -> str:
     """Pick the best single-line representation of the tool call args."""

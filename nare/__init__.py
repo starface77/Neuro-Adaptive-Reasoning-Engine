@@ -1,7 +1,15 @@
+"""NARE — Neural Amortized Reasoning Engine.
+
+Professional agentic framework for verified synthesis, episodic memory,
+and library learning.
+"""
+
+__version__ = "0.2.1"
+
 from .core.agent import NAREProductionAgent
-from .memory.memory import MemorySystem
-from .reasoning.llm import *
-from .memory.metrics import MetricsTracker
+from .memory.engine import MemorySystem
+from .reasoning import llm
+from .memory.analytics.metrics import MetricsTracker
 from .config import (
     NareConfig,
     DEFAULT_CONFIG,
@@ -12,7 +20,7 @@ from .config import (
     RetrievalConfig,
     SkillValidationConfig,
 )
-from .reasoning.oracle import (
+from .reasoning.verification.oracle import (
     Oracle,
     numeric_set_oracle,
     string_contains_oracle,

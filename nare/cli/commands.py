@@ -22,7 +22,6 @@ from typing import Optional
 from nare.cli.session import NareSession
 from nare.cli.display import ui
 
-
 class Command:
     """Base command interface.
 
@@ -47,7 +46,6 @@ class Command:
         """
         raise NotImplementedError
 
-
 class HelpCommand(Command):
     name = "help"
     aliases = ["?"]
@@ -57,7 +55,6 @@ class HelpCommand(Command):
         from nare.cli.display import blocks
         rows = [(cmd.name, list(cmd.aliases or []), cmd.help) for cmd in COMMANDS]
         blocks.render_command_table(ui.console, rows)
-
 
 class AgentCommand(Command):
     """Toggle the Phase-3 tool-calling agent loop.
@@ -80,7 +77,6 @@ class AgentCommand(Command):
         state = "on" if session.use_agent_loop else "off"
         ui.print_status("Agent loop", state, "info" if session.use_agent_loop else "warning")
 
-
 class StatusCommand(Command):
     name = "status"
     help = "Show agent status"
@@ -98,7 +94,6 @@ class StatusCommand(Command):
             ui.print_status("Agent", "not initialized yet", "warning")
         ui.console.print()
 
-
 class RepoCommand(Command):
     name = "repo"
     help = "Set/show working repository"
@@ -111,7 +106,6 @@ class RepoCommand(Command):
             ui.print_success(f"Repo set to {session.repo_path}")
         else:
             ui.print_error(f"Not a directory: {os.path.abspath(arg)}")
-
 
 class FilesCommand(Command):
     name = "files"
@@ -131,7 +125,7 @@ class FilesCommand(Command):
 
             if result.returncode == 0:
                 files = result.stdout.strip().split("\n")
-                # Group by top-level dir
+
                 dirs: dict[str, list[str]] = {}
                 for f in files[:200]:
                     parts = f.split("/")
@@ -152,7 +146,6 @@ class FilesCommand(Command):
         except Exception as e:
             ui.print_error(str(e))
 
-
 class ReadCommand(Command):
     name = "read"
     help = "Read a file into context"
@@ -172,7 +165,6 @@ class ReadCommand(Command):
         else:
             ui.print_error(f"File not found: {arg}")
 
-
 class ClearCommand(Command):
     name = "clear"
     help = "Clear context and history"
@@ -180,7 +172,6 @@ class ClearCommand(Command):
     def execute(self, session, arg):
         session.clear_context()
         ui.print_success("Context cleared")
-
 
 class BenchCommand(Command):
     name = "bench"
@@ -203,7 +194,6 @@ class BenchCommand(Command):
         except KeyboardInterrupt:
             ui.print_warning("Benchmark interrupted")
 
-
 class ThemeCommand(Command):
     name = "theme"
     help = "Change color theme (dark/light/dark-ansi/light-ansi)"
@@ -213,7 +203,7 @@ class ThemeCommand(Command):
         from nare.cli import ui
 
         if not arg:
-            # Show current theme
+
             current = ui._current_theme
             ui.console.print()
             ui.console.print(f"  Current theme: [accent]{current}[/]")
@@ -228,7 +218,6 @@ class ThemeCommand(Command):
         ui.set_theme(arg)
         ui.print_success(f"Theme set to {arg}")
 
-
 class CdCommand(Command):
     name = "cd"
     help = "Change working directory"
@@ -238,7 +227,6 @@ class CdCommand(Command):
             ui.print_status("Current directory", session.repo_path, "info")
             return
 
-        # Expand ~ and resolve path
         path = os.path.expanduser(arg)
         path = os.path.abspath(path)
 
@@ -251,15 +239,13 @@ class CdCommand(Command):
         else:
             ui.print_error(f"Failed to change directory")
 
-
 class ExitCommand(Command):
     name = "exit"
     aliases = ["quit", "q"]
     help = "Quit NARE"
 
     def execute(self, session, arg):
-        pass  # Handled by REPL loop
-
+        pass
 
 class ModeCommand(Command):
     """Switch CLI mode."""
@@ -273,7 +259,7 @@ class ModeCommand(Command):
         mode_manager = get_mode_manager()
 
         if not arg:
-            # Show current mode
+
             current = mode_manager.current_mode
             description = MODE_DESCRIPTIONS.get(current, "")
 
@@ -288,7 +274,6 @@ class ModeCommand(Command):
             ui.console.print()
             return
 
-        # Parse mode name
         mode_name = arg.strip().upper()
         try:
             mode = Mode[mode_name]
@@ -301,7 +286,6 @@ class ModeCommand(Command):
         except KeyError:
             ui.print_error(f"Unknown mode: {arg}")
             ui.console.print("  Available: manual, research, autopilot, focus, verbose, interactive", style="#666666")
-
 
 class MemoryCommand(Command):
     """Show memory statistics."""
@@ -321,7 +305,6 @@ class MemoryCommand(Command):
         episodes = info.get("episodes", 0)
         skills = info.get("skills", 0)
 
-        # Estimate high-quality and mature counts
         high_quality = int(episodes * 0.3)
         mature = int(skills * 0.6)
         cache_hit_rate = 0.0
@@ -337,7 +320,6 @@ class MemoryCommand(Command):
         )
         ui.console.print()
 
-
 class AddCommand(Command):
     """Add file to context (alias for /read)."""
     name = "add"
@@ -347,7 +329,7 @@ class AddCommand(Command):
         from nare.cli.display.spinner import WaitingSpinner
 
         if not arg:
-            # Show current context files
+
             if session.context_files:
                 ui.console.print()
                 ui.console.print("  Context files:", style="#FFA500")
@@ -368,7 +350,6 @@ class AddCommand(Command):
         else:
             ui.print_error(f"File not found: {arg}")
 
-
 class DropCommand(Command):
     """Remove file from context."""
     name = "drop"
@@ -384,7 +365,6 @@ class DropCommand(Command):
             ui.print_success(f"Removed from context: {arg}")
         else:
             ui.print_warning(f"File not in context: {arg}")
-
 
 class TokensCommand(Command):
     """Show token usage statistics."""
@@ -408,7 +388,6 @@ class TokensCommand(Command):
             ui.console.print(f"    Avg per query: {avg:,.0f}", style="#999999")
         ui.console.print()
 
-
 class UndoCommand(Command):
     """Undo last change via git."""
     name = "undo"
@@ -422,7 +401,6 @@ class UndoCommand(Command):
 
         last_action = history[-1]
 
-        # Revert via git
         try:
             result = subprocess.run(
                 ["git", "revert", "--no-edit", last_action['commit']],
@@ -437,7 +415,6 @@ class UndoCommand(Command):
             ui.print_error(f"Failed to undo: {e.stderr if e.stderr else str(e)}")
         except FileNotFoundError:
             ui.print_error("Git not found. Make sure git is installed.")
-
 
 class DiffCommand(Command):
     """Show git diff of changes."""
@@ -465,7 +442,6 @@ class DiffCommand(Command):
             ui.print_error("Git not found. Make sure git is installed.")
         except subprocess.CalledProcessError as e:
             ui.print_error(f"Git diff failed: {e.stderr if e.stderr else str(e)}")
-
 
 class RunCommand(Command):
     """Run shell command."""
@@ -508,7 +484,6 @@ class RunCommand(Command):
         except Exception as e:
             ui.print_error(f"Failed to run command: {str(e)}")
 
-
 class TestCommand(Command):
     """Run tests."""
     name = "test"
@@ -517,7 +492,6 @@ class TestCommand(Command):
     def execute(self, session, arg):
         from nare.cli.display.spinner import WaitingSpinner
 
-        # Try common test commands
         test_commands = [
             arg if arg else None,
             "pytest",
@@ -560,17 +534,15 @@ class TestCommand(Command):
                     ui.console.print()
                     return
             except FileNotFoundError:
-                continue  # Try next command
+                continue
             except subprocess.TimeoutExpired:
                 ui.print_error("Tests timed out (60s limit)")
                 return
             except Exception:
-                continue  # Try next command
+                continue
 
         ui.print_warning("No test command found. Try: /test <command>")
 
-
-# Command Registry
 COMMANDS: list[Command] = [
     HelpCommand(),
     AgentCommand(),
@@ -599,7 +571,6 @@ for cmd in COMMANDS:
     COMMAND_MAP[cmd.name] = cmd
     for alias in cmd.aliases:
         COMMAND_MAP[alias] = cmd
-
 
 def dispatch(session: NareSession, raw: str) -> Optional[str]:
     """Dispatch a slash command.

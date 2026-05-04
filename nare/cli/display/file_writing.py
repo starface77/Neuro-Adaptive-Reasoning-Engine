@@ -14,7 +14,6 @@ from . import ui
 from .animations import get_shimmer_color
 import time
 
-
 class FileWritingDisplay:
     """Manages real-time display of file writing operations with animations."""
 
@@ -22,7 +21,7 @@ class FileWritingDisplay:
         self.live = None
         self.filepath = ""
         self.content_buffer = ""
-        # Use ASCII spinner frames
+
         self.spinner_frames = ["|", "/", "-", "\\"]
         self.frame_index = 0
         self.is_active = False
@@ -30,7 +29,7 @@ class FileWritingDisplay:
 
     def start_writing(self, filepath: str):
         """Start showing file writing for a specific file."""
-        # Show relative path if possible
+
         import os
         try:
             cwd = os.getcwd()
@@ -41,8 +40,8 @@ class FileWritingDisplay:
         except:
             display_path = filepath
 
-        self.filepath = filepath  # Keep full path for file operations
-        self.display_path = display_path  # Use for display
+        self.filepath = filepath
+        self.display_path = display_path
         self.content_buffer = ""
         self.is_active = True
         self.start_time = time.time()
@@ -60,7 +59,6 @@ class FileWritingDisplay:
         """Finish writing and show completion."""
         self.is_active = False
 
-        # Show final diff with green background
         if self.filepath and self.content_buffer:
             self._show_final_diff()
 
@@ -73,10 +71,8 @@ class FileWritingDisplay:
         current_time = time.time()
         shimmer = get_shimmer_color(current_time, speed=3.0)
 
-        # Use display_path for showing to user
         display_path = getattr(self, 'display_path', self.filepath)
 
-        # Try to read old content
         old_content = ""
         if os.path.exists(self.filepath):
             try:
@@ -85,7 +81,6 @@ class FileWritingDisplay:
             except:
                 pass
 
-        # Show diff using ui function
         from . import ui
 
         ui.console.print()
@@ -103,28 +98,24 @@ class FileWritingDisplay:
 
         renderables = []
 
-        # Animated spinner
         self.frame_index = (self.frame_index + 1) % len(self.spinner_frames)
         spinner_char = self.spinner_frames[self.frame_index]
 
         display_path = getattr(self, 'display_path', self.filepath)
-        
-        # Shimmer spinner and path
+
         elapsed = time.time() - self.start_time
         spinner_style = get_shimmer_color(elapsed, speed=5.0)
 
         status = Text()
         status.append(spinner_char, style=spinner_style)
-        status.append("  ", style="default")  # Two spaces for distance
+        status.append("  ", style="default")
 
-        # Animated text color
         text_color = get_shimmer_color(elapsed + 0.3, speed=4.0)
         status.append(display_path, style=text_color)
 
         renderables.append(status)
         renderables.append(Text(""))
 
-        # Show content being written (last 5 lines to keep it compact)
         if self.content_buffer:
             lines = self.content_buffer.split('\n')
             show_lines = lines[-5:] if len(lines) > 5 else lines
@@ -146,23 +137,19 @@ class FileWritingDisplay:
         self.live = Live(
             Text("", style="#999999"),
             console=ui.console,
-            refresh_per_second=30,  # Fast animations
-            transient=True,  # Disappear after completion
+            refresh_per_second=30,
+            transient=True,
         )
         with self.live:
             yield self
 
         self.live = None
 
-
-# Global file writing display instance
 _file_writing = FileWritingDisplay()
-
 
 def get_file_writing_display() -> FileWritingDisplay:
     """Get the global file writing display."""
     return _file_writing
-
 
 @contextmanager
 def show_file_writing():

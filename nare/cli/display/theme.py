@@ -1,5 +1,4 @@
-"""Theme system for the NARE CLI.
-
+"""
 Provides RGB-based themes with proper color definitions,
 avoiding dependency on terminal ANSI color customizations.
 """
@@ -9,135 +8,108 @@ from typing import Literal
 
 ThemeName = Literal["dark", "light", "dark-ansi", "light-ansi"]
 
-
 @dataclass
 class Theme:
-    """Theme color palette."""
 
-    # Primary colors
-    accent: str              # Main accent (orange for NARA)
-    accent_shimmer: str      # Lighter accent for animations
+    accent: str
+    accent_shimmer: str
 
-    # Text colors
-    text: str                # Primary text
-    text_inverse: str        # Inverse text (for highlights)
-    text_muted: str          # Muted/secondary text
-    text_subtle: str         # Very subtle text
+    text: str
+    text_inverse: str
+    text_muted: str
+    text_subtle: str
 
-    # UI colors
-    border: str              # Border color
-    border_shimmer: str      # Animated border
-    background: str          # Background color
+    border: str
+    border_shimmer: str
+    background: str
 
-    # Semantic colors
-    success: str             # Success/green
-    error: str               # Error/red
-    warning: str             # Warning/yellow
-    info: str                # Info/blue
+    success: str
+    error: str
+    warning: str
+    info: str
 
-    # Route colors (for NARE routing display)
-    route_fast: str          # FAST path
-    route_reflex: str        # REFLEX path
-    route_hybrid: str        # HYBRID path
-    route_slow: str          # SLOW path
+    route_fast: str
+    route_reflex: str
+    route_hybrid: str
+    route_slow: str
 
-    # Agent colors
-    agent_triage: str        # Triage agent
-    agent_planning: str      # Planning agent
-    agent_coding: str        # Coding agent
+    agent_triage: str
+    agent_planning: str
+    agent_coding: str
 
-    # Diff colors
-    diff_added: str          # Added lines
-    diff_removed: str        # Removed lines
-    diff_added_word: str     # Added word highlight
-    diff_removed_word: str   # Removed word highlight
+    diff_added: str
+    diff_removed: str
+    diff_added_word: str
+    diff_removed_word: str
 
-
-# Dark theme (default)
 DARK_THEME = Theme(
-    # Primary
-    accent="rgb(215,119,87)",           # NARA orange
-    accent_shimmer="rgb(235,159,127)",
 
-    # Text
+    accent="rgb(255,255,255)",
+    accent_shimmer="rgb(230,230,230)",
+
     text="rgb(255,255,255)",
     text_inverse="rgb(0,0,0)",
-    text_muted="rgb(153,153,153)",
-    text_subtle="rgb(80,80,80)",
+    text_muted="rgb(140,140,140)",
+    text_subtle="rgb(90,90,90)",
 
-    # UI
-    border="rgb(136,136,136)",
-    border_shimmer="rgb(166,166,166)",
+    border="rgb(60,60,60)",
+    border_shimmer="rgb(80,80,80)",
     background="rgb(0,0,0)",
 
-    # Semantic
-    success="rgb(78,186,101)",
-    error="rgb(255,107,128)",
-    warning="rgb(255,193,7)",
-    info="rgb(177,185,249)",
+    success="rgb(200,200,200)",
+    error="rgb(180,180,180)",
+    warning="rgb(160,160,160)",
+    info="rgb(140,140,140)",
 
-    # Routes
-    route_fast="rgb(78,186,101)",       # Green - cached
-    route_reflex="rgb(177,185,249)",    # Blue - skills
-    route_hybrid="rgb(255,193,7)",      # Yellow - delta
-    route_slow="rgb(215,119,87)",       # Orange - synthesis
+    route_fast="rgb(255,255,255)",
+    route_reflex="rgb(200,200,200)",
+    route_hybrid="rgb(160,160,160)",
+    route_slow="rgb(120,120,120)",
 
-    # Agents
-    agent_triage="rgb(177,185,249)",    # Blue
-    agent_planning="rgb(255,193,7)",    # Yellow
-    agent_coding="rgb(215,119,87)",     # Orange
+    agent_triage="rgb(200,200,200)",
+    agent_planning="rgb(160,160,160)",
+    agent_coding="rgb(140,140,140)",
 
-    # Diff
-    diff_added="rgb(34,92,43)",
-    diff_removed="rgb(122,41,54)",
-    diff_added_word="rgb(56,166,96)",
-    diff_removed_word="rgb(179,89,107)",
+    diff_added="rgb(50,50,50)",
+    diff_removed="rgb(40,40,40)",
+    diff_added_word="rgb(80,80,80)",
+    diff_removed_word="rgb(70,70,70)",
 )
 
-
-# Light theme
 LIGHT_THEME = Theme(
-    # Primary
+
     accent="rgb(215,119,87)",
     accent_shimmer="rgb(245,149,117)",
 
-    # Text
     text="rgb(0,0,0)",
     text_inverse="rgb(255,255,255)",
     text_muted="rgb(102,102,102)",
     text_subtle="rgb(175,175,175)",
 
-    # UI
     border="rgb(153,153,153)",
     border_shimmer="rgb(183,183,183)",
     background="rgb(255,255,255)",
 
-    # Semantic
     success="rgb(44,122,57)",
     error="rgb(171,43,63)",
     warning="rgb(150,108,30)",
     info="rgb(87,105,247)",
 
-    # Routes
     route_fast="rgb(44,122,57)",
     route_reflex="rgb(87,105,247)",
     route_hybrid="rgb(150,108,30)",
     route_slow="rgb(215,119,87)",
 
-    # Agents
     agent_triage="rgb(87,105,247)",
     agent_planning="rgb(150,108,30)",
     agent_coding="rgb(215,119,87)",
 
-    # Diff
     diff_added="rgb(105,219,124)",
     diff_removed="rgb(255,168,180)",
     diff_added_word="rgb(47,157,68)",
     diff_removed_word="rgb(209,69,75)",
 )
 
-
-# Dark ANSI theme (16-color terminals)
 DARK_ANSI_THEME = Theme(
     accent="ansi:redBright",
     accent_shimmer="ansi:yellowBright",
@@ -165,8 +137,6 @@ DARK_ANSI_THEME = Theme(
     diff_removed_word="ansi:redBright",
 )
 
-
-# Light ANSI theme
 LIGHT_ANSI_THEME = Theme(
     accent="ansi:redBright",
     accent_shimmer="ansi:yellowBright",
@@ -194,7 +164,6 @@ LIGHT_ANSI_THEME = Theme(
     diff_removed_word="ansi:redBright",
 )
 
-
 THEMES = {
     "dark": DARK_THEME,
     "light": LIGHT_THEME,
@@ -202,27 +171,24 @@ THEMES = {
     "light-ansi": LIGHT_ANSI_THEME,
 }
 
-
 def get_theme(name: ThemeName = "dark") -> Theme:
-    """Get theme by name."""
     return THEMES.get(name, DARK_THEME)
 
-
 def rgb_to_ansi(color: str) -> str:
-    """Convert rgb(r,g,b) to ANSI escape code.
+    """Convert RGB or ANSI-named color to escape sequence.
 
     Examples:
-        rgb(215,119,87) -> \\x1b[38;2;215;119;87m
-        ansi:redBright -> \\x1b[91m
+        rgb(215,119,87) -> \x1b[38;2;215;119;87m
+        ansi:redBright -> \x1b[91m
     """
     if color.startswith("rgb("):
-        # Extract RGB values
+
         rgb = color[4:-1].split(",")
         r, g, b = int(rgb[0]), int(rgb[1]), int(rgb[2])
         return f"\x1b[38;2;{r};{g};{b}m"
 
     elif color.startswith("ansi:"):
-        # Map ANSI color names to codes
+
         ansi_map = {
             "black": "30", "red": "31", "green": "32", "yellow": "33",
             "blue": "34", "magenta": "35", "cyan": "36", "white": "37",
@@ -234,11 +200,10 @@ def rgb_to_ansi(color: str) -> str:
         code = ansi_map.get(name, "37")
         return f"\x1b[{code}m"
 
-    return "\x1b[0m"  # Reset
-
+    return "\x1b[0m"
 
 def colorize(text: str, color: str) -> str:
-    """Colorize text with theme color.
+    """Wrap text in ANSI color sequences.
 
     Args:
         text: Text to colorize
@@ -248,3 +213,28 @@ def colorize(text: str, color: str) -> str:
         ANSI-colored text with reset at end
     """
     return f"{rgb_to_ansi(color)}{text}\x1b[0m"
+
+RICH_STYLE_MAP = {
+    "info": "bold cyan",
+    "warning": "bold yellow",
+    "error": "bold red",
+    "success": "bold green",
+
+    "agent.name": "bold white",
+    "agent.thinking": "italic bright_black",
+    "agent.action": "bold blue",
+    "agent.result": "white",
+
+    "file.read": "cyan",
+    "file.write": "green",
+    "file.edit": "yellow",
+    "file.delete": "red",
+
+    "code.keyword": "bold magenta",
+    "code.string": "green",
+    "code.number": "cyan",
+    "code.comment": "bright_black",
+
+    "border": "bright_black",
+    "title": "bold white",
+}

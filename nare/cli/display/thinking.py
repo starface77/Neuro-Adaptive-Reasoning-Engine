@@ -12,7 +12,6 @@ from rich.text import Text
 from . import ui
 from .spinner import WaitingSpinner
 
-
 class ThinkingDisplay:
     """Manages real-time display of LLM reasoning and solution tokens.
     
@@ -37,8 +36,10 @@ class ThinkingDisplay:
         self.progress_total = 0
         self.progress_message = ""
         self.waiting_spinner = None
-        self.in_xml_tag = False  # Track if we're inside XML tag
-        self.xml_buffer = ""  # Buffer for XML tag content
+        self.in_xml_tag = False
+        self.xml_buffer = ""
+        self.thinking_lines = []
+        self.keep_last_n_lines = 15
 
     def _stop_live_and_spinner(self):
         """Helper to stop any running spinners/live displays before printing."""
@@ -55,32 +56,37 @@ class ThinkingDisplay:
         self.code_block_lines = 0
 
     def stream_token(self, token: str):
-        """Stream a single token from LLM output."""
-        # Stop spinner as soon as we start streaming tokens to avoid console clashes
+        """Stream a single token from LLM output.
+
+        Modes:
+        - thinking: Gray text, reasoning process
+        - solution: White text, final answer
+        """
+
         self._stop_live_and_spinner()
 
-        # Filter out closing tags
         if token.strip() in ['</solution>', '</reasoning>', '</abstract_signature>', '</delta_reasoning>']:
             return
 
+        if self.mode == "thinking":
+            self.thinking_lines.append(token)
+            ui.console.print(token, style="#666666", end="")
+            return
+
         if self.mode == "solution":
-            # CRITICAL: Filter out XML tool call tags during streaming
-            # Check for XML tag start
             if '<read_file>' in token or '<edit_file>' in token or '<write_file>' in token or '<bash_command>' in token:
                 self.in_xml_tag = True
                 self.xml_buffer = token
                 return
 
-            # If inside XML tag, buffer it and don't print
             if self.in_xml_tag:
                 self.xml_buffer += token
-                # Check for closing tags
+
                 if '</read_file>' in self.xml_buffer or '</edit_file>' in self.xml_buffer or '</write_file>' in self.xml_buffer or '</bash_command>' in self.xml_buffer:
                     self.in_xml_tag = False
                     self.xml_buffer = ""
                 return
 
-            # Check for code block markers or XML content tags
             if '```' in token or '<content>' in token:
                 self.in_code_block = True
                 self.code_block_lines = 0
@@ -89,33 +95,34 @@ class ThinkingDisplay:
             if '</content>' in token:
                 self.in_code_block = False
 
-            # Count lines
             if '\n' in token:
                 lines_in_token = token.count('\n')
                 self.solution_lines_printed += lines_in_token
                 if self.in_code_block:
                     self.code_block_lines += lines_in_token
 
-            # Truncate long code blocks
             if self.in_code_block and self.code_block_lines > 40:
                 if self.code_block_lines == 41:
                     ui.console.print("\n[dim]  ⋯ (long code truncated, full file saved)[/dim]", style="#555555")
                     ui.console.file.flush()
                 return
 
-            # Truncate very long output
             if self.solution_lines_printed > self.max_solution_lines:
                 if self.solution_lines_printed == self.max_solution_lines + 1:
                     ui.console.print("\n[dim]  ⋯ (output truncated)[/dim]", style="#555555")
                     ui.console.file.flush()
                 return
 
-            # Print solution tokens in white
             ui.console.print(token, end='', style="white")
             ui.console.file.flush()
         else:
-            # Thinking mode — show ALL content in dim style
+
             self.buffer += token
+
+            if '\n' in token:
+                lines = (self.buffer).split('\n')
+                self.thinking_lines.extend(lines[:-1])
+                self.buffer = lines[-1]
 
             ui.console.print(token, end='', style="#666666")
             ui.console.file.flush()
@@ -123,22 +130,21 @@ class ThinkingDisplay:
     def print_action(self, action: str):
         """Print an action label with animated dot."""
         self._stop_live_and_spinner()
-        
+
         elapsed = time.time() - self.start_time
-        # Breathing dot color
+
         phase = (math.sin(elapsed * 2.0) + 1.0) / 2.0
         r = int(180 + 75 * phase)
         g = int(100 + 55 * phase)
         b = int(60 + 40 * phase)
         dot_color = f"#{r:02x}{g:02x}{b:02x}"
-        
+
         ui.console.print(f"  [{dot_color}]●[/] [{dot_color}]{action}[/]")
 
     def start_waiting(self, message: str = "Thinking"):
         """Start smooth waiting animation.
 
-        Args:
-            message: Message to show during wait
+        Shows spinner with message during long operations (routing, model loading).
         """
         self._stop_live_and_spinner()
         self.waiting_spinner = WaitingSpinner(message, delay=0.08, color="#D77757")
@@ -170,9 +176,8 @@ class ThinkingDisplay:
         self.progress_message = message
 
         if self.mode == "solution":
-            return  # Don't show progress in solution mode
+            return
 
-        # Show progress bar
         percent = int((current / total) * 100) if total > 0 else 0
         bar_length = 20
         filled = int((current / total) * bar_length) if total > 0 else 0
@@ -203,18 +208,16 @@ class ThinkingDisplay:
         self.progress_message = message
 
         if self.mode == "solution":
-            return  # Don't show progress in solution mode
+            return
 
         self._stop_live_and_spinner()
 
-        # Animated progress bar
         percent = int((current / total) * 100) if total > 0 else 0
         bar_length = 24
         filled = int((current / total) * bar_length) if total > 0 else 0
-        
-        # Use gradient characters for the bar
+
         bar = "█" * filled + "░" * (bar_length - filled)
-        
+
         elapsed = time.time() - self.start_time
         phase = (math.sin(elapsed * 2.0) + 1.0) / 2.0
         r = int(180 + 75 * phase)
@@ -240,21 +243,32 @@ class ThinkingDisplay:
         self.code_block_lines = 0
         self.start_time = time.time()
         self.frame_idx = 0
+        self.thinking_lines = []
 
         try:
             yield self
         finally:
             self._stop_live_and_spinner()
 
+            if self.thinking_lines and self.mode == "thinking":
 
-# Global thinking display instance
+                ui.console.print()
+
+                ui.console.print("  [#444444]─── Key reasoning steps ───[/]")
+
+                last_lines = self.thinking_lines[-self.keep_last_n_lines:]
+                for line in last_lines:
+                    if line.strip():
+                        ui.console.print(f"  [#666666]{line}[/]")
+
+                ui.console.print("  [#444444]───────────────────────────[/]")
+                ui.console.print()
+
 _thinking = ThinkingDisplay()
-
 
 def get_thinking_display() -> ThinkingDisplay:
     """Get the global thinking display."""
     return _thinking
-
 
 @contextmanager
 def show_thinking():

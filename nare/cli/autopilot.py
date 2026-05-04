@@ -18,7 +18,6 @@ from typing import Optional, Dict, Any
 
 log = logging.getLogger("nare.cli.autopilot")
 
-
 class AutopilotAgent:
     """Autonomous agent that completes tasks through iterative refinement."""
 
@@ -45,13 +44,10 @@ class AutopilotAgent:
             if thinking_display:
                 thinking_display.stream_token(f"\n[Autopilot] Iteration {self.iteration}/{self.max_iterations}\n")
 
-            # Build enriched query with context from previous attempts
             enriched_task = self._build_query(task, accumulated_context, last_error)
 
-            # Let NARE solve (it handles routing, planning, execution)
             result = self.session.solve(enriched_task, thinking_display=thinking_display)
 
-            # Verify result
             verification = self._verify_result(result, task)
 
             if verification["success"]:
@@ -60,7 +56,6 @@ class AutopilotAgent:
                 result["autopilot_success"] = True
                 return result
 
-            # Failed - accumulate context for next iteration
             last_error = verification["error"]
             accumulated_context.append({
                 "iteration": self.iteration,
@@ -74,7 +69,6 @@ class AutopilotAgent:
 
             log.warning(f"[Autopilot] Iteration {self.iteration} failed: {last_error}")
 
-        # Max iterations reached
         log.error(f"[Autopilot] Failed to complete task after {self.max_iterations} iterations")
         return {
             "final_answer": f"Failed to complete task after {self.max_iterations} attempts. Last error: {last_error}",
@@ -87,8 +81,7 @@ class AutopilotAgent:
         """Build enriched query with context from previous attempts."""
 
         if not context:
-            # First iteration - just the task
-            return f"""Task: {original_task}
+
 
 IMPORTANT: After completing the task, verify your work by:
 1. Running any tests if applicable
@@ -97,16 +90,13 @@ IMPORTANT: After completing the task, verify your work by:
 
 Provide clear verification steps in your response."""
 
-        # Subsequent iterations - include error context
-        query = f"""Task: {original_task}
 
 PREVIOUS ATTEMPTS:
 """
-        for ctx in context[-2:]:  # Last 2 attempts
+        for ctx in context[-2:]:
             query += f"\nIteration {ctx['iteration']}:\n"
             query += f"Error: {ctx['error']}\n"
 
-        query += f"""
 CURRENT ERROR: {last_error}
 
 Analyze what went wrong and provide a corrected solution.
@@ -124,7 +114,6 @@ Verify your solution before responding."""
 
         answer = result.get("final_answer", "")
 
-        # Check for explicit error messages
         error_indicators = [
             "Error:",
             "Failed:",
@@ -141,16 +130,14 @@ Verify your solution before responding."""
                     "error": f"Execution error detected: {indicator}"
                 }
 
-        # Check if files were created (for file creation tasks)
         if any(keyword in task.lower() for keyword in ["create", "создай", "add", "добавь"]):
-            # Look for file creation confirmation
+
             if "Created" not in answer and "Created:" not in answer:
                 return {
                     "success": False,
                     "error": "No file creation confirmation found"
                 }
 
-        # Check route - if SLOW path with low score, might be uncertain
         route = result.get("route_decision", "")
         if route == "SLOW":
             candidates = result.get("generated_candidates", [])
@@ -162,5 +149,4 @@ Verify your solution before responding."""
                         "error": f"Low confidence solution (score: {score:.2f})"
                     }
 
-        # If we got here, assume success
         return {"success": True, "error": None}

@@ -17,10 +17,6 @@ from rich.live import Live
 from rich.text import Text
 from . import ui
 
-
-# ── Braille Wave Characters ──────────────────────────────────────────
-# Smooth wave built from braille dots — feels alive and organic
-
 WAVE_FRAMES = [
     "⠁⠂⠄⡀⢀⠠⠐⠈",
     "⠂⠄⡀⢀⠠⠐⠈⠁",
@@ -32,12 +28,9 @@ WAVE_FRAMES = [
     "⠈⠁⠂⠄⡀⢀⠠⠐",
 ]
 
-# Dots spinner — smooth rotation
 DOTS_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
-# Breathing blocks — pulsing bar
 BREATH_CHARS = " ░▒▓█▓▒░"
-
 
 def _breathing_color(t: float) -> str:
     """Generate a smoothly pulsing orange color.
@@ -45,25 +38,21 @@ def _breathing_color(t: float) -> str:
     Uses sine wave to create a breathing effect between
     dim amber and bright orange.
     """
-    phase = (math.sin(t * 2.0) + 1.0) / 2.0  # 0..1
-    
-    # Interpolate between dim (#8B4513) and bright (#FF9966)
+    phase = (math.sin(t * 2.0) + 1.0) / 2.0
+
     r = int(139 + (255 - 139) * phase)
     g = int(69 + (153 - 69) * phase)
     b = int(19 + (102 - 19) * phase)
     return f"#{r:02x}{g:02x}{b:02x}"
 
-
 def _wave_color(t: float, offset: float = 0.0) -> str:
     """Generate rainbow-shifted warm color for wave effect."""
     phase = (math.sin(t * 1.5 + offset) + 1.0) / 2.0
-    
-    # Warm palette: coral → amber → gold
+
     r = int(200 + 55 * phase)
     g = int(100 + 80 * phase)
     b = int(60 + 40 * phase)
     return f"#{r:02x}{g:02x}{b:02x}"
-
 
 class WaitingSpinner:
     """Premium thread-based spinner with breathing animation.
@@ -103,16 +92,13 @@ class WaitingSpinner:
         elapsed = time.time() - self._start_time
         result = Text()
 
-        # 1. Breathing dot spinner
         dot_idx = int(elapsed / self.delay) % len(DOTS_FRAMES)
         dot_color = _breathing_color(elapsed)
         result.append(f"  {DOTS_FRAMES[dot_idx]} ", style=dot_color)
 
-        # 2. Message text with subtle shimmer
         msg_color = _breathing_color(elapsed + 0.5)
         result.append(self.text, style=msg_color)
 
-        # 3. Animated wave trail
         result.append("  ", style="default")
         wave_idx = int(elapsed / self.delay) % len(WAVE_FRAMES)
         wave = WAVE_FRAMES[wave_idx]
@@ -120,7 +106,6 @@ class WaitingSpinner:
             ch_color = _wave_color(elapsed, offset=i * 0.4)
             result.append(ch, style=ch_color)
 
-        # 4. Elapsed time (subtle)
         if elapsed > 2.0:
             result.append(f"  {elapsed:.0f}s", style="#555555")
 
@@ -140,7 +125,7 @@ class WaitingSpinner:
                     self.live.update(self._render_frame())
                     time.sleep(self.delay)
         except Exception:
-            pass  # Silently handle console errors
+            pass
 
     def start(self):
         """Start spinner in background thread."""

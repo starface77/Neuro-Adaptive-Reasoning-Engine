@@ -1,7 +1,8 @@
 """Reasoning subsystem (LLM client, critic, oracle)."""
 
-from nare.reasoning.critic import Critic  # noqa: F401
-from nare.reasoning.oracle import (  # noqa: F401
+from nare.reasoning.generation import engine as llm
+from nare.reasoning.generation.ranker import Critic
+from nare.reasoning.verification.oracle import (
     Oracle,
     build_oracle_from_spec,
     heuristic_overlap_oracle,
@@ -11,6 +12,7 @@ from nare.reasoning.oracle import (  # noqa: F401
 )
 
 __all__ = [
+    "llm",
     "Critic",
     "Oracle",
     "build_oracle_from_spec",

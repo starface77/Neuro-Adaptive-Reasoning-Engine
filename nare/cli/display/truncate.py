@@ -3,7 +3,6 @@
 import re
 from typing import Tuple
 
-
 def truncate_code_blocks(text: str, max_lines: int = 40) -> Tuple[str, bool]:
     """Truncate long code blocks intelligently.
 
@@ -14,7 +13,7 @@ def truncate_code_blocks(text: str, max_lines: int = 40) -> Tuple[str, bool]:
     Returns:
         (truncated_text, was_truncated)
     """
-    # Pattern to find code blocks
+
     code_block_pattern = r'```(\w+)?\n(.*?)```'
 
     was_truncated = False
@@ -22,7 +21,7 @@ def truncate_code_blocks(text: str, max_lines: int = 40) -> Tuple[str, bool]:
     last_end = 0
 
     for match in re.finditer(code_block_pattern, text, re.DOTALL):
-        # Add text before code block
+
         result.append(text[last_end:match.start()])
 
         lang = match.group(1) or ''
@@ -30,23 +29,21 @@ def truncate_code_blocks(text: str, max_lines: int = 40) -> Tuple[str, bool]:
         lines = code.split('\n')
 
         if len(lines) > max_lines:
-            # Truncate long code blocks
+
             truncated_lines = lines[:max_lines]
             result.append(f'```{lang}\n')
             result.append('\n'.join(truncated_lines))
             result.append(f'\n... ({len(lines) - max_lines} more lines)\n```')
             was_truncated = True
         else:
-            # Keep short code blocks as-is
+
             result.append(match.group(0))
 
         last_end = match.end()
 
-    # Add remaining text
     result.append(text[last_end:])
 
     return ''.join(result), was_truncated
-
 
 def smart_truncate_answer(answer: str, max_lines: int = 50) -> Tuple[str, str]:
     """Smart truncation of answer with hint.
@@ -58,16 +55,14 @@ def smart_truncate_answer(answer: str, max_lines: int = 50) -> Tuple[str, str]:
     Returns:
         (truncated_answer, hint_message)
     """
-    # First, truncate code blocks
+
     answer, code_truncated = truncate_code_blocks(answer, max_lines=40)
 
-    # Count total lines
     lines = answer.split('\n')
 
     if len(lines) <= max_lines and not code_truncated:
         return answer, ""
 
-    # Truncate if still too long
     if len(lines) > max_lines:
         truncated = '\n'.join(lines[:max_lines])
         remaining = len(lines) - max_lines

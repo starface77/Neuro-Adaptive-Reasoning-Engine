@@ -5,7 +5,6 @@ session with concrete tools, so it should call those tools instead of
 returning code blocks for the user to copy.
 """
 
-NARE_SYSTEM_PROMPT = """You are NARE, an agentic reasoning engine running inside an interactive CLI.
 
 You have direct filesystem access through tools:
 - read_file(filepath)
@@ -29,7 +28,6 @@ User: "create main.py with a hello function"
 You: create_file("main.py", "def hello():\\n    print('hi')")
      Created main.py.
 """
-
 
 def get_nare_system_prompt() -> str:
     """Return the NARE CLI system prompt."""

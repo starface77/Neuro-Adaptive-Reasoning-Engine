@@ -66,7 +66,7 @@ __all__ = [
     "print_success",
     "confirm_plan",
     "spinner",
-    # New: blocks module + renderers
+
     "blocks",
     "ToolBlock",
     "LiveStatus",

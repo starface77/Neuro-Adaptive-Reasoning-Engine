@@ -10,7 +10,6 @@ Provides safe, validated file operations that the LLM can call:
 import os
 from typing import Optional, Tuple
 
-
 def read_file(filepath: str, start_line: Optional[int] = None, end_line: Optional[int] = None) -> str:
     """Read file contents safely.
 
@@ -33,11 +32,9 @@ def read_file(filepath: str, start_line: Optional[int] = None, end_line: Optiona
         with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
             lines = f.readlines()
 
-        # If file is large and no range specified, warn
         if len(lines) > 500 and start_line is None and end_line is None:
             return f"[WARNING] File has {len(lines)} lines. Please specify start_line and end_line to read a specific range.\n\nFirst 50 lines:\n" + ''.join(lines[:50])
 
-        # Apply line range if specified
         if start_line is not None or end_line is not None:
             start_idx = (start_line - 1) if start_line else 0
             end_idx = end_line if end_line else len(lines)
@@ -51,7 +48,6 @@ def read_file(filepath: str, start_line: Optional[int] = None, end_line: Optiona
 
     except Exception as e:
         raise RuntimeError(f"Failed to read {filepath}: {e}")
-
 
 def create_file(filepath: str, content: str, stream_callback=None) -> bool:
     """Create a new file with content.
@@ -72,21 +68,20 @@ def create_file(filepath: str, content: str, stream_callback=None) -> bool:
         raise FileExistsError(f"File already exists: {filepath}. Use edit_file to modify it.")
 
     try:
-        # Create parent directories if needed
+
         parent = os.path.dirname(filepath)
         if parent:
             os.makedirs(parent, exist_ok=True)
 
-        # Write file with streaming
         with open(filepath, 'w', encoding='utf-8') as f:
             if stream_callback:
-                # Stream content in chunks for display
-                chunk_size = 50  # characters per chunk
+
+                chunk_size = 50
                 for i in range(0, len(content), chunk_size):
                     chunk = content[i:i+chunk_size]
                     f.write(chunk)
                     stream_callback(chunk)
-                    # Small delay for visual effect
+
                     import time
                     time.sleep(0.01)
             else:
@@ -96,7 +91,6 @@ def create_file(filepath: str, content: str, stream_callback=None) -> bool:
 
     except Exception as e:
         raise RuntimeError(f"Failed to create {filepath}: {e}")
-
 
 def edit_file(filepath: str, target_block: str, replacement_block: str, stream_callback=None) -> bool:
     """Surgically replace a code block in an existing file.
@@ -119,20 +113,18 @@ def edit_file(filepath: str, target_block: str, replacement_block: str, stream_c
         raise FileNotFoundError(f"File not found: {filepath}")
 
     try:
-        # Read current content
+
         with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
             content = f.read()
 
-        # Validate target block exists exactly once
         count = content.count(target_block)
         if count == 0:
             raise ValueError(f"Target block not found in {filepath}. Make sure the text matches exactly.")
         if count > 1:
             raise ValueError(f"Target block appears {count} times in {filepath}. Make it more specific.")
 
-        # Show beautiful diff
         import difflib
-        
+
         diff = list(difflib.unified_diff(
             target_block.splitlines(keepends=True),
             replacement_block.splitlines(keepends=True),
@@ -140,12 +132,12 @@ def edit_file(filepath: str, target_block: str, replacement_block: str, stream_c
             tofile=f"b/{os.path.basename(filepath)}",
             n=3
         ))
-        
+
         if diff:
             try:
                 from nare.cli.display import ui
                 from rich.text import Text
-                
+
                 diff_text = Text()
                 for line in diff:
                     if line.startswith('+') and not line.startswith('+++'):
@@ -156,33 +148,30 @@ def edit_file(filepath: str, target_block: str, replacement_block: str, stream_c
                         diff_text.append(line, style="cyan")
                     else:
                         diff_text.append(line)
-                
+
                 ui.console.print()
                 ui.console.print(f"[bold yellow]Proposed changes for {os.path.basename(filepath)}:[/]")
                 ui.console.print(diff_text)
-                
-                # Check if we should ask for confirmation
+
                 from nare.cli.modes import get_mode_config
                 ask = get_mode_config().ask_before_edit
-                
+
                 if ask:
                     from nare.cli.display.thinking import get_thinking_display
                     get_thinking_display()._stop_live_and_spinner()
-                    
+
                     from rich.prompt import Confirm
                     if not Confirm.ask(f"[bold yellow]Apply these changes to {os.path.basename(filepath)}?[/]"):
                         raise RuntimeError("User rejected the changes.")
             except ImportError:
-                # Fallback for headless testing
+
                 pass
 
-        # Perform replacement
         new_content = content.replace(target_block, replacement_block)
 
-        # Write back with streaming
         with open(filepath, 'w', encoding='utf-8') as f:
             if stream_callback:
-                # Stream only the replacement block for display
+
                 chunk_size = 50
                 for i in range(0, len(replacement_block), chunk_size):
                     chunk = replacement_block[i:i+chunk_size]
@@ -197,7 +186,6 @@ def edit_file(filepath: str, target_block: str, replacement_block: str, stream_c
 
     except Exception as e:
         raise RuntimeError(f"Failed to edit {filepath}: {e}")
-
 
 def list_files(directory: str = ".", pattern: str = "*") -> list:
     """List files in a directory matching a pattern.
@@ -217,11 +205,9 @@ def list_files(directory: str = ".", pattern: str = "*") -> list:
     search_path = os.path.join(directory, "**", pattern)
     files = glob.glob(search_path, recursive=True)
 
-    # Filter out directories
     files = [f for f in files if os.path.isfile(f)]
 
     return sorted(files)
-
 
 def run_command(command: str, cwd: str = ".") -> dict:
     """Run a shell command and return output.
@@ -245,7 +231,7 @@ def run_command(command: str, cwd: str = ".") -> dict:
             cwd=cwd,
             capture_output=True,
             text=True,
-            timeout=300,  # 5 minute timeout
+            timeout=300,
         )
 
         return {

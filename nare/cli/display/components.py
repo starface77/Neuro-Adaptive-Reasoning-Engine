@@ -20,11 +20,9 @@ from typing import Optional
 
 from . import blocks
 
-
 class StatusBar:
     """Bottom status bar with premium route indicators."""
 
-    # Route styling: (color, indicator)
     ROUTE_STYLES = {
         "FAST":     ("#4EBA65", "✦"),
         "REFLEX":   ("#B1B9F9", "↯"),
@@ -35,7 +33,6 @@ class StatusBar:
         "AGENT":    ("#D77757", "◆"),
     }
 
-    # Keep legacy ROUTE_COLORS for backward compat
     ROUTE_COLORS = {
         "FAST": "#4EBA65",
         "REFLEX": "#B1B9F9",
@@ -78,7 +75,6 @@ class StatusBar:
             skills=skills,
         )
 
-
 class ResultCard:
     """Premium result card with animated route badge."""
 
@@ -101,7 +97,6 @@ class ResultCard:
         if not streamed and answer:
             console.print(answer, style="white")
         console.print()
-
 
 class ProgressIndicator:
     """Progress bar for long operations.
@@ -134,7 +129,6 @@ class ProgressIndicator:
             console=console,
             transient=True,
         )
-
 
 class MemoryStats:
     """Memory statistics panel.
@@ -190,7 +184,6 @@ class MemoryStats:
 
         console.print(panel)
 
-
 class IntentBadge:
     """Badge showing query intent type.
 
@@ -224,7 +217,6 @@ class IntentBadge:
         badge.append("]", style="#666666")
 
         console.print(badge, end=" ")
-
 
 class SessionStats:
     """Session statistics display.

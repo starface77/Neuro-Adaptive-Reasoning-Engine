@@ -1,5 +1,5 @@
 """Core reasoning engine (agent, router, synthesis, library learning)."""
 
-from nare.core.agent import NAREProductionAgent  # noqa: F401
+from nare.core.agent import NAREProductionAgent
 
 __all__ = ["NAREProductionAgent"]

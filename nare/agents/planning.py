@@ -15,7 +15,7 @@ from nare.reasoning import llm
 
 log = logging.getLogger("nare.agents.planning")
 
-SYSTEM_PROMPT = """\
+SYSTEM_PROMPT = """
 You are a senior software engineer planning a code change.
 
 Your job:
@@ -80,7 +80,6 @@ README.md
 </target_files>
 """
 
-
 class PlanningAgent:
     """Agent that creates execution plans before coding begins."""
 
@@ -93,7 +92,6 @@ class PlanningAgent:
     ) -> Dict[str, Any]:
         """Generate a step-by-step plan for a given task."""
 
-        # Extract target directory from task if specified
         import re
         target_dir = None
         dir_patterns = [
@@ -125,11 +123,10 @@ class PlanningAgent:
 
         log.info("[Planning] Generating execution plan...")
 
-        # Use system prompt for proper understanding
         full_prompt = f"{SYSTEM_PROMPT}\n\n{prompt}"
 
         samples, _ = llm.generate_samples(
-            full_prompt, n=1, temperature=0.2, mode="DIRECT", thinking_display=None  # Don't stream planning
+            full_prompt, n=1, temperature=0.2, mode="DIRECT", thinking_display=None
         )
 
         if not samples:
@@ -157,8 +154,6 @@ class PlanningAgent:
             "raw_output": content,
         }
 
-        # Try XML format first
-        # Complexity
         c_match = re.search(
             r"<complexity>\s*(trivial|moderate|complex|unclear)\s*</complexity>",
             content, re.IGNORECASE,
@@ -166,7 +161,6 @@ class PlanningAgent:
         if c_match:
             result["complexity"] = c_match.group(1).lower()
 
-        # Reasoning
         r_match = re.search(
             r"<reasoning>(.*?)</reasoning>",
             content, re.DOTALL | re.IGNORECASE,
@@ -174,7 +168,6 @@ class PlanningAgent:
         if r_match:
             result["reasoning"] = r_match.group(1).strip()
 
-        # Plan steps
         plan_match = re.search(r"<plan>(.*?)</plan>", content, re.DOTALL)
         if plan_match:
             lines = plan_match.group(1).strip().split("\n")
@@ -184,7 +177,6 @@ class PlanningAgent:
                 if line.strip() and not line.strip().startswith("#")
             ]
 
-        # Target files
         files_match = re.search(
             r"<target_files>(.*?)</target_files>", content, re.DOTALL
         )
@@ -196,25 +188,22 @@ class PlanningAgent:
                 if line.strip() and not line.strip().startswith("#")
             ]
 
-        # Fallback: Parse plain text format if XML not found
         if not result["plan_steps"]:
-            # Look for numbered lists (1. 2. 3. or 1) 2) 3))
+
             numbered_lines = re.findall(r'^\s*\d+[\.\)]\s+(.+)$', content, re.MULTILINE)
             if numbered_lines:
                 result["plan_steps"] = [line.strip() for line in numbered_lines if line.strip()]
 
-        # Fallback: extract file paths from text
         if not result["target_files"]:
-            # Look for common file patterns
+
             file_paths = re.findall(r'[\w/\-]+\.(?:py|js|ts|jsx|tsx|html|css|json|md|txt|yaml|yml)\b', content)
             result["target_files"] = list(dict.fromkeys(file_paths))[:5]
 
-        # Extract reasoning from plain text if not found in XML
         if not result["reasoning"]:
-            # Look for explanation paragraphs before the plan
+
             lines = content.split('\n')
             reasoning_lines = []
-            for line in lines[:10]:  # First 10 lines
+            for line in lines[:10]:
                 if line.strip() and not line.strip().startswith(('1.', '2.', '3.', '<', '#')):
                     reasoning_lines.append(line.strip())
             if reasoning_lines:

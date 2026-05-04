@@ -33,10 +33,10 @@ from nare.cli.commands import dispatch, COMMAND_MAP
 from nare.cli.display import ui, show_thinking
 from nare.cli.display.components import ResultCard, StatusBar
 from nare.cli.modes import get_mode_manager, Mode, MODE_DESCRIPTIONS, MODE_SYMBOLS
-
+from nare.cli.autonomous_runner import AutonomousRunner
+from nare.cli.interactive import ask_yes_no
 
 _session_for_toolbar: 'NareSession | None' = None
-
 
 def get_bottom_toolbar():
     """Bottom toolbar with mode + repo + model + key hints.
@@ -62,7 +62,6 @@ def get_bottom_toolbar():
 
     parts.append('<style fg="#505050">Tab·mode  Ctrl+L·clear  Ctrl+D·exit</style>')
     return HTML("  ".join(parts))
-
 
 class NareCompleter(Completer):
     """Auto-complete slash commands and file paths.
@@ -97,7 +96,6 @@ class NareCompleter(Completer):
         """
         text = document.text_before_cursor
 
-        # Slash command completion
         if text.startswith("/"):
             word = text.lstrip("/")
             for name in COMMAND_MAP:
@@ -109,7 +107,6 @@ class NareCompleter(Completer):
                     )
             return
 
-        # File path completion after /read
         if text.startswith("/read "):
             partial = text[6:]
             base = os.path.join(self.session.repo_path, partial)
@@ -128,16 +125,16 @@ class NareCompleter(Completer):
                 except PermissionError:
                     pass
 
-
 def run_query(session: NareSession, query: str):
     """Execute query through NARE pipeline.
 
     Pipeline:
     1. Display query with intent badge
-    2. Stream thinking process in real-time (if mode allows)
-    3. Execute through NARE (routing, planning, tools, memory)
-    4. Clean and display result
-    5. Show status bar with metrics
+    2. Check if autonomous mode needed
+    3. Stream thinking process in real-time (if mode allows)
+    4. Execute through NARE (routing, planning, tools, memory)
+    5. Clean and display result
+    6. Show status bar with metrics
 
     Args:
         session: NareSession instance
@@ -147,52 +144,71 @@ def run_query(session: NareSession, query: str):
     mode_config = mode_manager.get_config()
     console = Console()
 
-    # Note: the prompt_toolkit prompt already echoes the user's input
-    # as `> <query>` on the line above, so we don't print a second
-    # `❯ <query>` line here. (Earlier versions printed it twice.)
     console.print()
 
-    # Auto-add files mentioned in the query
     added_files = []
     common_exts = ('.py', '.js', '.ts', '.jsx', '.tsx', '.html', '.css', '.md', '.txt', '.json', '.yaml', '.yml', '.rs', '.go', '.c', '.cpp', '.h', '.java', '.sh')
-    
+
     for token in query.split():
-        # Clean punctuation from the ends of the word
+
         word = token.strip('",\'.;:()[]{}?!<>`')
         if word and len(word) > 2 and ('.' in word or '/' in word or '\\' in word):
-            # Check if it ends with a common code extension or looks like a path
+
             if any(word.endswith(ext) for ext in common_exts) or '/' in word:
-                # Skip if already in context
+
                 if not any(word in path for path in session.context_files):
                     content = session.read_file(word)
                     if content:
-                        # read_file resolves the actual path and adds it to context_files
+
                         added_files.append(word)
 
     if added_files:
         console.print(f"[#666666]Auto-context loaded:[/] [#00FFFF]{', '.join(added_files)}[/]")
         console.print()
 
-    # Execute with thinking display based on mode
-    if mode_config.show_thinking:
-        with show_thinking() as thinking:
-            # Start smooth waiting animation with orange color
-            thinking.start_waiting("Thinking")
-            result = session.solve(query, thinking_display=thinking)
-            thinking.stop_waiting()
+    autonomous = AutonomousRunner(session)
+    if autonomous.should_run_autonomously(query):
+
+        console.print(f"  [#FFA500]This looks like a multi-step task[/]")
+        if ask_yes_no("Work on this autonomously?", default=True):
+
+            if mode_config.show_thinking:
+                with show_thinking() as thinking:
+                    thinking.start_waiting("Thinking")
+                    result = autonomous.run(query, thinking_display=thinking)
+                    thinking.stop_waiting()
+            else:
+                result = autonomous.run(query, thinking_display=None)
+        else:
+
+            if mode_config.show_thinking:
+                with show_thinking() as thinking:
+                    thinking.start_waiting("Thinking")
+                    result = session.solve(query, thinking_display=thinking)
+                    thinking.stop_waiting()
+            else:
+                from nare.cli.display.spinner import WaitingSpinner
+                with WaitingSpinner("Processing", delay=0.15, color="bright_yellow"):
+                    result = session.solve(query, thinking_display=None)
     else:
-        # Focus mode - no thinking display, but show spinner
-        from nare.cli.display.spinner import WaitingSpinner
-        with WaitingSpinner("Processing", delay=0.15, color="bright_yellow"):
-            result = session.solve(query, thinking_display=None)
+
+        if mode_config.show_thinking:
+            with show_thinking() as thinking:
+
+                thinking.start_waiting("Thinking")
+                result = session.solve(query, thinking_display=thinking)
+                thinking.stop_waiting()
+        else:
+
+            from nare.cli.display.spinner import WaitingSpinner
+            with WaitingSpinner("Processing", delay=0.15, color="bright_yellow"):
+                result = session.solve(query, thinking_display=None)
 
     elapsed = result.get("_elapsed", 0)
     console.print()
 
-    # Extract and clean answer
     answer = result.get("final_answer") or result.get("best_solution") or "No answer."
 
-    # Remove XML tags that were already streamed
     import re
     answer = re.sub(r'<reasoning>.*?</reasoning>', '', answer, flags=re.DOTALL)
     answer = re.sub(r'<abstract_signature>.*?</abstract_signature>', '', answer, flags=re.DOTALL)
@@ -201,21 +217,17 @@ def run_query(session: NareSession, query: str):
     answer = re.sub(r'<[^>]+>', '', answer)
     answer = re.sub(r'\n{3,}', '\n\n', answer).strip()
 
-    # Extract metadata
     route = result.get("route_decision", "FAST")
     tokens_in = result.get("tokens_in", 0)
     tokens_out = result.get("tokens_out", 0)
     total_tokens = tokens_in + tokens_out
 
-    # Answers from these routes are already streamed via thinking_display
     was_streamed = mode_config.show_thinking and route in (
         "SLOW", "HYBRID", "SLOW-RETRY", "SLOW-PATH-FIX", "DIRECT", "AGENT",
     )
 
-    # Display result using ResultCard component
     ResultCard.render(console, answer, route, elapsed, total_tokens, streamed=was_streamed)
 
-    # Auto-commit if enabled
     if getattr(mode_config, 'auto_commit', False):
         import subprocess
         try:
@@ -226,12 +238,12 @@ def run_query(session: NareSession, query: str):
                 text=True
             )
             if res.stdout.strip():
-                # Extract first sentence of query for commit msg
+
                 msg_base = query.split('\n')[0].strip()
                 if len(msg_base) > 50:
                     msg_base = msg_base[:47] + "..."
                 msg = f"NARE({route}): {msg_base}"
-                
+
                 commit_hash = session.git_commit(msg, ["."])
                 if commit_hash:
                     console.print(f"  [#666666]└─[/] [#00FF00]Auto-committed changes:[/] {commit_hash[:7]}", style="dim")
@@ -239,11 +251,9 @@ def run_query(session: NareSession, query: str):
         except Exception as e:
             ui.print_warning(f"Auto-commit failed: {e}")
 
-    # Update session stats
     session_queries = getattr(session, '_query_count', 0) + 1
     session._query_count = session_queries
 
-    # Track tokens
     session._total_tokens_in = getattr(session, '_total_tokens_in', 0) + tokens_in
     session._total_tokens_out = getattr(session, '_total_tokens_out', 0) + tokens_out
 
@@ -251,16 +261,12 @@ def run_query(session: NareSession, query: str):
     if not hasattr(session, '_start_time'):
         session._start_time = session_start
 
-    # Display status bar using StatusBar component
-    # Skip for AGENT route since agent_renderer already shows a beautiful status line
     if route != "AGENT":
         info = session.get_status()
         StatusBar.render(
             console, route, elapsed, tokens_in, tokens_out,
             info.get("episodes", 0), info.get("skills", 0),
         )
-
-
 
 def repl(session: NareSession):
     """Main interactive loop.
@@ -277,21 +283,17 @@ def repl(session: NareSession):
     """
     console = Console()
 
-    # Initialize session tracking
     session._query_count = 0
     session._start_time = time.time()
 
-    # Show banner
     import os
     global _session_for_toolbar
     _session_for_toolbar = session
     mode_manager = get_mode_manager()
     ui.print_banner(repo_path=session.repo_path, mode=mode_manager.current_mode.value)
 
-    # Set up prompt with history and completion
     history_file = os.path.join(session.repo_path, ".nare_history")
 
-    # Key bindings
     kb = KeyBindings()
 
     @kb.add('tab')
@@ -308,7 +310,6 @@ def repl(session: NareSession):
     try:
         from prompt_toolkit.styles import Style
 
-        # Custom style to remove toolbar background
         toolbar_style = Style.from_dict({
             'bottom-toolbar': 'noreverse',
         })
@@ -339,7 +340,6 @@ def repl(session: NareSession):
         if not raw:
             continue
 
-        # Slash commands
         if raw.startswith("/"):
             action = dispatch(session, raw)
             if action == "exit":
@@ -347,7 +347,6 @@ def repl(session: NareSession):
                 break
             continue
 
-        # Regular query
         try:
             run_query(session, raw)
         except KeyboardInterrupt:
