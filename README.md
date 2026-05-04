@@ -81,8 +81,9 @@ pip install -e .
 - Optional: Local embeddings model
 
 ```bash
-# For local embeddings (faster, no API calls)
-pip install -e ".[embeddings]"
+git clone https://github.com/starface77/Neuro-Adaptive-Reasoning-Engine
+cd Neuro-Adaptive-Reasoning-Engine
+pip install -r requirements.txt
 ```
 
 ---
@@ -164,137 +165,26 @@ agent = NAREProductionAgent(
     embedding_dim=3072,
 )
 
-# With oracle (for code verification)
-def test_oracle(query, answer):
-    # Run tests, check output, etc.
-    return ("PASS" in answer, "Tests must pass")
+# Define oracle for verification
+def oracle(query, answer):
+    expected = "150"
+    return (expected in answer, f"Expected {expected}")
 
-result = agent.solve(
-    query="Fix the authentication bug in users.py",
-    oracle=test_oracle,
-    working_dir="./my-project",
-)
+# Solve with verification
+query = "A train travels at 60 km/h for 2.5 hours. How far?"
+result = agent.solve(query, oracle=oracle)
 
-print(result["route_decision"])  # FAST, HYBRID, SLOW, etc.
-print(result["final_answer"])
-print(result["_tokens"])         # Token usage
-print(result["_elapsed"])        # Time in seconds
+print(result["route_decision"])  # ANALYTIC or SYNTHESIS
+print(result["final_answer"])     # 150
 ```
 
-**Without oracle:**
-```python
-result = agent.solve("Explain how the router works")
-# Falls back to best-of-N sampling
-```
-
----
-
-## How It Works
-
-### 1. Memory System
-
-**Episodic Memory:**
-- Every solved query → embedded → stored in FAISS index
-- Similarity search retrieves past solutions
-- Activation decay: old episodes fade unless reused
-
-**Compiled Skills:**
-- Recurring patterns → extracted → compiled into executable code
-- AST-validated before execution (security sandbox)
-- Skills are semantic: "add logging" works across different files
-
-### 2. Verified Synthesis
-
-For code-producing tasks:
-
-```
-1. Generate N candidates (temperature sampling)
-2. Execute each in sandbox
-3. Oracle judges: pass/fail
-4. If all fail → critique → regenerate
-5. Repeat until pass or budget exhausted
-```
-
-**Oracle types:**
-- Test runner (pytest, jest, etc.)
-- Semantic checker (output contains X)
-- LLM-as-judge (for subjective tasks)
-
-### 3. Library Learning
-
-After solving a problem:
-1. Extract the solution pattern
-2. Generalize variable names
-3. Compile into a skill function
-4. Store with semantic embedding
-
-Next time a similar query arrives → skill fires instantly.
-
----
-
-## Benchmarks
-
-### SWE-bench Lite
+### Running SWE-bench
 
 ```bash
+# Run on 30 tasks
 python benchmarks/swe_bench_official.py --max-tasks 30
-```
 
-**Results (v0.2.0):**
-- Resolved: 23/30 (76.7%)
-- Avg tokens: 8.2k per task
-- Avg time: 12.4s per task
-
-### ARC-AGI
-
-```bash
-python benchmarks/nare_arc_full.py
-```
-
-**Results:**
-- Training set: 42/400 (10.5%)
-- Evaluation set: 8/400 (2.0%)
-
-*(ARC is hard. These numbers are honest.)*
-
----
-
-## Project Structure
-
-```
-nare/
-├── core/                    # Reasoning engine
-│   ├── agent.py             # NAREProductionAgent (main facade)
-│   ├── router.py            # 5-tier adaptive router
-│   ├── synthesis.py         # Verified synthesis loop
-│   ├── library_learning.py  # Pattern → skill compilation
-│   └── evolution.py         # Background learning
-├── reasoning/               # LLM integration
-│   ├── llm.py               # Anthropic client + embeddings
-│   ├── llm_anthropic.py     # SSE streaming parser
-│   ├── critic.py            # Solution critique
-│   └── oracle.py            # Test oracles
-├── memory/                  # Persistence
-│   ├── memory.py            # FAISS index + episodes
-│   └── metrics.py           # Token/time tracking
-├── agents/                  # Specialized agents
-│   ├── loop.py              # Tool-calling agent (new)
-│   ├── triage.py            # Intent classification
-│   ├── planning.py          # Task decomposition
-│   ├── repo_map.py          # Codebase structure
-│   └── research.py          # Web search (TODO)
-├── cli/                     # Interactive interface
-│   ├── app.py               # Entry point
-│   ├── repl.py              # REPL loop
-│   ├── session.py           # Session management
-│   ├── commands.py          # Slash commands
-│   └── display/             # UI rendering (Rich)
-├── execution/               # Sandbox
-│   └── sandbox.py           # AST-validated subprocess
-└── tools/                   # Utilities
-    ├── file_ops.py          # Read/write/edit
-    ├── git_ops.py           # Git integration
-    └── solve_context.py     # Context builder
+# Output: predictions.jsonl (official format)
 ```
 
 ---
