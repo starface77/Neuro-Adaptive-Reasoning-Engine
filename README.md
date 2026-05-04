@@ -80,12 +80,6 @@ pip install -r requirements.txt
 - Anthropic API key (or compatible proxy)
 - Optional: Local embeddings model
 
-```bash
-git clone https://github.com/starface77/Neuro-Adaptive-Reasoning-Engine
-cd Neuro-Adaptive-Reasoning-Engine
-pip install -r requirements.txt
-```
-
 ---
 
 ## Quick Start
