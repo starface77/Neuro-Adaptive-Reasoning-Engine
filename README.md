@@ -1,6 +1,6 @@
 # NARE — Neural Amortized Reasoning Engine
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![License: MIT](https://img.shields.io/badge/license-Apache%20License%202.0-blue)](http://www.apache.org/licenses)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
 **NARE** is an AI reasoning engine that learns from experience. It caches solutions, compiles patterns into reusable skills, and gets faster over time — like a developer who remembers what worked before.
