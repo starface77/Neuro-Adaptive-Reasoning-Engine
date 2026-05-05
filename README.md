@@ -1,286 +1,262 @@
-# NARE — Neural Amortized Reasoning Engine
+# NARE CLI
 
-[![License: MIT](https://img.shields.io/badge/license-Apache%20License%202.0-blue)](http://www.apache.org/licenses)
+**Neural Amortized Reasoning Engine** - AI-powered coding assistant with verified synthesis and episodic memory.
+
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-**NARE** is an AI reasoning engine that learns from experience. It caches solutions, compiles patterns into reusable skills, and gets faster over time — like a developer who remembers what worked before.
+## What is NARE CLI?
 
-> **Status:** v0.2.0 — Production-ready core, evolving CLI. APIs may shift between minor releases.
+NARE CLI is a command-line AI coding assistant that learns from experience and verifies its solutions. Unlike traditional LLM-based tools, NARE CLI:
 
----
+- **Remembers** previous solutions via episodic memory (FAISS + HNSW)
+- **Verifies** code through formal execution in isolated sandbox
+- **Learns** by compiling repeated patterns into instant skills
+- **Routes** intelligently between cached answers and synthesis
 
-## What makes NARE different?
+### Key Features
 
-Most AI coding assistants start from scratch every time. NARE **remembers**:
-
-- **Semantic memory** — FAISS-backed cache of past solutions
-- **Compiled skills** — Recurring patterns crystallize into executable code
-- **Adaptive routing** — Cheap cached answers when possible, deep reasoning when needed
-- **Verified synthesis** — Generate → test → critique → retry loop with oracle feedback
-
-Think of it as an AI that builds its own library of solutions as it works.
-
----
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                         Query                                │
-└────────────────────┬────────────────────────────────────────┘
-                     │
-                     ▼
-            ┌────────────────┐
-            │  Triage Agent  │  ← Classify intent (QUESTION/EXPLORE/EDIT)
-            └────────┬───────┘
-                     │
-                     ▼
-         ┌───────────────────────┐
-         │   Adaptive Router     │  ← 5-tier decision tree
-         └───────────┬───────────┘
-                     │
-        ┌────────────┼────────────┬────────────┬────────────┐
-        │            │            │            │            │
-        ▼            ▼            ▼            ▼            ▼
-    DIRECT    COMPILED_SKILL   FAST       HYBRID       SLOW
-    (chat)    (cached code)  (FAISS)  (FAISS+delta) (full LLM)
-        │            │            │            │            │
-        └────────────┴────────────┴────────────┴────────────┘
-                                  │
-                                  ▼
-                          ┌───────────────┐
-                          │ Memory System │  ← Episodes + Skills
-                          └───────────────┘
-```
-
-### 5-Tier Routing
-
-| Tier | When | Cost | Example |
-|------|------|------|---------|
-| **DIRECT** | Greetings, meta-questions | ~0 tokens | "привет", "what can you do?" |
-| **COMPILED_SKILL** | Exact pattern match in skills | ~0 tokens | Recurring refactors, known fixes |
-| **FAST** | Cached episode (similarity ≥ 0.85) | ~500 tokens | "fix auth bug" → cached solution |
-| **HYBRID** | Cached + delta reasoning | ~2k tokens | Similar problem, different context |
-| **SLOW** | Full reasoning + verification | ~10k+ tokens | Novel problems, complex edits |
-
-**Key insight:** Most queries hit FAST or HYBRID after a few sessions. SLOW is expensive but teaches the system.
-
----
+🚀 **Fast Route** - Instant answers from memory (0 LLM tokens)  
+🔧 **Verified Synthesis** - Iterative code generation with formal verification  
+📚 **Library Learning** - Automatic skill compilation from experience  
+🎯 **Smart Routing** - 5-tier system (FAST/REFLEX/COMPILED_SKILL/HYBRID/SLOW)  
+💾 **Persistent Memory** - Episodes, skills, and chat history saved across sessions  
+🔄 **Autonomous Mode** - Multi-step task execution with checkpoints  
 
 ## Installation
 
 ```bash
-git clone https://github.com/starface77/Neuro-Adaptive-Reasoning-Engine
-cd Neuro-Adaptive-Reasoning-Engine
-pip install -r requirements.txt
+# Install from PyPI
+pip install narecli
+
+# Set API key
+export ANTHROPIC_API_KEY="your-key-here"
+
+# Run NARE
+nare
 ```
 
-**Requirements:**
-- Python 3.10+
-- Anthropic API key (or compatible proxy)
-- Optional: Local embeddings model
+### Development Installation
 
----
+```bash
+# Clone repository for development
+git clone https://github.com/Nare-Labs/NARE-CLI.git
+cd NARE-CLI
+
+# Install in editable mode
+pip install -e .
+```
 
 ## Quick Start
 
-### 1. Configure API
+### Interactive Mode
 
 ```bash
-cp .env.example .env
-# Edit .env:
-ANTHROPIC_API_KEY=your-key-here
-ANTHROPIC_MODEL=claude-sonnet-4-20250514
-```
-
-**Using a proxy?** (e.g., local LLM gateway)
-```bash
-ANTHROPIC_BASE_URL=http://localhost:20128/v1
-ANTHROPIC_MODEL=kr/claude-sonnet-4.5
-```
-
-### 2. Launch REPL
-
-```bash
-python -m nare.cli
+nare
 ```
 
 ```
-◆ NARE  reasoning agent for software engineering
-  NareCLI  /home/user/project
-  Manual mode  ·  type /help for commands
-
-> fix the login timeout bug
+> fix the bug in auth.py
+  ● Intent: edit
+  ◌ Find(function_name='authenticate', file_path='auth.py')
+  ● Found function 'authenticate' at line 45
+  ◌ Apply(hunks='...')
+  ● Applied 1 hunk to auth.py
+  
+Fixed authentication bug in auth.py
+  3.2k tokens  ·  4.1s
 ```
 
-### 3. One-shot mode
+### One-Shot Mode
 
 ```bash
-python -m nare.cli "add type hints to utils.py"
+nare "add type hints to utils.py"
 ```
 
----
+### Commands
 
-## CLI Commands
+- `/help` - Show available commands
+- `/status` - Agent status and memory stats
+- `/agent on/off` - Toggle autonomous mode
+- `/repo <path>` - Set working directory
+- `/clear` - Clear screen
+- `/exit` - Exit NARE
 
-| Command | Description |
-|---------|-------------|
-| `/help` | Show all commands |
-| `/status` | Session stats (tokens, memory, route distribution) |
-| `/repo [path]` | Change working directory |
-| `/files` | List files in context |
-| `/read <path>` | Load file into context |
-| `/clear` | Reset conversation |
-| `/mode` | Cycle: Manual → Research → Autopilot |
-| `/memory` | Inspect cached episodes and skills |
-| `/diff` | Show uncommitted changes |
-| `/commit [msg]` | Git commit with optional message |
-| `/test` | Run project tests |
-| `/bench <n>` | Run SWE-bench on n tasks |
-| `/agent on\|off` | Toggle new agent loop (tool-calling) |
-| `/exit` | Quit |
+## Architecture
 
-### Autonomy Modes
+NARE CLI implements the **VARE** (Verified Amortized Reasoning Engine) architecture:
 
-- **Manual** — Confirm every file write and shell command
-- **Deep Research** — Auto-read files, confirm writes
-- **Autopilot** — Full autonomy, only confirms destructive actions
+```
+┌─────────────────────────────────────────────────────────┐
+│                    User Query                           │
+└────────────────────┬────────────────────────────────────┘
+                     │
+                     ▼
+         ┌───────────────────────┐
+         │   Router (Triage)     │
+         │  QUESTION/EXPLORE/EDIT │
+         └───────────┬───────────┘
+                     │
+        ┌────────────┴────────────┐
+        │                         │
+        ▼                         ▼
+┌───────────────┐         ┌──────────────┐
+│  FAST Route   │         │  SLOW Route  │
+│  (Memory)     │         │  (Synthesis) │
+└───────┬───────┘         └──────┬───────┘
+        │                        │
+        │  ┌─────────────────┐   │
+        └─►│  Final Answer   │◄──┘
+           └─────────────────┘
+```
 
----
+### Components
 
-## Programmatic API
+**$M_{cache}$ (Memory)**
+- HNSW-indexed episodic memory (FAISS)
+- Compiled skills with trigger/execute functions
+- Semantic rules for pattern matching
+
+**$V_{sandbox}$ (Verifier)**
+- Python AST compilation check
+- Subprocess isolation
+- Binary feedback (R(y) = 1 or 0)
+
+**$G_{\theta}$ (Generator)**
+- LLM with fixed weights (Anthropic API)
+- Self-refinement via error traces
+- Thinking budget optimization
+
+**Routing System**
+1. **FAST** - Episodic memory lookup (instant)
+2. **REFLEX** - Compiled skills execution (instant)
+3. **COMPILED_SKILL** - Semantic pattern matching
+4. **HYBRID** - Delta reasoning with memory
+5. **SLOW** - Full verified synthesis loop
+
+## Configuration
+
+### Budget Limits
 
 ```python
-from nare import NAREProductionAgent, DEFAULT_CONFIG
-
-agent = NAREProductionAgent(
-    config=DEFAULT_CONFIG,
-    persist_dir="./.nare_memory",
-    embedding_dim=3072,
-)
-
-# Define oracle for verification
-def oracle(query, answer):
-    expected = "150"
-    return (expected in answer, f"Expected {expected}")
-
-# Solve with verification
-query = "A train travels at 60 km/h for 2.5 hours. How far?"
-result = agent.solve(query, oracle=oracle)
-
-print(result["route_decision"])  # ANALYTIC or SYNTHESIS
-print(result["final_answer"])     # 150
+# nare/agents/loops/autonomous.py
+max_iterations: int = 150      # Max tool-calling iterations
+max_tokens: int = 1_000_000    # Max tokens per task
+max_wall_clock: float = 7200.0 # Max 2 hours per task
 ```
 
-### Running SWE-bench
+### Memory Settings
+
+```python
+# .nare_memory/ directory structure
+├── episodes.json           # Episodic memory
+├── compiled_skills.json    # Learned skills
+├── rules.json              # Semantic rules
+├── chat_history.json       # Conversation history
+├── episodic.faiss          # FAISS index
+└── semantic.faiss          # Skills index
+```
+
+## Token Optimization
+
+NARE CLI includes aggressive token optimization:
+
+- **System prompt**: Compressed to ~800 tokens (-68%)
+- **Chat history**: Code blocks trimmed to 100 chars
+- **Repo map**: Cached for 15 seconds, uses `git ls-files`
+- **Thinking budget**: Adaptive 200 tokens
+- **Prompt caching**: 5-minute TTL for system prompt + repo map
+
+**Results:**
+- Simple greeting: ~100-200 tokens (instant response)
+- FAST route: 0 LLM tokens (memory lookup)
+- Typical session: 106k → 15.8k tokens (-85%)
+
+## Known Limitations
+
+NARE CLI is optimized for **short-to-medium tasks** on **small-to-medium projects**. For production use on large projects, be aware of:
+
+### Critical Limitations
+1. **Budget limits** - 150 iterations may be insufficient for complex refactorings
+2. **Repo map** - Limited to 1500 files via `git ls-files`
+3. **Chat history** - Only last 10 messages retained
+4. **Memory prune** - Aggressive pruning every 100 episodes
+5. **No checkpoint/resume** - Crash = lost work
+
+### Performance Issues
+6. **FAISS scaling** - O(n) search, slow on 10k+ episodes
+7. **Synchronous execution** - No parallelism
+8. **No batch operations** - Each file = separate iteration
+
+See [REAL_PROBLEMS_ANALYSIS.md](REAL_PROBLEMS_ANALYSIS.md) for complete list.
+
+## Development
+
+### Project Structure
+
+```
+nare/
+├── agents/          # Agent loops and planning
+├── cli/             # CLI interface and commands
+├── core/            # Core VARE components
+│   ├── routing/     # 5-tier routing system
+│   ├── synthesis/   # Verified synthesis engine
+│   └── evolution/   # Library learning
+├── memory/          # Episodic memory + FAISS
+├── reasoning/       # LLM interface
+└── tools/           # Built-in tools (read, edit, bash, etc.)
+```
+
+### Running Tests
 
 ```bash
-# Run on 30 tasks
-python benchmarks/swe_bench_official.py --max-tasks 30
+# Memory flush test
+python test_memory_flush.py
 
-# Output: predictions.jsonl (official format)
+# Hunks system test
+python test_hunks.py
+
+# Full test suite
+pytest tests/
 ```
-
----
-
-## Limitations (Honest Section)
-
-### What NARE does well:
-✅ Repetitive refactors (gets faster over time)  
-✅ Bug fixes with clear test cases  
-✅ Code explanation and analysis  
-✅ Incremental edits to existing code  
-
-### What NARE struggles with:
-❌ **Novel problems** — First attempt is slow (SLOW tier)  
-❌ **Ambiguous requirements** — Needs clear oracles  
-❌ **Large refactors** — Context window limits (working on it)  
-❌ **Non-Python code** — Sandbox is Python-only  
-❌ **Security** — Subprocess sandbox, not container-isolated  
-
-### Known issues:
-- File resolution can match wrong files (ambiguous names)
-- Memory grows unbounded (need pruning strategy)
-- No streaming UI for SLOW tier (shows spinner, then dumps result)
-- Research agent incomplete (WebSearch integration TODO)
-
----
-
-## Roadmap
-
-**v0.3.0** (Next)
-- [ ] Streaming UI for SLOW tier
-- [ ] Memory pruning (LRU + activation decay)
-- [ ] WebSearch integration in research agent
-- [ ] Multi-file refactor support
-- [ ] Docker sandbox (replace subprocess)
-
-**v0.4.0**
-- [ ] Multi-language support (JS, Go, Rust)
-- [ ] Persistent task list (resume interrupted work)
-- [ ] Skill marketplace (share compiled skills)
-- [ ] Web UI (alternative to CLI)
-
----
 
 ## Contributing
 
-PRs welcome! Focus areas:
-- **Oracles** — New oracle types (linters, formatters, etc.)
-- **Skills** — Pre-compiled skills for common tasks
-- **Benchmarks** — More evaluation datasets
-- **Docs** — Tutorials, examples, architecture deep-dives
+Contributions welcome! Priority areas:
 
-```bash
-# Run tests
-pytest tests/
+1. **Checkpoint/resume** for long-running tasks
+2. **Incremental repo map** with file watching
+3. **Batch operations** for multi-file edits
+4. **Hierarchical memory** with summarization
+5. **Session isolation** for multi-project work
 
-# Lint
-ruff check nare/
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
-# Format
-ruff format nare/
+## Citation
+
+```bibtex
+@software{nare2024,
+  title={NARE CLI: Neural Amortized Reasoning Engine},
+  author={Nare Labs},
+  year={2024},
+  url={https://github.com/Nare-Labs/NARE-CLI}
+}
 ```
-
----
-
-## FAQ
-
-**Q: How is this different from Cursor/Copilot/Aider?**  
-A: NARE learns from experience. After solving a problem once, it caches the solution and gets faster. Most tools start from scratch every time.
-
-**Q: Do I need a GPU?**  
-A: No. Embeddings can run on CPU (slow) or via API (fast). LLM calls go to Anthropic API.
-
-**Q: Can I use local LLMs?**  
-A: Yes, via proxy. Set `ANTHROPIC_BASE_URL` to your local endpoint (e.g., Ollama, LM Studio).
-
-**Q: Is my code sent to Anthropic?**  
-A: Yes, if you use their API. Use a local proxy if you need privacy.
-
-**Q: How much does it cost?**  
-A: Depends on usage. FAST tier is ~free (cached). SLOW tier is ~$0.10-0.50 per complex task (Claude Sonnet 4).
-
-**Q: Can I run this in production?**  
-A: Core engine: yes. CLI: use at your own risk (subprocess sandbox is not production-grade).
-
----
 
 ## License
 
-MIT — see [`LICENSE`](LICENSE)
+MIT License - see [LICENSE](LICENSE) for details.
+
+## Acknowledgments
+
+Built on research from:
+- **Reflexion** (Shinn et al.) - Self-refinement via verbal feedback
+- **MemoryBank** (Zhong et al.) - Experience replay for LLMs
+- **DreamCoder** (Ellis et al.) - Library learning
+- **Anthropic** - Claude API and prompt caching
 
 ---
 
-## Credits
+**Status:** Alpha - Optimized for short tasks, known limitations for production use.
 
-Built by github.com/starface77
-
-Inspired by:
-- [Voyager](https://github.com/MineDojo/Voyager) (skill library learning)
-- [Reflexion](https://arxiv.org/abs/2303.11366) (self-critique loop)
-- [MemGPT](https://github.com/cpacker/MemGPT) (memory management)
-
----
-
-**Star this repo if you find it useful!** ⭐
+For questions: [Issues](https://github.com/Nare-Labs/NARE-CLI/issues)
