@@ -1,55 +1,45 @@
 # NARE CLI
 
-**Neural Amortized Reasoning Engine** - AI-powered coding assistant with verified synthesis and episodic memory.
+> **Neural Amortized Reasoning Engine** - AI coding assistant that learns from experience
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![PyPI](https://img.shields.io/badge/PyPI-narecli-blue.svg)](https://pypi.org/project/narecli/)
 
-## What is NARE CLI?
+---
 
-NARE CLI is a command-line AI coding assistant that learns from experience and verifies its solutions. Unlike traditional LLM-based tools, NARE CLI:
+## Why NARE CLI?
 
-- **Remembers** previous solutions via episodic memory (FAISS + HNSW)
-- **Verifies** code through formal execution in isolated sandbox
-- **Learns** by compiling repeated patterns into instant skills
-- **Routes** intelligently between cached answers and synthesis
+Traditional AI assistants forget everything after each conversation. **NARE CLI remembers, learns, and gets faster over time.**
 
-### Key Features
+| Feature | Traditional AI | NARE CLI |
+|---------|---------------|----------|
+| Memory | ❌ Forgets everything | ✅ Remembers solutions |
+| Speed | 🐌 Same speed always | ⚡ Gets faster with use |
+| Verification | ❌ No validation | ✅ Tests code before applying |
+| Learning | ❌ Static | ✅ Compiles patterns into skills |
 
-🚀 **Fast Route** - Instant answers from memory (0 LLM tokens)  
-🔧 **Verified Synthesis** - Iterative code generation with formal verification  
-📚 **Library Learning** - Automatic skill compilation from experience  
-🎯 **Smart Routing** - 5-tier system (FAST/REFLEX/COMPILED_SKILL/HYBRID/SLOW)  
-💾 **Persistent Memory** - Episodes, skills, and chat history saved across sessions  
-🔄 **Autonomous Mode** - Multi-step task execution with checkpoints  
+---
 
-## Installation
+## 🚀 Quick Start
+
+### Installation
 
 ```bash
-# Install from PyPI
 pip install narecli
+```
 
-# Set API key
+### Setup
+
+```bash
+# Set your Anthropic API key
 export ANTHROPIC_API_KEY="your-key-here"
 
-# Run NARE
+# Start NARE CLI
 nare
 ```
 
-### Development Installation
-
-```bash
-# Clone repository for development
-git clone https://github.com/Nare-Labs/NARE-CLI.git
-cd NARE-CLI
-
-# Install in editable mode
-pip install -e .
-```
-
-## Quick Start
-
-### Interactive Mode
+### Your First Command
 
 ```bash
 nare
@@ -72,6 +62,8 @@ Fixed authentication bug in auth.py
 ```bash
 nare "add type hints to utils.py"
 ```
+
+---
 
 ### Commands
 
@@ -235,17 +227,17 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 ## Citation
 
 ```bibtex
-@software{nare2024,
+@software{narecli2026,
   title={NARE CLI: Neural Amortized Reasoning Engine},
   author={Nare Labs},
-  year={2024},
+  year={2026},
   url={https://github.com/Nare-Labs/NARE-CLI}
 }
 ```
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
+Apache License 2.0 - see [LICENSE](LICENSE) for details.
 
 ## Acknowledgments
 
