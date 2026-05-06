@@ -40,15 +40,17 @@ class NAREProductionAgent:
         self.critic = Critic()
         self.metrics = MetricsTracker(persist_dir=self.memory.persist_dir)
 
+        self.evolution = EvolutionEngine(
+            memory=self.memory,
+            config=self.config
+        )
+
         self.router = ReasoningRouter(
             memory=self.memory,
             critic=self.critic,
             config=self.config,
-            metrics=self.metrics
-        )
-        self.evolution = EvolutionEngine(
-            memory=self.memory,
-            config=self.config
+            metrics=self.metrics,
+            evolution=self.evolution
         )
 
     def set_memory(self, memory: MemorySystem):
@@ -68,7 +70,7 @@ class NAREProductionAgent:
         if self.config.bootstrap.load_seeds_on_init:
             self._bootstrap_load_seeds()
 
-    def solve(
+    async def solve(
         self,
         query: str,
         oracle: Optional[Callable] = None,
@@ -104,7 +106,7 @@ class NAREProductionAgent:
             from .oracle import build_oracle_from_spec
             oracle = build_oracle_from_spec(oracle_spec)
 
-        result = self.router.route(
+        result = await self.router.route(
             query=query,
             oracle=oracle,
             expected_hint=expected_hint,
@@ -146,7 +148,7 @@ class NAREProductionAgent:
             elif solve_ctx is not None and solve_ctx.partial_solutions:
                 self._save_partial_solutions(query, solve_ctx)
 
-        if len(self.memory.episodes) > 100:
+        if len(self.memory.episodes) > 5000:
             self.memory.prune_memory()
 
         if self.config.sleep.enabled and self.evolution.check_compilation_trigger():

@@ -17,6 +17,10 @@ from nare.cli.session import NareSession
 from nare.cli.repl import repl, run_query
 from nare.cli.display import ui
 
+# Detect if running in Git Bash / MinTTY on Windows
+def is_mintty():
+    return sys.platform == 'win32' and os.environ.get('TERM') == 'xterm-256color'
+
 def main():
 
     if hasattr(sys.stdout, "reconfigure"):
@@ -66,6 +70,13 @@ def main():
 
     session = NareSession(repo_path=args.repo)
 
+    # Check API key on first use
+    from nare.config.api_keys import ensure_api_key
+    api_key = ensure_api_key(provider="anthropic")
+    if not api_key:
+        ui.print_error("No API key provided. NARE cannot function without an API key.")
+        sys.exit(1)
+
     if args.query:
         ui.print_banner()
         ui.print_status("repo", session.repo_path, "info")
@@ -87,6 +98,16 @@ def main():
                 ui.print_error(str(e))
             sys.exit(1)
         return
+
+    # Block interactive mode in Git Bash
+    if is_mintty():
+        print("Error: Interactive mode doesn't work in Git Bash on Windows.")
+        print("Please use one of these instead:")
+        print("  1. Windows Terminal (recommended)")
+        print("  2. CMD.exe")
+        print("  3. PowerShell")
+        print("\nOr use one-shot mode: python -m nare.cli \"your query\"")
+        sys.exit(1)
 
     try:
         repl(session)

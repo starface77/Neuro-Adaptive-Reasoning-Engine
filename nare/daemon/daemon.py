@@ -40,7 +40,7 @@ class NareDaemon:
                 logging.StreamHandler()
             ]
         )
-        self.log = logging.getLogger("nare.daemon")
+        self.log = get_logger("nare.daemon")
 
         self.queue = TaskQueue(db_path)
 

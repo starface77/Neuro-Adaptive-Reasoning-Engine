@@ -549,23 +549,42 @@ class MemorySystem:
             return results
 
     def save(self):
+        import copy
+
+        # 1. Under lock - make deep copies
         with self._lock:
+            episodes_copy = copy.deepcopy(self.episodes)
+            rules_copy = copy.deepcopy(self.semantic_rules)
+            facts_copy = copy.deepcopy(self.facts)
+            suppression_copy = copy.deepcopy(self.suppression_rules)
+            skills_copy = copy.deepcopy(self.compiled_skills)
 
-            os.makedirs(self.persist_dir, exist_ok=True)
+            # Clone FAISS indices
+            episodic_clone = faiss.clone_index(self.episodic_index)
+            semantic_clone = faiss.clone_index(self.semantic_index)
+            factual_clone = faiss.clone_index(self.factual_index)
 
-            faiss.write_index(self.episodic_index, os.path.join(self.persist_dir, "episodic.faiss"))
-            faiss.write_index(self.semantic_index, os.path.join(self.persist_dir, "semantic.faiss"))
-            faiss.write_index(self.factual_index, os.path.join(self.persist_dir, "factual.faiss"))
-            with open(os.path.join(self.persist_dir, "episodes.json"), "w", encoding="utf-8") as f:
-                json.dump(self.episodes, f, ensure_ascii=False, indent=2)
-            with open(os.path.join(self.persist_dir, "rules.json"), "w", encoding="utf-8") as f:
-                json.dump(self.semantic_rules, f, ensure_ascii=False, indent=2)
-            with open(os.path.join(self.persist_dir, "facts.json"), "w", encoding="utf-8") as f:
-                json.dump(self.facts, f, ensure_ascii=False, indent=2)
-            with open(os.path.join(self.persist_dir, "suppression.json"), "w", encoding="utf-8") as f:
-                json.dump(self.suppression_rules, f, ensure_ascii=False, indent=2)
-            with open(os.path.join(self.persist_dir, "compiled_skills.json"), "w", encoding="utf-8") as f:
-                json.dump(self.compiled_skills, f, ensure_ascii=False, indent=2)
+        # 2. Without lock - write to disk
+        os.makedirs(self.persist_dir, exist_ok=True)
+
+        faiss.write_index(episodic_clone, os.path.join(self.persist_dir, "episodic.faiss"))
+        faiss.write_index(semantic_clone, os.path.join(self.persist_dir, "semantic.faiss"))
+        faiss.write_index(factual_clone, os.path.join(self.persist_dir, "factual.faiss"))
+
+        with open(os.path.join(self.persist_dir, "episodes.json"), "w", encoding="utf-8") as f:
+            json.dump(episodes_copy, f, ensure_ascii=False, indent=2)
+
+        with open(os.path.join(self.persist_dir, "rules.json"), "w", encoding="utf-8") as f:
+            json.dump(rules_copy, f, ensure_ascii=False, indent=2)
+
+        with open(os.path.join(self.persist_dir, "facts.json"), "w", encoding="utf-8") as f:
+            json.dump(facts_copy, f, ensure_ascii=False, indent=2)
+
+        with open(os.path.join(self.persist_dir, "suppression.json"), "w", encoding="utf-8") as f:
+            json.dump(suppression_copy, f, ensure_ascii=False, indent=2)
+
+        with open(os.path.join(self.persist_dir, "compiled_skills.json"), "w", encoding="utf-8") as f:
+            json.dump(skills_copy, f, ensure_ascii=False, indent=2)
 
     def _mark_dirty(self):
         """Mark memory as dirty and schedule flush."""
@@ -579,7 +598,7 @@ class MemorySystem:
         """Background flush of dirty memory."""
         with self._lock:
             if self._dirty:
-                self._mark_dirty()
+                self.save()
                 self._dirty = False
             self._flush_timer = None
 

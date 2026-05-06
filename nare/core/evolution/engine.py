@@ -92,8 +92,8 @@ class EvolutionEngine:
         """Compile reusable skills from clustered episodes.
 
         Process:
-        1. Cluster similar successful episodes
-        2. Discover generalizing rule through SEARCH (not extraction)
+        1. Cluster similar successful episodes using DBSCAN
+        2. For each cluster, discover generalizing rule through SEARCH
         3. Validate on holdout data
         4. Store as executable skill
         """
@@ -108,25 +108,64 @@ class EvolutionEngine:
             logging.info("[LIBRARY LEARNING] Need ≥3 verified episodes for rule discovery.")
             return
 
-        logging.info(f"[LIBRARY LEARNING] Discovering rule from {len(episodes_to_cluster)} episodes...")
-        rule = discover_rule(
-            episodes=episodes_to_cluster,
-            oracle=self.oracle,
-            n_candidates=5,
-            holdout_ratio=0.3
-        )
+        embeddings = []
+        valid_episodes = []
+        for ep in episodes_to_cluster:
+            if 'embedding' in ep:
+                embeddings.append(ep['embedding'])
+                valid_episodes.append(ep)
 
-        if rule:
-            text_to_embed = f"Pattern: {rule['pattern']}\nCode: {rule['python_code']}"
-            embedding = llm.get_embedding(text_to_embed)
+        if len(valid_episodes) < 3:
+            logging.info("[LIBRARY LEARNING] Need ≥3 episodes with embeddings for clustering.")
+            return
 
-            self.memory.add_compiled_skill(
-                pattern=rule['pattern'],
-                code=rule['python_code'],
-                trigger_emb=np.array(embedding, dtype=np.float32)
+        # Perform DBSCAN clustering
+        from sklearn.cluster import DBSCAN
+        import faiss
+
+        X = np.array(embeddings, dtype=np.float32)
+        faiss.normalize_L2(X)
+
+        # Use cosine distance via normalized L2
+        clustering = DBSCAN(eps=0.15, min_samples=3, metric='euclidean')
+        labels = clustering.fit_predict(X)
+
+        logging.info(f"[LIBRARY LEARNING] DBSCAN found {len(set(labels))} clusters (including noise)")
+
+        # Process each cluster separately
+        unique_labels = set(labels)
+        for cluster_id in unique_labels:
+            if cluster_id == -1:  # Skip noise
+                continue
+
+            cluster_episodes = [valid_episodes[i] for i, label in enumerate(labels) if label == cluster_id]
+
+            if len(cluster_episodes) < 3:
+                logging.info(f"[LIBRARY LEARNING] Cluster {cluster_id}: only {len(cluster_episodes)} episodes, skipping")
+                continue
+
+            logging.info(f"[LIBRARY LEARNING] Cluster {cluster_id}: {len(cluster_episodes)} episodes")
+            logging.info(f"[LIBRARY LEARNING] Sample queries: {[ep['query'][:50] for ep in cluster_episodes[:3]]}")
+
+            # Discover rule from this semantic cluster
+            rule = discover_rule(
+                episodes=cluster_episodes,
+                oracle=self.oracle,
+                n_candidates=5,
+                holdout_ratio=0.3
             )
 
-            self.memory.add_semantic_rule(rule, np.array(embedding, dtype=np.float32))
+            if rule:
+                text_to_embed = f"Pattern: {rule['pattern']}\nCode: {rule['python_code']}"
+                embedding = llm.get_embedding(text_to_embed)
+
+                self.memory.add_compiled_skill(
+                    pattern=rule['pattern'],
+                    code=rule['python_code'],
+                    trigger_emb=np.array(embedding, dtype=np.float32)
+                )
+
+                self.memory.add_semantic_rule(rule, np.array(embedding, dtype=np.float32))
 
             logging.info(f"[LIBRARY LEARNING] Successfully compiled skill: {rule['pattern']} (confidence: {rule['confidence']:.2f})")
             logging.info(f"[LIBRARY LEARNING] Total skills: {len(self.memory.compiled_skills)}")
@@ -136,7 +175,8 @@ class EvolutionEngine:
     def _validate_skills(self):
         """Validate existing skills through stress testing.
 
-        Renamed from _rem_sleep_phase. Removes REM metaphor.
+        BUG FIX #4: Use subprocess execution instead of in-process to prevent
+        infinite loops and resource exhaustion.
 
         Process:
         1. Test each skill on recent episodes
@@ -157,23 +197,12 @@ class EvolutionEngine:
             logging.info("[SKILL VALIDATION] Not enough episodes for validation")
             return
 
-        from ...execution.sandboxes.base import safe_load_module
+        from ...execution.local import safe_execute_subprocess, SubprocessSandboxError
 
         skills_to_remove = []
 
         for idx, skill in enumerate(self.memory.compiled_skills):
             try:
-
-                safe_globals = safe_load_module(skill['code'])
-
-                if 'trigger' not in safe_globals or 'execute' not in safe_globals:
-                    logging.warning(f"[SKILL VALIDATION] Skill {idx} missing trigger/execute")
-                    skills_to_remove.append(idx)
-                    continue
-
-                trigger_fn = safe_globals['trigger']
-                execute_fn = safe_globals['execute']
-
                 correct = 0
                 total = 0
 
@@ -182,13 +211,28 @@ class EvolutionEngine:
                     expected = ep.get('solution', '')
 
                     try:
-                        if trigger_fn(query):
-                            total += 1
-                            result = str(execute_fn(query))
+                        # Execute in subprocess with timeout
+                        result = safe_execute_subprocess(
+                            skill['code'],
+                            query,
+                            timeout=3.0,  # 3 second timeout
+                            mode='execute_if_trigger'
+                        )
 
-                            if result and result.strip() == expected.strip():
-                                correct += 1
-                    except:
+                        if result and "Error: trigger returned False" not in result:
+                            total += 1
+
+                            # Simple similarity check
+                            if expected:
+                                similarity = self._compute_similarity(result, expected)
+                                if similarity > 0.7:
+                                    correct += 1
+
+                    except SubprocessSandboxError as e:
+                        logging.warning(f"[SKILL VALIDATION] Skill {idx} failed on query: {e}")
+                        total += 1
+                    except Exception as e:
+                        logging.warning(f"[SKILL VALIDATION] Skill {idx} error: {e}")
                         total += 1
 
                 if total > 0:
@@ -216,6 +260,19 @@ class EvolutionEngine:
                 self.memory.force_save()
 
         logging.info(f"[SKILL VALIDATION] Validation complete. {len(self.memory.compiled_skills)} skills remaining")
+
+    def _compute_similarity(self, text1: str, text2: str) -> float:
+        """Simple text similarity metric (Jaccard on words)."""
+        words1 = set(text1.lower().split())
+        words2 = set(text2.lower().split())
+
+        if not words1 or not words2:
+            return 0.0
+
+        intersection = words1 & words2
+        union = words1 | words2
+
+        return len(intersection) / len(union) if union else 0.0
 
     def _background_validate_episodes(self):
         """Random audit of episodic memory quality.

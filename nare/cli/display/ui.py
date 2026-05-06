@@ -39,6 +39,7 @@ def _build_rich_theme():
         "warning": theme.warning,
         "info": theme.info,
         "route_fast": theme.route_fast,
+        "route_compiled_skill": theme.route_compiled_skill,
         "route_reflex": theme.route_reflex,
         "route_hybrid": theme.route_hybrid,
         "route_slow": theme.route_slow,

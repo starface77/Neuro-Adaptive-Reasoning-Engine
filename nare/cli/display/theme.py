@@ -29,6 +29,7 @@ class Theme:
     info: str
 
     route_fast: str
+    route_compiled_skill: str
     route_reflex: str
     route_hybrid: str
     route_slow: str
@@ -44,31 +45,32 @@ class Theme:
 
 DARK_THEME = Theme(
 
-    accent="rgb(255,255,255)",
-    accent_shimmer="rgb(230,230,230)",
+    accent="rgb(215,119,87)",
+    accent_shimmer="rgb(245,149,117)",
 
     text="rgb(255,255,255)",
     text_inverse="rgb(0,0,0)",
-    text_muted="rgb(140,140,140)",
-    text_subtle="rgb(90,90,90)",
+    text_muted="rgb(160,160,160)",
+    text_subtle="rgb(100,100,100)",
 
-    border="rgb(60,60,60)",
-    border_shimmer="rgb(80,80,80)",
+    border="rgb(70,70,70)",
+    border_shimmer="rgb(90,90,90)",
     background="rgb(0,0,0)",
 
-    success="rgb(200,200,200)",
-    error="rgb(180,180,180)",
-    warning="rgb(160,160,160)",
-    info="rgb(140,140,140)",
+    success="rgb(100,220,150)",
+    error="rgb(255,100,120)",
+    warning="rgb(255,200,100)",
+    info="rgb(120,180,255)",
 
-    route_fast="rgb(255,255,255)",
-    route_reflex="rgb(200,200,200)",
-    route_hybrid="rgb(160,160,160)",
-    route_slow="rgb(120,120,120)",
+    route_fast="rgb(100,220,150)",
+    route_compiled_skill="rgb(150,255,100)",
+    route_reflex="rgb(120,180,255)",
+    route_hybrid="rgb(255,200,100)",
+    route_slow="rgb(215,119,87)",
 
-    agent_triage="rgb(200,200,200)",
-    agent_planning="rgb(160,160,160)",
-    agent_coding="rgb(140,140,140)",
+    agent_triage="rgb(120,180,255)",
+    agent_planning="rgb(255,200,100)",
+    agent_coding="rgb(215,119,87)",
 
     diff_added="rgb(50,50,50)",
     diff_removed="rgb(40,40,40)",
@@ -96,6 +98,7 @@ LIGHT_THEME = Theme(
     info="rgb(87,105,247)",
 
     route_fast="rgb(44,122,57)",
+    route_compiled_skill="rgb(50,180,50)",
     route_reflex="rgb(87,105,247)",
     route_hybrid="rgb(150,108,30)",
     route_slow="rgb(215,119,87)",
@@ -125,6 +128,7 @@ DARK_ANSI_THEME = Theme(
     warning="ansi:yellowBright",
     info="ansi:blueBright",
     route_fast="ansi:greenBright",
+    route_compiled_skill="ansi:cyanBright",
     route_reflex="ansi:blueBright",
     route_hybrid="ansi:yellowBright",
     route_slow="ansi:redBright",
@@ -152,6 +156,7 @@ LIGHT_ANSI_THEME = Theme(
     warning="ansi:yellow",
     info="ansi:blue",
     route_fast="ansi:green",
+    route_compiled_skill="ansi:cyan",
     route_reflex="ansi:blue",
     route_hybrid="ansi:yellow",
     route_slow="ansi:redBright",

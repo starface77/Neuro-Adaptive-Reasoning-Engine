@@ -185,6 +185,11 @@ class ToolBlock:
 
         console.print(header)
 
+        # Add subtle delay for visual smoothness
+        if self.state == "running":
+            import time
+            time.sleep(0.05)
+
         if self.summary:
             summary = Text()
             summary.append("    └ ", style=TEXT_FAINT)
@@ -196,6 +201,7 @@ class ToolBlock:
             shown = lines[:max_body_lines]
             extra = len(lines) - len(shown)
             indent = "      "
+            import time
             if self.body_lang == "diff":
                 for line in shown:
                     if line.startswith("+++") or line.startswith("---"):
@@ -208,6 +214,7 @@ class ToolBlock:
                         console.print(f"{indent}{escape(line)}", style="#FF6B80")
                     else:
                         console.print(f"{indent}{escape(line)}", style=TEXT_MUTED)
+                    time.sleep(0.015)
             elif self.body_numbered:
                 width = len(str(len(lines)))
                 for i, line in enumerate(shown, 1):
@@ -215,9 +222,11 @@ class ToolBlock:
                     num.append(f"{indent}{i:>{width}} ", style=TEXT_FAINT)
                     num.append(escape(line), style=TEXT_MUTED)
                     console.print(num)
+                    time.sleep(0.015)
             else:
                 for line in shown:
                     console.print(f"{indent}{escape(line)}", style=TEXT_MUTED)
+                    time.sleep(0.015)
             if extra > 0:
                 tail = Text()
                 tail.append(f"    … +{extra} lines", style=TEXT_FAINT)
@@ -296,6 +305,40 @@ def render_edit(
         path,
         summary=summary,
         body=diff,
+        body_lang="diff",
+    ).render(console)
+
+def render_hunks(
+    console: Console,
+    summary: str,
+    hunks: str,
+) -> None:
+    """Render apply_hunks tool output with diff-style coloring.
+
+    Shows the unified diff format with:
+    - File headers in muted color
+    - Hunk headers (@@ lines) in faint
+    - Added lines (+) in green
+    - Removed lines (-) in red
+    - Context lines in muted
+    """
+    # Parse hunks to count changes
+    additions = sum(
+        1 for line in hunks.splitlines()
+        if line.startswith("+") and not line.startswith("+++")
+    )
+    deletions = sum(
+        1 for line in hunks.splitlines()
+        if line.startswith("-") and not line.startswith("---")
+    )
+
+    change_summary = f"{summary}  (+{additions} -{deletions})"
+
+    ToolBlock(
+        "Patch",
+        "hunks",
+        summary=change_summary,
+        body=hunks,
         body_lang="diff",
     ).render(console)
 

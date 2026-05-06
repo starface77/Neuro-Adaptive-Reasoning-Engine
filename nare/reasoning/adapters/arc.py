@@ -74,7 +74,8 @@ class ARCAdapter:
                             matching_cells += 1
 
                 return matching_cells / total_cells if total_cells > 0 else 0.0
-            except:
+            except Exception as e:
+                logging.warning(f"[ARC] Failed to compute grid overlap: {e}")
                 return 0.0
 
         def oracle(query: str, answer: str) -> tuple:
@@ -93,8 +94,8 @@ class ARCAdapter:
                     return False, {"status": "partial match", "iou": iou}
                 else:
                     return False, {"status": "low match", "iou": iou}
-            except:
-                pass
+            except Exception as e:
+                logging.warning(f"[ARC] Failed to parse grid answer: {e}")
 
             code = extract_python_block(answer)
             if code:
@@ -114,8 +115,8 @@ class ARCAdapter:
                             return False, {"status": "code partial match", "iou": iou}
                         else:
                             return False, {"status": "code low match", "iou": iou}
-                    except:
-                        pass
+                    except Exception as e:
+                        logging.warning(f"[ARC] Failed to execute code and compare: {e}")
 
                     if str(expected_output) in result_clean:
                         return True, {"status": "substring match", "iou": 1.0}
@@ -141,7 +142,7 @@ class ARCAdapter:
             exec(code, namespace)
             if 'transform' in namespace:
                 return namespace['transform']
-        except:
-            pass
+        except Exception as e:
+            logging.warning(f"[ARC] Failed to extract transform function: {e}")
 
         return None

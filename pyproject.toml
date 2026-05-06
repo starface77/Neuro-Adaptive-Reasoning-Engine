@@ -3,8 +3,8 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "nare"
-version = "0.2.0"
+name = "narecli"
+version = "0.2.4"
 description = "Skill-based reasoning engine with verified synthesis, semantic memory, and library learning."
 readme = "README.md"
 license = {text = "MIT"}

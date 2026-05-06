@@ -13,6 +13,7 @@ from ..solve_context import SolveContext
 from .detector import get_adaptive_tau_fast
 from ...agents.planning import PlanningAgent
 from ...memory.cache import ReasoningCache
+from .metrics import RouteMetrics
 
 class ReasoningRouter:
     """The central routing engine for NARE.
@@ -29,12 +30,14 @@ class ReasoningRouter:
         memory: MemorySystem,
         critic: Critic,
         config: NareConfig,
-        metrics: Any
+        metrics: Any,
+        evolution: Optional[Any] = None
     ):
         self.memory = memory
         self.critic = critic
         self.config = config
         self.metrics = metrics
+        self.evolution = evolution
 
         self.tau_fast = config.routing.tau_fast
         self.tau_hybrid = config.routing.tau_hybrid
@@ -46,7 +49,9 @@ class ReasoningRouter:
             ttl=3600
         )
 
-    def route(
+        self.route_metrics = RouteMetrics()
+
+    async def route(
         self,
         query: str,
         oracle: Optional[Callable] = None,
@@ -62,6 +67,10 @@ class ReasoningRouter:
         _solve_tokens = 0
         log = []
         _cached_for_verification = None
+
+        if intent is None:
+            intent = self._classify_intent(query)
+            log.append(f"Classified intent: {intent}")
 
         if intent != "EDIT":
             context = f"{chat_history or ''}{repo_map or ''}"
@@ -87,16 +96,55 @@ class ReasoningRouter:
                 thinking_display.start_waiting("Thinking")
                 thinking_display.switch_to_solution()
 
+            # Check if it's a simple greeting - return instant response
+            q = query.strip().lower()
+            greetings_map = {
+                'привет': 'Привет! Чем могу помочь?',
+                'ку': 'Привет! Чем могу помочь?',
+                'хай': 'Привет! Чем могу помочь?',
+                'здарова': 'Привет! Чем могу помочь?',
+                'здравствуйте': 'Здравствуйте! Чем могу помочь?',
+                'hi': 'Hi! How can I help you?',
+                'hello': 'Hello! How can I help you?',
+                'hey': 'Hey! What can I do for you?',
+                'yo': 'Hey! What can I do for you?',
+                'спасибо': 'Пожалуйста!',
+                'thanks': "You're welcome!",
+                'thank you': "You're welcome!",
+                'что?': 'Уточни, пожалуйста, что именно тебя интересует?',
+                'что': 'Уточни, пожалуйста, что именно тебя интересует?',
+                'как дела?': 'Всё отлично, работаю! Чем помочь?',
+                'как дела': 'Всё отлично, работаю! Чем помочь?',
+                'как ты?': 'Всё в порядке, готов помочь!',
+                'как ты': 'Всё в порядке, готов помочь!',
+                'ок': 'Хорошо!',
+                'ok': 'Okay!',
+                'понятно': 'Отлично! Что дальше?',
+                'да': 'Хорошо!',
+                'нет': 'Понял.',
+            }
+
+            if q in greetings_map:
+                answer = greetings_map[q]
+                log.append("Route: DIRECT (instant greeting)")
+                return self._wrap_result("DIRECT", answer, [], [], log, 0.0, _solve_start, 0,
+                                        query=query, chat_history=chat_history, repo_map=repo_map, intent=intent)
+
+            # For other conversational queries, use LLM
             direct_prompt = query
             if chat_history:
                 direct_prompt = chat_history + query
 
-            candidates, d_tokens = llm.generate_samples(
+            import asyncio
+            candidates, d_tokens = await asyncio.to_thread(
+                llm.generate_samples,
                 direct_prompt, n=1, temperature=0.3, mode="DIRECT",
                 thinking_display=thinking_display
             )
             _solve_tokens += d_tokens
-            answer = candidates[0]['solution'] if candidates else "Привет! Чем могу помочь?"
+            answer = "Привет! Чем могу помочь?"
+            if candidates and len(candidates) > 0 and isinstance(candidates[0], dict):
+                answer = candidates[0].get('solution', answer)
             log.append("Route: DIRECT (conversational)")
             return self._wrap_result("DIRECT", answer, [], [], log, 0.0, _solve_start, _solve_tokens,
                                     query=query, chat_history=chat_history, repo_map=repo_map, intent=intent)
@@ -115,13 +163,21 @@ class ReasoningRouter:
         if thinking_display:
             thinking_display.update_waiting("Checking compiled skills...")
 
-        skills = self.memory.retrieve_skills(query_emb, k=1)
+        # Unified skill path: check both compiled_skills and semantic_rules
+        skills = self.memory.retrieve_skills(query_emb, k=3)
 
-        if skills and skills[0].get('similarity', 0) >= 0.90:
-            skill = skills[0]
-            log.append(f"Route: COMPILED_SKILL (pattern: {skill['pattern']})")
+        for skill in skills:
+            similarity = skill.get('similarity', 0)
+            confidence = skill.get('confidence', 0)
+
+            # Lower threshold: 0.75 instead of 0.90
+            if similarity < 0.75 and confidence < self.config.routing.tau_reflex:
+                continue
+
+            pattern = skill.get('pattern', 'unknown')
+            log.append(f"Route: COMPILED_SKILL (pattern: {pattern}, sim: {similarity:.2f}, conf: {confidence:.2f})")
+
             try:
-
                 safe_globals = safe_load_module(skill['code'])
 
                 if 'trigger' in safe_globals and 'execute' in safe_globals:
@@ -131,7 +187,22 @@ class ReasoningRouter:
                     if trigger_fn(query):
                         answer = str(execute_fn(query))
 
-                        if answer and not answer.startswith("Error"):
+                        # Check if skill returned a real answer or just a placeholder
+                        is_placeholder = (
+                            not answer or
+                            answer.startswith("Error") or
+                            "Skill for pattern:" in answer or
+                            "Based on" in answer and "similar tasks" in answer
+                        )
+
+                        if answer and not is_placeholder:
+                            # Record success for feedback loop
+                            if hasattr(self, 'evolution'):
+                                self.evolution.record_skill_result(skill, success=True)
+
+                            # Record metrics
+                            self.route_metrics.record_route("COMPILED_SKILL", pattern=pattern)
+                            logging.info(f"[METRICS] Route: COMPILED_SKILL, pattern: {pattern}, confidence: {confidence:.2f}")
 
                             skill_id = skill.get('skill_id', 0)
                             if 0 <= skill_id < len(self.memory.compiled_skills):
@@ -142,17 +213,29 @@ class ReasoningRouter:
                                 query=query, route="COMPILED_SKILL",
                                 elapsed=time.time() - _solve_start,
                                 tokens_used=0,
-                                similarity=skill['similarity'],
+                                similarity=similarity,
                                 answer=answer,
-                                score=1.0
+                                score=confidence
                             )
-                            return self._wrap_result("COMPILED_SKILL", answer, [skill], [], log, skill['similarity'], _solve_start, 0)
+
+                            if thinking_display:
+                                thinking_display.update_waiting(f"✓ Using skill: {pattern}")
+
+                            return self._wrap_result("COMPILED_SKILL", answer, [skill], [], log, similarity, _solve_start, 0)
+                        else:
+                            # Record failure
+                            if hasattr(self, 'evolution'):
+                                self.evolution.record_skill_result(skill, success=False)
+                            log.append(f"Skill returned error: {answer}")
                     else:
                         log.append(f"Skill trigger returned False for this query")
                 else:
                     log.append(f"Skill missing trigger() or execute() functions")
 
             except Exception as e:
+                # Record failure
+                if hasattr(self, 'evolution'):
+                    self.evolution.record_skill_result(skill, success=False)
                 log.append(f"Skill execution failed: {e}")
 
         if intent != "EDIT" and self.memory.episodic_index.ntotal > 0:
@@ -216,6 +299,46 @@ class ReasoningRouter:
                                 self.memory.update_episode_validation(idx, success=True)
                                 self.memory._mark_dirty()
 
+                                if intent == "EDIT":
+                                    from ...tools.parsing.executor import execute_tools_from_response, parse_tool_calls
+                                    from ...cli.display.file_writing import get_file_writing_display
+
+                                    tool_calls = parse_tool_calls(fast_answer)
+
+                                    if tool_calls:
+                                        logging.info(f"[ROUTER] FAST path executing {len(tool_calls)} cached tools")
+
+                                        if thinking_display:
+                                            thinking_display.update_waiting(f"Executing {len(tool_calls)} cached actions...")
+
+                                        file_display = get_file_writing_display()
+
+                                        def stream_callback(event_type, filepath, chunk):
+                                            if event_type == 'start':
+                                                file_display.start_file(filepath)
+                                            elif event_type == 'chunk':
+                                                file_display.add_chunk(filepath, chunk)
+                                            elif event_type == 'complete':
+                                                file_display.complete_file(filepath)
+
+                                        try:
+                                            execution_result = execute_tools_from_response(
+                                                fast_answer,
+                                                working_dir=working_dir,
+                                                stream_callback=stream_callback
+                                            )
+
+                                            if execution_result.get('success'):
+                                                logging.info(f"[ROUTER] FAST path tools executed successfully")
+                                            else:
+                                                logging.warning(f"[ROUTER] FAST path tool execution failed: {execution_result.get('error')}")
+                                        except Exception as e:
+                                            logging.error(f"[ROUTER] FAST path tool execution error: {e}")
+
+                                # Record metrics
+                                self.route_metrics.record_route("FAST")
+                                logging.info(f"[METRICS] Route: FAST, similarity: {sims[0][0]:.2f}")
+
                                 self.metrics.record(
                                     query=query, route="FAST",
                                     elapsed=time.time() - _solve_start,
@@ -229,9 +352,7 @@ class ReasoningRouter:
                     else:
                         logging.info(f"[ROUTER] FAST idx out of bounds: {idx} >= {len(self.memory.episodes)}")
 
-        reflex_result = self._try_reflex_path(query, query_emb, oracle, log, _solve_start)
-        if reflex_result:
-            return reflex_result
+        # REFLEX path removed - now unified with COMPILED_SKILL above
 
         query_emb_np = np.array([query_emb], dtype=np.float32)
         retrieved_eps = self.memory.retrieve_episodes(query_emb_np, k=3)
@@ -259,7 +380,11 @@ class ReasoningRouter:
             prompt = self._build_hybrid_prompt(full_query_context, retrieved_eps[0])
             logging.info(f"[HYBRID] Full prompt:\n{prompt}\n---END PROMPT---")
 
-            candidates, h_tokens = llm.generate_samples(prompt, n=1, mode="ADAPTIVE", thinking_display=thinking_display)
+            import asyncio
+            candidates, h_tokens = await asyncio.to_thread(
+                llm.generate_samples,
+                prompt, n=1, mode="ADAPTIVE", thinking_display=thinking_display
+            )
             logging.info(f"[HYBRID] LLM returned {len(candidates)} candidates, {h_tokens} tokens")
             if candidates:
                 logging.info(f"[HYBRID] LLM solution: {candidates[0].get('solution', '')[:300]}")
@@ -270,7 +395,7 @@ class ReasoningRouter:
 
             candidates = self.critic.evaluate(query, candidates, oracle=oracle)
             logging.info(f"[HYBRID] After critic: {len(candidates)} candidates")
-            if candidates:
+            if candidates and isinstance(candidates[0], dict) and 'solution' in candidates[0]:
                 best = candidates[0]
 
                 from ...tools.parsing.executor import ToolExecutor
@@ -281,6 +406,10 @@ class ReasoningRouter:
 
                 best['solution'] = self._post_process_answer(best['solution'], "HYBRID", log)
                 best['final_score'] = (max_sim * 1.0) + ((1 - max_sim) * best['final_score'])
+
+                # Record metrics
+                self.route_metrics.record_route("HYBRID")
+                logging.info(f"[METRICS] Route: HYBRID, similarity: {max_sim:.2f}")
 
                 self.metrics.record(
                     query=query, route="HYBRID",
@@ -350,7 +479,9 @@ class ReasoningRouter:
             if "File:" not in vs_query:
                 vs_query = prompt
 
-            vs_result = verified_synthesis(
+            import asyncio
+            vs_result = await asyncio.to_thread(
+                verified_synthesis,
                 query=vs_query,
                 propose_fn=lambda p, priors: self._propose_for_vs(p, priors, llm, adaptive_params, thinking_display),
                 oracle=oracle,
@@ -413,7 +544,7 @@ class ReasoningRouter:
             best = None
             final_solution_text = ""
 
-            recent_tool_calls_hashes = []
+            recent_tool_signatures = []  # BUG FIX #6: Use signatures instead of hashes
 
             while iter_count < max_auto_iters:
                 iter_count += 1
@@ -421,7 +552,7 @@ class ReasoningRouter:
                 candidates, s_tokens = llm.generate_samples(current_prompt, n=1, temperature=0.2, mode="ANALYTIC", thinking_display=thinking_display)
                 _solve_tokens += s_tokens
 
-                if not candidates:
+                if not candidates or not isinstance(candidates[0], dict) or 'solution' not in candidates[0]:
                     break
 
                 best = candidates[0]
@@ -436,17 +567,38 @@ class ReasoningRouter:
                     final_solution_text += "\n\n" + best['solution']
                     break
 
-                import hashlib
-                import json
-                calls_hash = hashlib.md5(json.dumps(tool_calls, sort_keys=True).encode()).hexdigest()
-                recent_tool_calls_hashes.append(calls_hash)
+                def _compute_tool_signature(tool_calls):
+                    """Extract signature of actions (files + operations)."""
+                    signature = set()
+                    for call in tool_calls:
+                        tool_name = call.get('tool', '')
+                        file_path = call.get('path', '')
+                        if file_path:
+                            signature.add(f"{tool_name}:{file_path}")
+                    return signature
 
-                if len(recent_tool_calls_hashes) >= 3:
-                    if len(set(recent_tool_calls_hashes[-3:])) == 1:
+                tool_signature = _compute_tool_signature(tool_calls)
+                recent_tool_signatures.append(tool_signature)
 
+                # Check for looping via Jaccard similarity
+                if len(recent_tool_signatures) >= 3:
+                    last_3 = recent_tool_signatures[-3:]
+
+                    # Compute pairwise similarities
+                    similarities = []
+                    for i in range(len(last_3)):
+                        for j in range(i+1, len(last_3)):
+                            if last_3[i] and last_3[j]:
+                                intersection = last_3[i] & last_3[j]
+                                union = last_3[i] | last_3[j]
+                                sim = len(intersection) / len(union) if union else 0.0
+                                similarities.append(sim)
+
+                    # If average similarity > 0.8, we're looping
+                    if similarities and sum(similarities) / len(similarities) > 0.8:
                         if thinking_display:
                             thinking_display.stream_token("\n[red]| Loop detected! Aborting autopilot.[/]\n")
-                        final_solution_text += "\n\n" + best['solution'] + "\n\n[SYSTEM: Autopilot aborted due to repeated failing tool calls. Please re-evaluate the approach.]"
+                        final_solution_text += "\n\n" + best['solution'] + "\n\n[SYSTEM: Autopilot aborted due to repeated similar actions. Please re-evaluate the approach.]"
                         break
 
                 if thinking_display:
@@ -537,7 +689,7 @@ Provide your corrected answer with ONLY valid paths."""
                 retry_candidates, retry_tokens = llm.generate_samples(correction_prompt, n=1, temperature=0.5, mode="ANALYTIC", thinking_display=thinking_display)
                 _solve_tokens += retry_tokens
 
-                if retry_candidates:
+                if retry_candidates and len(retry_candidates) > 0 and isinstance(retry_candidates[0], dict) and 'solution' in retry_candidates[0]:
                     retry_solution = self._post_process_answer(retry_candidates[0]['solution'], "SLOW-PATH-FIX", log)
                     retry_check = check_solution_paths(retry_solution)
 
@@ -579,7 +731,7 @@ Provide your corrected answer."""
                     retry_candidates, retry_tokens = llm.generate_samples(correction_prompt, n=1, temperature=0.7, mode="ANALYTIC", thinking_display=thinking_display)
                     _solve_tokens += retry_tokens
 
-                    if retry_candidates:
+                    if retry_candidates and len(retry_candidates) > 0 and isinstance(retry_candidates[0], dict) and 'solution' in retry_candidates[0]:
                         retry_solution = self._post_process_answer(retry_candidates[0]['solution'], "SLOW-RETRY", log)
                         ok_retry, info_retry = oracle(query, retry_solution)
 
@@ -592,6 +744,10 @@ Provide your corrected answer."""
                             logging.warning(f"[ROUTER] Self-correction FAILED: {info_retry[:100]}")
                             log.append(f"Self-Correction: FAILED on retry")
 
+            # Record metrics
+            self.route_metrics.record_route("SLOW")
+            logging.info(f"[METRICS] Route: SLOW, similarity: {max_sim:.2f}")
+
             self.metrics.record(
                 query=query, route="SLOW",
                 elapsed=time.time() - _solve_start,
@@ -600,26 +756,32 @@ Provide your corrected answer."""
                 answer=best['solution'],
                 score=best.get('final_score', 0.5),
             )
+
+            # Save successful SLOW execution as episode
+            if best and best.get('final_score', 0) >= 0.80:
+                try:
+                    query_emb = llm.get_embedding(query)
+                    episode_data = {
+                        "query": query,
+                        "solution": best['solution'],
+                        "reasoning_trace": f"SLOW route: {len(candidates)} candidates",
+                        "score": best.get('final_score', 0.85),
+                        "metadata": {
+                            "source": "router_slow",
+                            "tokens": _solve_tokens,
+                            "elapsed": time.time() - _solve_start,
+                        }
+                    }
+                    self.memory.add_episode(episode_data, np.array([query_emb], dtype=np.float32))
+                    logging.info(f"[ROUTER] Saved SLOW result as episode")
+                except Exception as e:
+                    logging.warning(f"[ROUTER] Failed to save episode: {e}")
+
             return self._wrap_result("SLOW", best['solution'], retrieved_eps, candidates, log, max_sim, _solve_start, _solve_tokens, alpha_t,
                                     query=query, chat_history=chat_history, repo_map=repo_map, intent=intent)
 
         return self._wrap_result("ERROR", "No solution found", [], [], log, 0.0, _solve_start, _solve_tokens,
                                 query=query, chat_history=chat_history, repo_map=repo_map, intent=intent)
-
-    def _try_reflex_path(self, query: str, query_emb, oracle, log, start_time):
-        rules = self.memory.retrieve_semantics(query_emb, k=3)
-        for rule in rules:
-            if rule.get('confidence', 0) < self.config.routing.tau_reflex: continue
-            if safe_call_trigger(rule['python_code'], query):
-                log.append(f"Route: REFLEX (Skill: {rule['pattern']})")
-                try:
-                    ans = safe_call_execute_in_namespace(rule['python_code'], query)
-                    if ans and not ans.startswith("Error:"):
-                        self.metrics.record(query=query, route="REFLEX", elapsed=time.time()-start_time, tokens_used=0, similarity=1.0, answer=ans, score=rule['confidence'])
-                        return self._wrap_result("REFLEX", ans, [rule], [], log, 1.0, start_time, 0)
-                except Exception as e:
-                    log.append(f"Reflex failed: {e}")
-        return None
 
     def _post_process_answer(self, raw: str, route: str, log: list) -> str:
         if not raw: return raw
@@ -630,7 +792,8 @@ Provide your corrected answer."""
             if executed and not executed.startswith("Error:"):
                 log.append(f"[{route}] Executed inline code block.")
                 return executed
-        except: pass
+        except Exception as e:
+            logging.warning(f"[Router] Failed to execute inline code: {e}")
         return raw
 
     def _propose_for_vs(self, prompt, priors, llm_mod, adaptive_params=None, thinking_display=None):
@@ -639,7 +802,9 @@ Provide your corrected answer."""
         temp = adaptive_params.get('temperature', 0.1)
 
         cands, _ = llm_mod.generate_samples(prompt, n=1, temperature=temp, mode="SYNTHESIS", thinking_display=thinking_display)
-        return cands[0]['solution'] if cands else ""
+        if cands and len(cands) > 0 and isinstance(cands[0], dict):
+            return cands[0].get('solution', '')
+        return ""
 
     def _assess_task_complexity(self, query: str, thinking_display=None) -> Dict[str, Any]:
         """Assess task complexity and return adaptive parameters.
@@ -696,17 +861,17 @@ Extreme: novel patterns, 12 attempts, breadth 8, temp 0.9"""
         p = f"Task: {query}\n\n"
 
         import re
-        past_text = ep['solution']
+        past_text = ep.get('solution', '')
 
         past_text = re.sub(r'<read_file>.*?</read_file>', '[read files]', past_text, flags=re.DOTALL)
         past_text = re.sub(r'<edit_file>.*?</edit_file>', '[edit files]', past_text, flags=re.DOTALL)
         past_text = re.sub(r'<write_file>.*?</write_file>', '[write files]', past_text, flags=re.DOTALL)
         past_text = re.sub(r'<bash_command>.*?</bash_command>', '[run commands]', past_text, flags=re.DOTALL)
         past_text = past_text[:400]
-        if len(ep['solution']) > 400:
+        if len(ep.get('solution', '')) > 400:
             past_text += "..."
 
-        p += f"Similar Past Task: {ep['query'][:200]}\n"
+        p += f"Similar Past Task: {ep.get('query', '')[:200]}\n"
         p += f"Past Approach: {past_text}\n\n"
         p += "CRITICAL: You MUST execute the NEW task, not just describe it.\n"
         p += "1. Briefly explain what you'll do\n"
@@ -752,10 +917,10 @@ Extreme: novel patterns, 12 attempts, breadth 8, temp 0.9"""
             p += "--- RELEVANT MEMORIES ---\n"
             for ep in retrieved_eps[:2]:
 
-                solution = ep['solution'][:500]
-                if len(ep['solution']) > 500:
+                solution = ep.get('solution', '')[:500]
+                if len(ep.get('solution', '')) > 500:
                     solution += "..."
-                p += f"Past: {ep['query'][:100]}\nSolution: {solution}\n---\n"
+                p += f"Past: {ep.get('query', '')[:100]}\nSolution: {solution}\n---\n"
 
         p += "\nIMPORTANT: Use the learned rules above as MANDATORY guidance, not suggestions.\n"
         p += "For Django tasks, you MUST check __init__.py files in packages.\n"
@@ -780,6 +945,72 @@ Extreme: novel patterns, 12 attempts, breadth 8, temp 0.9"""
         p += "</edit_file>\n\n"
         p += "Done! Added greeting to ui.py.\n"
         return p
+
+    def _classify_intent(self, query: str) -> str:
+        """Classify user intent using LLM for ambiguous cases.
+
+        BUG FIX #7: Use LLM classification instead of hardcoded keyword list
+        to handle creative phrasings like "Сваргань змейку" or "Пофикси шляпу".
+        """
+        query_lower = query.lower().strip()
+
+        # Fast path: obvious greetings
+        greetings = ['привет', 'ку', 'hello', 'hi', 'hey', 'здравствуй', 'добрый день']
+        if query_lower in greetings or len(query_lower) < 5:
+            return "CONVERSATIONAL"
+
+        # Fast path: questions (check before actions)
+        question_words = [
+            'что', 'как', 'почему', 'зачем', 'когда', 'где', 'кто', 'какой',
+            'расскажи', 'объясни', 'покажи', 'изучи', 'проанализируй',
+            'what', 'how', 'why', 'when', 'where', 'who', 'which',
+            'tell', 'explain', 'show', 'analyze', 'describe'
+        ]
+
+        if any(query_lower.startswith(word) for word in question_words):
+            return "CONVERSATIONAL"
+
+        # Fast path: obvious action keywords
+        obvious_actions = [
+            'создай', 'сделай', 'напиши', 'реализуй', 'добавь', 'измени',
+            'исправь', 'удали', 'create', 'make', 'write', 'implement',
+            'add', 'change', 'fix', 'delete', 'remove', 'build', 'refactor'
+        ]
+
+        if any(word in query_lower for word in obvious_actions):
+            return "EDIT"
+
+        # Ambiguous case: ask LLM
+        prompt = f"""Classify the user's intent:
+
+Query: "{query}"
+
+Is this:
+A) A request to CREATE/MODIFY/DELETE code or files (action)
+B) A question or conversation (no action needed)
+
+Answer with just "ACTION" or "CONVERSATION"."""
+
+        try:
+            from ...reasoning import llm
+
+            response = llm._post_anthropic("messages", {
+                "model": "claude-3-haiku-20240307",  # Fast model
+                "max_tokens": 10,
+                "temperature": 0.0,
+                "messages": [{"role": "user", "content": prompt}]
+            })
+
+            result = response.get("content", [{}])[0].get("text", "").strip().upper()
+
+            if "ACTION" in result:
+                return "EDIT"
+            else:
+                return "CONVERSATIONAL"
+
+        except Exception as e:
+            logging.warning(f"[ROUTER] Intent classification failed: {e}, defaulting to EDIT")
+            return "EDIT"  # Default to action
 
     def _should_generate_plan(self, query: str) -> bool:
         """Determine if query needs planning based on complexity."""

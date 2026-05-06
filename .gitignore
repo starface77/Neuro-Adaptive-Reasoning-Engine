@@ -17,11 +17,10 @@ __pycache__/
 build/
 dist/
 
-# NARE / VARE runtime artifacts
+# NARE runtime artifacts
 .nare_history
 .nare_memory/
-.vare_history
-.vare_memory/
+.nare_cache/
 memory_store/
 predictions*.json
 predictions*.jsonl
@@ -42,3 +41,13 @@ Thumbs.db
 
 # Local scratch / experiments
 scratch/
+agentstest/
+test_*.py
+demo_*.py
+debug.log
+
+# Temporary docs
+*_FIXES*.md
+*_SUMMARY*.md
+*_REPORT*.md
+*_COMPLETE*.md

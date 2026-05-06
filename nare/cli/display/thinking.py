@@ -69,7 +69,12 @@ class ThinkingDisplay:
             return
 
         if self.mode == "thinking":
-            self.thinking_lines.append(token)
+            # Accumulate tokens into buffer, split by newlines
+            self.buffer += token
+            if '\n' in token:
+                lines = self.buffer.split('\n')
+                self.thinking_lines.extend(lines[:-1])
+                self.buffer = lines[-1]
             ui.console.print(token, style="#666666", end="")
             return
 

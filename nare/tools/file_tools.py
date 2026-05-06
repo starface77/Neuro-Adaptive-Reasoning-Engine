@@ -168,11 +168,46 @@ def edit_file(filepath: str, target_block: str, replacement_block: str, stream_c
         with open(resolved, 'r', encoding='utf-8', errors='replace') as f:
             content = f.read()
 
+        def _normalize_whitespace(text: str) -> str:
+            """Normalize whitespace for fuzzy matching."""
+            lines = text.splitlines()
+            # Remove empty lines at start and end
+            while lines and not lines[0].strip():
+                lines.pop(0)
+            while lines and not lines[-1].strip():
+                lines.pop()
+
+            # Normalize indentation (remove common prefix)
+            if lines:
+                min_indent = min(len(line) - len(line.lstrip()) for line in lines if line.strip())
+                lines = [line[min_indent:] if len(line) > min_indent else line for line in lines]
+
+            return '\n'.join(lines)
+
+        # Try exact match first
         count = content.count(target_block)
         if count == 0:
-            raise ValueError(f"Target block not found in {filepath}. Make sure the text matches exactly.")
-        if count > 1:
+            # Try normalized match
+            normalized_content = _normalize_whitespace(content)
+            normalized_target = _normalize_whitespace(target_block)
+            count = normalized_content.count(normalized_target)
+
+            if count == 0:
+                raise ValueError(
+                    f"Target block not found in {filepath}.\n"
+                    f"Expected:\n{target_block}\n\n"
+                    f"Hint: Check whitespace and indentation."
+                )
+            elif count > 1:
+                raise ValueError(f"Target block appears {count} times in {filepath}. Make it more specific.")
+
+            # Use normalized versions for replacement
+            content = content.replace(normalized_target, replacement_block, 1)
+        elif count > 1:
             raise ValueError(f"Target block appears {count} times in {filepath}. Make it more specific.")
+        else:
+            # Exact match found
+            content = content.replace(target_block, replacement_block, 1)
 
         import difflib
 

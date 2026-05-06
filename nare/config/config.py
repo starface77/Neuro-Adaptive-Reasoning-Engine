@@ -51,16 +51,16 @@ class ImmuneSystemConfig:
 @dataclass(frozen=True)
 class RoutingConfig:
 
-    tau_fast: float = 0.75
-    tau_hybrid: float = 0.65
+    tau_fast: float = 0.95
+    tau_hybrid: float = 0.50
     tau_reflex: float = 0.70
     tau_min: float = 0.60
     tau_max: float = 0.90
     calibration_lr: float = 0.02
 
-    tau_fast_code: float = 0.75
-    tau_fast_pattern: float = 0.70
-    tau_fast_reasoning: float = 0.75
+    tau_fast_code: float = 0.92
+    tau_fast_pattern: float = 0.90
+    tau_fast_reasoning: float = 0.93
     skill_min_confidence: float = 0.70
     semantic_inject_min_sim: float = 0.85
     semantic_inject_min_conf: float = 0.70

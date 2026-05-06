@@ -12,7 +12,7 @@ to keep startup fast and the dependency surface small.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Awaitable
 
 class ToolError(Exception):
     """Raised when a tool's input is invalid or execution fails fatally."""
@@ -66,7 +66,7 @@ class Tool:
     name: str
     description: str
     parameters: List[ToolParam]
-    run: Callable[..., ToolResult]
+    run: Callable[..., Awaitable[ToolResult]]
 
     display_verb: Optional[str] = None
 
@@ -143,11 +143,11 @@ class ToolRegistry:
     def names(self) -> List[str]:
         return sorted(self.tools)
 
-    def call(self, name: str, args: Dict[str, Any]) -> ToolResult:
+    async def call(self, name: str, args: Dict[str, Any]) -> ToolResult:
         try:
             tool = self.get(name)
             clean = tool.validate(args)
-            result = tool.run(**clean)
+            result = await tool.run(**clean)
             if not isinstance(result, ToolResult):
 
                 result = ToolResult(ok=True, body=str(result))

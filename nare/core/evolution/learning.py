@@ -271,7 +271,8 @@ def evaluate_operator(
                 if result and not str(result).startswith("Error"):
                     perturb_correct += 1
 
-            except:
+            except Exception as e:
+                logging.warning(f"[Learning] Perturbation test failed: {e}")
                 perturb_total += 1
 
     perturb_acc = perturb_correct / perturb_total if perturb_total > 0 else 0.5
@@ -281,8 +282,8 @@ def evaluate_operator(
         try:
             if trigger_fn(ep['query']):
                 train_trigger += 1
-        except:
-            pass
+        except Exception as e:
+            logging.warning(f"[Learning] Trigger function failed: {e}")
 
     train_coverage = train_trigger / len(train_eps) if train_eps else 0.0
 

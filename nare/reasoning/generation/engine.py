@@ -15,11 +15,36 @@ if TYPE_CHECKING:
     from ..config import NareConfig
 
 ANTHROPIC_BASE_URL = os.getenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
-ANTHROPIC_AUTH_TOKEN = os.getenv("ANTHROPIC_API_KEY", "")
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")
+
+# API key loaded from manager or environment
+ANTHROPIC_AUTH_TOKEN = ""
+
+def _load_api_key():
+    """Load API key from manager or environment."""
+    global ANTHROPIC_AUTH_TOKEN
+
+    # Try environment first
+    env_key = os.getenv("ANTHROPIC_API_KEY", "")
+    if env_key:
+        ANTHROPIC_AUTH_TOKEN = env_key
+        return
+
+    # Try API key manager
+    try:
+        from nare.config.api_keys import get_api_key_manager
+        manager = get_api_key_manager()
+        key = manager.get_key("anthropic")
+        if key:
+            ANTHROPIC_AUTH_TOKEN = key
+    except Exception:
+        pass
 
 def _ensure_api_key():
     """Ensure an API key is configured before talking to the LLM."""
+    if not ANTHROPIC_AUTH_TOKEN:
+        _load_api_key()
+
     if not ANTHROPIC_AUTH_TOKEN:
         raise ValueError(
             "ANTHROPIC_API_KEY is not set. Add it to your .env file or "
@@ -427,6 +452,8 @@ Format:
             samples.append({"solution": solution, "reasoning": reasoning, "abstract_signature": abstract_signature})
         except Exception as e:
             logging.warning(f"[LLM] Failed to generate sample {i+1}: {e}")
+            # Add empty sample to maintain list structure
+            samples.append({"solution": "", "reasoning": "Error during generation", "abstract_signature": None})
 
     logging.info(f"[LLM] Returning {len(samples)} samples, ~{total_tokens} tokens")
     return samples, total_tokens
@@ -472,7 +499,8 @@ Output strictly 'A' or 'B' on the final line."""
         last_word = content.strip().split()[-1].upper()
         last_word = re.sub(r'[^AB]', '', last_word)
         return 1 if last_word == 'A' else 2
-    except:
+    except Exception as e:
+        logging.warning(f"[Generation] Failed to parse choice: {e}")
         return 1
 
 def generate_stress_tests(episodes: list) -> list:

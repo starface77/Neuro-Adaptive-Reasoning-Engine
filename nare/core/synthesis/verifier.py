@@ -122,8 +122,8 @@ class FormalVerifier:
 
             try:
                 os.unlink(temp_path)
-            except:
-                pass
+            except Exception as e:
+                logging.warning(f"[Verifier] Failed to delete temp file {temp_path}: {e}")
 
     def verify_with_oracle(self, code: str, oracle_fn) -> VerificationResult:
         """Verify code using custom oracle function.

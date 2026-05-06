@@ -543,6 +543,240 @@ class TestCommand(Command):
 
         ui.print_warning("No test command found. Try: /test <command>")
 
+class SkillsCommand(Command):
+    """Show compiled skills."""
+    name = "skills"
+    help = "Show compiled skills library"
+
+    def execute(self, session, arg):
+        from rich.table import Table
+        from rich.text import Text
+        import json
+        from pathlib import Path
+
+        # Try to get skills from agent first
+        skills = None
+        if hasattr(session, 'agent') and session.agent and hasattr(session.agent, 'memory'):
+            skills = session.agent.memory.compiled_skills
+
+        # If agent not initialized, try to load from file directly
+        if not skills:
+            skills_file = Path(session.repo_path) / '.nare_memory' / 'compiled_skills.json'
+            if skills_file.exists():
+                try:
+                    with open(skills_file, 'r', encoding='utf-8') as f:
+                        skills = json.load(f)
+                except Exception as e:
+                    ui.print_error(f"Failed to load skills: {e}")
+                    return
+
+        if not skills:
+            ui.console.print()
+            ui.console.print("  [#666666]No compiled skills yet[/]")
+            ui.console.print("  [#666666]Skills are learned from successful task patterns[/]")
+            ui.console.print()
+            return
+
+        ui.console.print()
+        ui.console.print(f"  [#D77757]★ Compiled Skills Library[/] ({len(skills)} skills)")
+        ui.console.print()
+
+        table = Table(show_header=True, header_style="#D77757", border_style="#666666")
+        table.add_column("#", style="#666666", width=4)
+        table.add_column("Pattern", style="#FFFFFF", width=40)
+        table.add_column("Confidence", style="#999999", width=12)
+        table.add_column("Uses", style="#999999", width=8)
+
+        for idx, skill in enumerate(skills):
+            pattern = skill.get('pattern', 'unknown')
+            confidence = skill.get('confidence', 0)
+            uses = skill.get('use_count', 0)
+
+            # Truncate long patterns
+            if len(pattern) > 37:
+                pattern = pattern[:34] + "..."
+
+            # Color code confidence
+            if confidence >= 0.8:
+                conf_color = "#4EBA65"  # green
+            elif confidence >= 0.6:
+                conf_color = "#FFC107"  # yellow
+            else:
+                conf_color = "#D77757"  # orange
+
+            conf_text = Text(f"{confidence:.0%}", style=conf_color)
+
+            table.add_row(
+                str(idx),
+                pattern,
+                conf_text,
+                str(uses)
+            )
+
+        ui.console.print(table)
+        ui.console.print()
+
+        if arg and arg.isdigit():
+            # Show detailed view of specific skill
+            skill_id = int(arg)
+            if 0 <= skill_id < len(skills):
+                skill = skills[skill_id]
+                ui.console.print(f"  [#D77757]Skill #{skill_id} Details:[/]")
+                ui.console.print()
+                ui.console.print(f"  Pattern: {skill.get('pattern', 'unknown')}", style="#FFFFFF")
+                ui.console.print(f"  Confidence: {skill.get('confidence', 0):.0%}", style="#999999")
+                ui.console.print(f"  Uses: {skill.get('use_count', 0)}", style="#999999")
+                ui.console.print(f"  Success: {skill.get('success_count', 0)}", style="#999999")
+                ui.console.print(f"  Failures: {skill.get('failure_count', 0)}", style="#999999")
+                ui.console.print()
+                ui.console.print("  Code:", style="#D77757")
+                ui.console.print()
+                code = skill.get('code', 'No code available')
+                for line in code.split('\n')[:20]:  # Show first 20 lines
+                    ui.console.print(f"    {line}", style="#999999")
+                if code.count('\n') > 20:
+                    ui.console.print(f"    [#666666]... +{code.count(chr(10)) - 20} more lines[/]")
+                ui.console.print()
+            else:
+                ui.print_error(f"Skill #{skill_id} not found")
+        else:
+            ui.console.print("  [#666666]Tip: Use /skills <number> to see skill details[/]")
+            ui.console.print()
+
+class MetricsCommand(Command):
+    """Show routing metrics."""
+    name = "metrics"
+    help = "Show routing metrics and skill usage"
+
+    def execute(self, session, arg):
+        if not hasattr(session, 'agent') or not session.agent:
+            ui.print_warning("Agent not initialized yet")
+            return
+
+        if not hasattr(session.agent, 'router') or not hasattr(session.agent.router, 'route_metrics'):
+            ui.print_warning("Metrics not available")
+            return
+
+        stats = session.agent.router.route_metrics.get_stats()
+
+        if stats["total_queries"] == 0:
+            ui.console.print()
+            ui.console.print("  [#666666]No queries yet[/]")
+            ui.console.print()
+            return
+
+        ui.console.print()
+        ui.console.print(f"  [#D77757]Routing Metrics[/] ({stats['total_queries']} queries)")
+        ui.console.print()
+
+        # Route distribution
+        ui.console.print("  Route Distribution:", style="#D77757")
+        for route, pct in sorted(stats["route_distribution"].items(), key=lambda x: x[1], reverse=True):
+            bar_length = int(pct * 30)
+            bar = "█" * bar_length
+            ui.console.print(f"    {route:20s} {pct:5.1%} {bar}", style="#999999")
+
+        # Top skills
+        if stats["top_skills"]:
+            ui.console.print()
+            ui.console.print("  Top Skills:", style="#D77757")
+            for pattern, count in stats["top_skills"]:
+                # Truncate long patterns
+                if len(pattern) > 50:
+                    pattern = pattern[:47] + "..."
+                ui.console.print(f"    {pattern:50s} {count:3d} uses", style="#999999")
+
+        ui.console.print()
+
+class APIKeyCommand(Command):
+    """Manage API keys for LLM providers."""
+    name = "apikey"
+    aliases = ["api", "key"]
+    help = "Manage API keys (Anthropic, OpenAI, Google)"
+
+    def execute(self, session: NareSession, arg: str):
+        from nare.config.api_keys import get_api_key_manager
+
+        manager = get_api_key_manager()
+
+        if not arg:
+            # Show current status
+            ui.console.print()
+            ui.console.print("  [#D77757]API Keys Status[/]")
+            ui.console.print()
+
+            for provider, info in manager.SUPPORTED_PROVIDERS.items():
+                has_key = manager.get_key(provider) is not None
+                status = "[#4EBA65]✓[/]" if has_key else "[#666666]✗[/]"
+                model = manager.get_model(provider)
+                model_text = f" → {model}" if model else ""
+                ui.console.print(f"  {status} {info['name']}{model_text}")
+                if not has_key:
+                    ui.console.print(f"      [#666666]Get key: {info['url']}[/]")
+
+            ui.console.print()
+            ui.console.print("  [#999999]Usage: /apikey <provider> <key>[/]")
+            ui.console.print("  [#999999]Example: /apikey anthropic sk-ant-...[/]")
+            ui.console.print()
+            return
+
+        # Parse provider and key
+        parts = arg.split(maxsplit=1)
+        if len(parts) != 2:
+            ui.print_error("Usage: /apikey <provider> <key>")
+            ui.console.print("  Providers: anthropic, openai, google")
+            return
+
+        provider, key = parts
+
+        if provider not in manager.SUPPORTED_PROVIDERS:
+            ui.print_error(f"Unknown provider: {provider}")
+            ui.console.print("  Available: anthropic, openai, google")
+            return
+
+        # Set key
+        try:
+            manager.set_key(provider, key, save=True)
+            info = manager.SUPPORTED_PROVIDERS[provider]
+            ui.console.print()
+            ui.console.print(f"  [#4EBA65]✓ {info['name']} API key saved[/]")
+            ui.console.print()
+        except Exception as e:
+            ui.print_error(f"Failed to save key: {e}")
+
+class ResumeCommand(Command):
+    """Resume an interrupted AgentLoop session."""
+    name = "resume"
+    help = "Resume an interrupted agent session"
+
+    def execute(self, session: NareSession, arg: str):
+        import json
+        import os
+        from nare.cli.display.spinner import WaitingSpinner
+
+        state_path = os.path.join(session.repo_path, ".nare_memory", "session_state.json")
+        if not os.path.exists(state_path):
+            ui.print_warning("No saved session state found to resume.")
+            return
+
+        try:
+            with open(state_path, "r", encoding="utf-8") as f:
+                state = json.load(f)
+            
+            ui.console.print()
+            ui.console.print("  [#D77757]Resuming AgentLoop Session...[/]")
+            ui.console.print(f"  [#999999]Query:[/] {state.get('query', '')[:100]}...")
+            ui.console.print(f"  [#999999]Iterations:[/] {state.get('budget_iterations', 0)}")
+            ui.console.print(f"  [#999999]Tokens:[/] {state.get('budget_tokens_in', 0) + state.get('budget_tokens_out', 0)}")
+            ui.console.print()
+
+            from nare.cli.display.agent_renderer import ThinkingDisplay
+            with ThinkingDisplay() as display:
+                session.solve(query="", thinking_display=display, resume_state=state)
+                
+        except Exception as e:
+            ui.print_error(f"Failed to resume session: {e}")
+
 COMMANDS: list[Command] = [
     HelpCommand(),
     AgentCommand(),
@@ -557,12 +791,16 @@ COMMANDS: list[Command] = [
     ThemeCommand(),
     ModeCommand(),
     MemoryCommand(),
+    SkillsCommand(),
+    MetricsCommand(),
+    APIKeyCommand(),
     TokensCommand(),
     UndoCommand(),
     DiffCommand(),
     RunCommand(),
     TestCommand(),
     BenchCommand(),
+    ResumeCommand(),
     ExitCommand(),
 ]
 

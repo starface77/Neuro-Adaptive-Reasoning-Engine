@@ -171,6 +171,21 @@ def _on_tool_end(console: Console, ev: ToolEnd) -> None:
             additions=ev.meta.get("additions"),
             deletions=ev.meta.get("deletions"),
         )
+    elif name == "edit_lines":
+        blocks.render_edit(
+            console,
+            args.get("path", ""),
+            ev.body or "",
+            additions=ev.meta.get("additions"),
+            deletions=ev.meta.get("deletions"),
+        )
+    elif name == "apply_hunks":
+        # Render hunks with diff-style coloring
+        blocks.render_hunks(
+            console,
+            ev.summary or "Applied hunks",
+            ev.body or args.get("hunks", ""),
+        )
     elif name == "bash":
         blocks.render_bash(
             console,

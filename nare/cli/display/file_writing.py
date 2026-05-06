@@ -37,7 +37,8 @@ class FileWritingDisplay:
                 display_path = os.path.relpath(filepath, cwd)
             else:
                 display_path = filepath
-        except:
+        except Exception as e:
+            logging.warning(f"[FileWriting] Failed to get relative path: {e}")
             display_path = filepath
 
         self.filepath = filepath
@@ -78,8 +79,8 @@ class FileWritingDisplay:
             try:
                 with open(self.filepath, 'r', encoding='utf-8') as f:
                     old_content = f.read()
-            except:
-                pass
+            except Exception as e:
+                logging.warning(f"[FileWriting] Failed to read existing file: {e}")
 
         from . import ui
 

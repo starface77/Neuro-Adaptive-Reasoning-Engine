@@ -102,7 +102,7 @@ def suggest_corrections(invalid_paths: List[str], project_root: str = ".") -> di
                 py_files = [f for f in files if f.endswith('.py')]
                 if py_files:
                     suggestions[invalid_path] = f"{parent}/ contains: {', '.join(py_files[:3])}"
-            except:
-                pass
+            except Exception as e:
+                logging.warning(f"[Path] Failed to suggest alternatives for {invalid_path}: {e}")
 
     return suggestions
