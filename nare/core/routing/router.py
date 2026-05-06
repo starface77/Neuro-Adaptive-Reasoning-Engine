@@ -544,7 +544,7 @@ class ReasoningRouter:
             best = None
             final_solution_text = ""
 
-            recent_tool_signatures = []  # BUG FIX #6: Use signatures instead of hashes
+            recent_tool_signatures = []  # Track tool call signatures for loop detection
 
             while iter_count < max_auto_iters:
                 iter_count += 1
@@ -949,8 +949,8 @@ Extreme: novel patterns, 12 attempts, breadth 8, temp 0.9"""
     def _classify_intent(self, query: str) -> str:
         """Classify user intent using LLM for ambiguous cases.
 
-        BUG FIX #7: Use LLM classification instead of hardcoded keyword list
-        to handle creative phrasings like "Сваргань змейку" or "Пофикси шляпу".
+        Uses LLM classification to handle creative phrasings and ambiguous queries
+        that don't match simple keyword patterns.
         """
         query_lower = query.lower().strip()
 

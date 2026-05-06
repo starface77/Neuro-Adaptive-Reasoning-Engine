@@ -1316,10 +1316,10 @@ class AgentLoop:
         all_reads: List[str] = []
 
 
-        max_same_failure = 1  # Строже: 1 ошибка и стоп
+        max_same_failure = 1  # Stop after 1 repeated failure
 
 
-        max_same_no_op = 1     # Строже: 1 no-op и стоп
+        max_same_no_op = 1     # Stop after 1 no-op action
 
 
         max_same_read = 4      # Allow up to 4 reads of the same file before stopping
@@ -1448,7 +1448,16 @@ class AgentLoop:
             compressed_observations = _apply_sliding_window(observations, window_size=5)
 
 
-            user_body = "\n".join(compressed_observations) + "\n\nNext turn:"
+            # Include recent transcript messages (loop warnings, etc.)
+            transcript_messages = []
+            for msg in transcript[-3:]:  # Last 3 messages
+                if msg.get("role") == "user" and "STOP" in msg.get("content", ""):
+                    transcript_messages.append(f"\n⚠️ SYSTEM WARNING: {msg['content']}\n")
+
+            user_body = "\n".join(compressed_observations)
+            if transcript_messages:
+                user_body += "\n" + "\n".join(transcript_messages)
+            user_body += "\n\nNext turn:"
 
 
 
@@ -1821,6 +1830,12 @@ class AgentLoop:
 
 
                     example = '\n\nCorrect example:\n<tool_call>\n{"name": "list_dir", "args": {"path": "web/src"}}\n</tool_call>'
+
+
+                elif parsed.tool_name == "edit_file":
+
+
+                    example = '\n\nCorrect example:\n<tool_call>\n{"name": "edit_file", "args": {"path": "file.py", "old": "old_text", "new": "new_text"}}\n</tool_call>'
 
 
 
@@ -2225,7 +2240,7 @@ class AgentLoop:
                         # Inject strong feedback into conversation
 
 
-                        conversation.append({
+                        transcript.append({
 
 
                             "role": "user",
@@ -2498,7 +2513,7 @@ class AgentLoop:
                         self.bus.emit(Thought(text=f"  LOOP DETECTED: {repeated_action} repeated {most_common[0][1]} times"))
 
 
-                        conversation.append({
+                        transcript.append({
 
 
                             "role": "user",

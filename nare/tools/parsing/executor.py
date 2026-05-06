@@ -264,7 +264,7 @@ class ToolExecutor:
 
     def __init__(self, working_dir: str = "."):
         self.working_dir = working_dir
-        self.logger = get_logger("nare.tools.parsing.executor")
+        self.logger = logging.getLogger("nare.tools.parsing.executor")
 
     def parse_and_execute(self, response: str) -> Tuple[str, List[str]]:
         """Parse XML tags from response and execute actions.

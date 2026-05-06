@@ -175,8 +175,8 @@ class EvolutionEngine:
     def _validate_skills(self):
         """Validate existing skills through stress testing.
 
-        BUG FIX #4: Use subprocess execution instead of in-process to prevent
-        infinite loops and resource exhaustion.
+        Uses subprocess execution to prevent infinite loops and resource
+        exhaustion during skill validation.
 
         Process:
         1. Test each skill on recent episodes

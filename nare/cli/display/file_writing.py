@@ -13,6 +13,9 @@ from rich.padding import Padding
 from . import ui
 from .animations import get_shimmer_color
 import time
+from nare.utils.logger import get_logger
+
+log = get_logger(__name__)
 
 class FileWritingDisplay:
     """Manages real-time display of file writing operations with animations."""
@@ -38,7 +41,7 @@ class FileWritingDisplay:
             else:
                 display_path = filepath
         except Exception as e:
-            logging.warning(f"[FileWriting] Failed to get relative path: {e}")
+            log.warning(f"[FileWriting] Failed to get relative path: {e}")
             display_path = filepath
 
         self.filepath = filepath
@@ -80,7 +83,7 @@ class FileWritingDisplay:
                 with open(self.filepath, 'r', encoding='utf-8') as f:
                     old_content = f.read()
             except Exception as e:
-                logging.warning(f"[FileWriting] Failed to read existing file: {e}")
+                log.warning(f"[FileWriting] Failed to read existing file: {e}")
 
         from . import ui
 
