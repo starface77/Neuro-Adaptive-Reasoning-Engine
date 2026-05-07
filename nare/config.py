@@ -51,16 +51,16 @@ class ImmuneSystemConfig:
 @dataclass(frozen=True)
 class RoutingConfig:
 
-    tau_fast: float = 0.85  # Lowered from 0.95 - allow FAST route for similar (not just identical) queries
-    tau_hybrid: float = 0.50
+    tau_fast: float = 0.75
+    tau_hybrid: float = 0.65
     tau_reflex: float = 0.70
     tau_min: float = 0.60
     tau_max: float = 0.90
     calibration_lr: float = 0.02
 
-    tau_fast_code: float = 0.82  # Lowered from 0.92 - code tasks can vary in details but follow same pattern
-    tau_fast_pattern: float = 0.80  # Lowered from 0.90 - pattern tasks benefit from cached solutions
-    tau_fast_reasoning: float = 0.85  # Lowered from 0.93 - reasoning tasks with similar structure
+    tau_fast_code: float = 0.75
+    tau_fast_pattern: float = 0.70
+    tau_fast_reasoning: float = 0.75
     skill_min_confidence: float = 0.70
     semantic_inject_min_sim: float = 0.85
     semantic_inject_min_conf: float = 0.70
@@ -81,12 +81,10 @@ class SleepConfig:
 
     enabled: bool = True
 
-    max_episodes_before_sleep: int = 10
+    max_episodes_before_sleep: int = 20
 
     cluster_density_threshold: int = 2
-    cluster_similarity_threshold: float = 0.50
-
-    periodic_compilation_interval: int = 50
+    cluster_similarity_threshold: float = 0.60
 
     existing_rule_match_threshold: float = 0.70
 
@@ -106,17 +104,6 @@ class SleepConfig:
     holdout_n: int = 1
     holdout_min_cluster_size: int = 3
     holdout_min_accuracy: float = 0.5
-
-@dataclass(frozen=True)
-class ThinkingConfig:
-    """Extended thinking configuration."""
-
-    enabled: bool = False
-
-    budget_tokens_hybrid: int = 1000
-    budget_tokens_slow: int = 4000
-
-    max_thinking_seconds: int = 90
 
 @dataclass(frozen=True)
 class CriticConfig:
@@ -236,7 +223,6 @@ class SynthesisConfig:
 class NareConfig:
     routing: RoutingConfig = field(default_factory=RoutingConfig)
     sleep: SleepConfig = field(default_factory=SleepConfig)
-    thinking: ThinkingConfig = field(default_factory=ThinkingConfig)
     critic: CriticConfig = field(default_factory=CriticConfig)
     skill: SkillLifecycleConfig = field(default_factory=SkillLifecycleConfig)
     retrieval: RetrievalConfig = field(default_factory=RetrievalConfig)

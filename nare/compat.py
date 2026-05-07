@@ -16,16 +16,16 @@ These shims will NOT be removed before v1.0; they carry zero runtime cost
 """
 
 from nare.core.agent import NAREProductionAgent
-from nare.core.router import ReasoningRouter
-from nare.core.synthesis import verified_synthesis, SynthesisResult
-from nare.core.evolution import EvolutionEngine
-from nare.core.library_learning import discover_rule
+from nare.core.routing.router import ReasoningRouter
+from nare.core.synthesis.engine import verified_synthesis, SynthesisResult
+from nare.core.evolution.engine import EvolutionEngine
+from nare.core.evolution.learning import discover_rule
 
 from nare.reasoning import llm
 from nare.reasoning.generation.ranker import Critic
 from nare.reasoning.generation.ranker import Critic as HybridCritic
 
-from nare.execution.sandboxes.base.base import (
+from nare.execution.sandboxes.base import (
     SecurityError,
     safe_execute,
     safe_execute_freeform,

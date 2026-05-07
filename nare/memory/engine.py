@@ -549,7 +549,9 @@ class MemorySystem:
             return results
 
     def save(self):
-        import copy
+        with self._lock:
+
+            os.makedirs(self.persist_dir, exist_ok=True)
 
         # 1. Under lock - make deep copies
         with self._lock:
@@ -599,6 +601,29 @@ class MemorySystem:
         with self._lock:
             if self._dirty:
                 self.save()
+                self._dirty = False
+            self._flush_timer = None
+
+    def force_save(self):
+        """Force immediate save (for shutdown)."""
+        if self._flush_timer:
+            self._flush_timer.cancel()
+            self._flush_timer = None
+        self.save()
+
+    def _mark_dirty(self):
+        """Mark memory as dirty and schedule flush."""
+        self._dirty = True
+        if self._flush_timer is None:
+            self._flush_timer = threading.Timer(5.0, self._flush)
+            self._flush_timer.daemon = True
+            self._flush_timer.start()
+
+    def _flush(self):
+        """Background flush of dirty memory."""
+        with self._lock:
+            if self._dirty:
+                self._mark_dirty()
                 self._dirty = False
             self._flush_timer = None
 

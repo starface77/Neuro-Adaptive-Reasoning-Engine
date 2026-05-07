@@ -45,32 +45,32 @@ class Theme:
 
 DARK_THEME = Theme(
 
-    accent="rgb(215,119,87)",
-    accent_shimmer="rgb(245,149,117)",
+    accent="rgb(255,255,255)",
+    accent_shimmer="rgb(230,230,230)",
 
     text="rgb(255,255,255)",
     text_inverse="rgb(0,0,0)",
-    text_muted="rgb(160,160,160)",
-    text_subtle="rgb(100,100,100)",
+    text_muted="rgb(140,140,140)",
+    text_subtle="rgb(90,90,90)",
 
-    border="rgb(70,70,70)",
-    border_shimmer="rgb(90,90,90)",
+    border="rgb(60,60,60)",
+    border_shimmer="rgb(80,80,80)",
     background="rgb(0,0,0)",
 
-    success="rgb(100,220,150)",
-    error="rgb(255,100,120)",
-    warning="rgb(255,200,100)",
-    info="rgb(120,180,255)",
+    success="rgb(200,200,200)",
+    error="rgb(180,180,180)",
+    warning="rgb(160,160,160)",
+    info="rgb(140,140,140)",
 
-    route_fast="rgb(100,220,150)",
-    route_compiled_skill="rgb(150,255,100)",
-    route_reflex="rgb(120,180,255)",
-    route_hybrid="rgb(255,200,100)",
-    route_slow="rgb(215,119,87)",
+    route_fast="rgb(255,255,255)",
+    route_compiled_skill="rgb(220,220,220)",
+    route_reflex="rgb(200,200,200)",
+    route_hybrid="rgb(160,160,160)",
+    route_slow="rgb(120,120,120)",
 
-    agent_triage="rgb(120,180,255)",
-    agent_planning="rgb(255,200,100)",
-    agent_coding="rgb(215,119,87)",
+    agent_triage="rgb(200,200,200)",
+    agent_planning="rgb(160,160,160)",
+    agent_coding="rgb(140,140,140)",
 
     diff_added="rgb(50,50,50)",
     diff_removed="rgb(40,40,40)",

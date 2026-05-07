@@ -51,20 +51,33 @@ def _ensure_api_key():
             "export it in the current shell. See .env.example for details."
         )
 
+def _make_cached_system(system_prompt: str) -> list:
+    """Split system prompt into cacheable static block."""
+    return [{
+        "type": "text",
+        "text": system_prompt,
+        "cache_control": {"type": "ephemeral"}
+    }]
+
+
 def _post_anthropic(endpoint: str, payload: dict, stream_callback=None) -> str:
-    """POST to the configured LLM endpoint using stdlib urllib."""
+    """POST to the configured LLM endpoint with prompt caching support."""
     import urllib.request
     import urllib.error
 
     if stream_callback:
         payload['stream'] = True
 
+    if 'system' in payload and isinstance(payload['system'], str):
+        payload['system'] = _make_cached_system(payload['system'])
+
     url = f"{ANTHROPIC_BASE_URL}/{endpoint}"
     data = json.dumps(payload).encode('utf-8')
     headers = {
         'Content-Type': 'application/json',
         'x-api-key': ANTHROPIC_AUTH_TOKEN,
-        'anthropic-version': '2023-06-01'
+        'anthropic-version': '2023-06-01',
+        'anthropic-beta': 'prompt-caching-2024-07-31'
     }
 
     retries = 5
@@ -143,32 +156,46 @@ def _post_anthropic(endpoint: str, payload: dict, stream_callback=None) -> str:
                     return body_str
 
         except urllib.error.HTTPError as e:
-            error_body = e.read().decode('utf-8') if hasattr(e, 'read') else ''
+            error_body = ''
+            try:
+                error_body = e.read().decode('utf-8', errors='replace')
+            except Exception:
+                pass
             if e.code == 429:
                 base_wait = min(10 * (2 ** attempt), 60)
                 jitter = random.uniform(0, base_wait * 0.1)
                 wait_time = base_wait + jitter
-                logging.warning(f"Rate limit (429). Waiting {wait_time:.1f}s... (Attempt {attempt+1}/{retries})")
+                logging.warning(f"Rate limit (429). Retrying in {wait_time:.1f}s (attempt {attempt+1}/{retries})")
                 if attempt < retries - 1:
                     time.sleep(wait_time)
                     continue
-                else:
-                    raise Exception("Max retries exceeded for API request.")
-            elif e.code == 400:
-                logging.error(f"HTTP 400 Bad Request. Response: {error_body[:500]}")
-                raise
+                raise RuntimeError("Max retries exceeded (429)")
+            elif e.code in (500, 502, 503, 504):
+                if attempt < retries - 1:
+                    wait_time = min(5 * (2 ** attempt), 30)
+                    logging.warning(f"HTTP {e.code}, retrying in {wait_time}s (attempt {attempt+1}/{retries})")
+                    time.sleep(wait_time)
+                    continue
+                raise RuntimeError(f"LLM HTTP {e.code}: {error_body[:300]}")
             else:
-                logging.error(f"HTTP {e.code}. Response: {error_body[:500]}")
-                raise
+                raise RuntimeError(f"LLM HTTP {e.code}: {error_body[:300]}")
+        except urllib.error.URLError as e:
+            if attempt < retries - 1:
+                wait_time = min(5 * (2 ** attempt), 30)
+                logging.warning(f"Connection error (attempt {attempt+1}/{retries}): {e}")
+                time.sleep(wait_time)
+                continue
+            raise RuntimeError(f"LLM connection failed: {e}")
+        except RuntimeError:
+            raise
         except Exception as e:
             if attempt == retries - 1:
-                raise
+                raise RuntimeError(f"LLM API error: {e}")
             wait_time = min(5 * (2 ** attempt), 30)
             logging.warning(f"LLM API error (attempt {attempt+1}/{retries}): {e}")
-            if attempt < retries - 1:
-                time.sleep(wait_time)
+            time.sleep(wait_time)
 
-    raise Exception("Max retries exceeded for LLM API")
+    raise RuntimeError("LLM max retries exceeded")
 
 _embedding_model = None
 
@@ -220,7 +247,7 @@ def get_embedding(text: str) -> list:
     # BGE-large produces 1024-dim embeddings - use native dimension
     return emb.tolist()
 
-def generate_samples(prompt: str, n: int = 3, temperature: float = 0.8, mode: str = "ANALYTIC", thinking_display=None):
+def generate_samples(prompt: str, n: int = 3, temperature: float = 0.8, mode: str = "ANALYTIC", thinking_display=None, use_extended_thinking: bool = False, budget_tokens: int = 2000):
     """Generate N candidates from the configured LLM.
 
     Modes:
@@ -229,6 +256,15 @@ def generate_samples(prompt: str, n: int = 3, temperature: float = 0.8, mode: st
     - ADAPTIVE: Delta reasoning - adapt previous solution to new context
     - REACTIVE: Execute triggered rule without reasoning
     - SYNTHESIS: Program synthesis for file/code generation
+
+    Args:
+        prompt: Input prompt
+        n: Number of candidates to generate
+        temperature: Sampling temperature
+        mode: Generation mode
+        thinking_display: Optional display for streaming
+        use_extended_thinking: Enable extended thinking (budget_tokens)
+        budget_tokens: Token budget for extended thinking
     """
     _ensure_api_key()
 
@@ -238,12 +274,130 @@ def generate_samples(prompt: str, n: int = 3, temperature: float = 0.8, mode: st
         in_delta = False
         in_solution = False
         in_abstract = False
+        in_tool_call = False
         buffer = ""
         seen_first_tag = False
+        tool_call_buffer = ""
 
         def callback(token: str):
-            nonlocal in_reasoning, in_delta, in_solution, in_abstract, buffer, seen_first_tag
+            nonlocal in_reasoning, in_delta, in_solution, in_abstract, in_tool_call, buffer, seen_first_tag, tool_call_buffer
             buffer += token
+
+            # ALWAYS filter out <tool_call> blocks first (with whitespace handling)
+            if not in_tool_call:
+                # Check for <tool_call> with possible whitespace/newlines after
+                import re
+                match = re.search(r'<tool_call\s*>', buffer)
+                if match:
+                    idx = match.start()
+                    before = buffer[:idx]
+                    buffer = buffer[match.end():]
+                    in_tool_call = True
+                    tool_call_buffer = ""
+                    # Stream content before <tool_call>
+                    if before and (in_reasoning or in_delta or in_solution):
+                        thinking_display.stream_token(before)
+                    buffer = ""
+                    return
+
+            if in_tool_call:
+                # Accumulate tool call content
+                tool_call_buffer += buffer
+                buffer = ""
+
+                # Check for </tool_call> with possible whitespace before
+                import re
+                match = re.search(r'</tool_call\s*>', tool_call_buffer)
+                if match:
+                    # Extract tool call content
+                    tool_content = tool_call_buffer[:match.start()].strip()
+                    tool_call_buffer = ""
+                    in_tool_call = False
+
+                    logging.info(f"[TOOL_CALL] Complete tool_call captured, length: {len(tool_content)}")
+
+                    # Parse and emit ToolStart/ToolEnd events via router bus
+                    try:
+                        import json
+                        logging.info(f"[TOOL_CALL] Raw JSON: {tool_content[:200]}")
+                        tool_data = json.loads(tool_content)
+
+                        # Extract tool name from 'name' or 'tool' field
+                        tool_name = tool_data.get('name') or tool_data.get('tool', 'unknown')
+
+                        # Extract args - could be in 'args' dict or top-level
+                        if 'args' in tool_data and isinstance(tool_data['args'], dict):
+                            args = tool_data['args']
+                        else:
+                            args = {k: v for k, v in tool_data.items() if k not in ('name', 'tool')}
+
+                        # Normalize path field names (filepath -> path)
+                        if 'filepath' in args and 'path' not in args:
+                            args['path'] = args.pop('filepath')
+
+                        logging.info(f"[TOOL_CALL] Parsed: name={tool_name}, args={args}")
+
+                        # Get router bus from thinking_display parent
+                        router_bus = None
+                        if hasattr(thinking_display, 'session') and hasattr(thinking_display.session, 'router_bus'):
+                            router_bus = thinking_display.session.router_bus
+
+                        if router_bus:
+                            from nare.core.events import ToolStart, ToolEnd
+
+                            # Emit ToolStart
+                            router_bus.emit(ToolStart(
+                                name=tool_name,
+                                args=args,
+                                display_verb=None
+                            ))
+
+                            # Execute tool
+                            from nare.tools.parsing.executor import execute_tool_call
+
+                            # Build args list for execute_tool_call
+                            tool_args = []
+                            if tool_name == 'read_file':
+                                tool_args = [args.get('path', args.get('filepath', ''))]
+                            elif tool_name in ('create_file', 'write_file'):
+                                tool_args = [args.get('path', args.get('filepath', '')), args.get('content', '')]
+                            elif tool_name == 'edit_file':
+                                tool_args = [args.get('path', args.get('filepath', '')), args.get('old', ''), args.get('new', '')]
+                            elif tool_name in ('list_files', 'list_dir'):
+                                tool_args = [args.get('path', args.get('filepath', '.'))]
+
+                            result_msg = execute_tool_call(tool_name, tool_args, stream_callback=None, working_dir=".")
+
+                            # Emit ToolEnd
+                            router_bus.emit(ToolEnd(
+                                name=tool_name,
+                                args=args,
+                                ok=True,
+                                summary=result_msg,
+                                body=None,
+                                meta={},
+                                display_verb=None
+                            ))
+
+                            # Stream tool result immediately so it appears in real-time
+                            if thinking_display:
+                                # Ensure we're in solution mode before streaming results
+                                if hasattr(thinking_display, 'mode') and thinking_display.mode != 'solution':
+                                    if hasattr(thinking_display, 'switch_to_solution'):
+                                        thinking_display.switch_to_solution()
+
+                                thinking_display.stream_token(f"\n{result_msg}\n")
+
+                            # Also append to _tool_results for final answer assembly
+                            if hasattr(thinking_display, '_tool_results'):
+                                thinking_display._tool_results.append(f"\n{result_msg}")
+                            else:
+                                thinking_display._tool_results = [f"\n{result_msg}"]
+                    except Exception as e:
+                        logging.warning(f"[LLM] Failed to parse/execute tool call: {e}")
+                        import traceback
+                        logging.warning(traceback.format_exc())
+                    return
 
             if mode in ("DIRECT", "SYNTHESIS"):
                 thinking_display.stream_token(token)
@@ -265,12 +419,14 @@ def generate_samples(prompt: str, n: int = 3, temperature: float = 0.8, mode: st
                 seen_first_tag = True
 
                 buffer = buffer.split("<reasoning>", 1)[1]
+                # Don't stream reasoning - it's internal thinking that shouldn't leak
                 return
 
             if "<delta_reasoning>" in buffer and not in_delta:
                 in_delta = True
                 seen_first_tag = True
                 buffer = buffer.split("<delta_reasoning>", 1)[1]
+                # Don't stream delta_reasoning - it's internal reasoning that shouldn't leak
                 return
 
             if "<solution>" in buffer and not in_solution:
@@ -284,39 +440,36 @@ def generate_samples(prompt: str, n: int = 3, temperature: float = 0.8, mode: st
 
             if in_reasoning:
                 if "</reasoning>" in buffer:
-
-                    final_text = buffer.split("</reasoning>", 1)[0]
-                    if final_text:
-                        thinking_display.stream_token(final_text)
+                    # Don't stream reasoning content - it's internal
                     in_reasoning = False
                     buffer = ""
                 else:
-                    partial_tags = ['<', '</', '</r', '</re', '</rea', '</reas', '</reaso', '</reason', '</reasoni', '</reasonin']
-                    if not any(buffer.endswith(p) for p in partial_tags):
-                        if buffer:
-                            thinking_display.stream_token(buffer)
-                        buffer = ""
+                    # Discard all reasoning content - don't stream it
+                    buffer = ""
             elif in_delta:
                 if "</delta_reasoning>" in buffer:
-                    final_text = buffer.split("</delta_reasoning>", 1)[0]
-                    if final_text:
-                        thinking_display.stream_token(final_text)
+                    # Don't stream the final text - delta_reasoning is internal
                     in_delta = False
                     buffer = ""
                 else:
-                    partial_tags = ['<', '</', '</d', '</de', '</del', '</delt', '</delta', '</delta_', '</delta_r', '</delta_re', '</delta_rea', '</delta_reas', '</delta_reaso', '</delta_reason', '</delta_reasoni', '</delta_reasonin', '</delta_reasoning']
-                    if not any(buffer.endswith(p) for p in partial_tags):
-                        if buffer:
-                            thinking_display.stream_token(buffer)
-                        buffer = ""
+                    # Discard all delta_reasoning content - don't stream it
+                    buffer = ""
             elif in_solution:
                 if "</solution>" in buffer:
 
                     final_text = buffer.split("</solution>", 1)[0]
                     if final_text:
                         thinking_display.stream_token(final_text)
+
+                    # Stream tool results immediately after solution closes
+                    if hasattr(thinking_display, '_tool_results') and thinking_display._tool_results:
+                        tool_results_text = ''.join(thinking_display._tool_results)
+                        if tool_results_text.strip():
+                            thinking_display.stream_token(tool_results_text)
+
                     in_solution = False
                     buffer = ""
+                    # Don't stream the closing tag
                 else:
                     partial_tags = ['<', '</', '</s', '</so', '</sol', '</solu', '</solut', '</soluti', '</solutio', '</solution']
                     if not any(buffer.endswith(p) for p in partial_tags):
@@ -324,69 +477,49 @@ def generate_samples(prompt: str, n: int = 3, temperature: float = 0.8, mode: st
                             thinking_display.stream_token(buffer)
                         buffer = ""
             elif not seen_first_tag:
+                # Discard all text before first tag - it's preamble/reasoning that shouldn't leak
+                buffer = ""
+                return
 
-                pass
+            # Always filter out closing tags even if we're not in the corresponding mode
+            # This handles cases where model generates closing tags without opening tags
+            closing_tags = ['</reasoning>', '</solution>', '</delta_reasoning>', '</abstract_signature>', '</tool_call>']
+            for tag in closing_tags:
+                if tag in buffer:
+                    buffer = buffer.replace(tag, '')
 
         stream_callback = callback
 
     if mode == "ANALYTIC":
-        system_prompt = f"""
-Tools available:
-- create_file(filepath, content)
-- edit_file(filepath, target, replacement)
-- read_file(filepath)
-- list_files(directory, pattern)
-
-Rules:
-1. Use tools directly, don't show code blocks
-2. Be concise (1-2 sentences)
-3. No emojis, no bullet points
-4. Professional tone
-
-Format:
-<reasoning>Brief plan</reasoning>
-<solution>Tool calls + short confirmation</solution>
-
-Example:
-User: "создай test.py"
-<reasoning>Create Python file</reasoning>
-<solution>
-create_file("test.py", "def hello():\n    print('hi')")
-Created test.py.
-</solution>
-
-REQUIRED FORMAT:
-<abstract_signature>
-[1-2 sentences categorizing the problem type]
-</abstract_signature>
-<reasoning>
-[Your step-by-step logical analysis]
-</reasoning>
-<solution>
-[Tool calls FIRST, then brief explanation]
-</solution>
-
-Remember: you're running inside NARE CLI with full filesystem and shell access — use the tools, don't just describe what could be done."""
+        system_prompt = """Tools: create_file, edit_file, read_file, list_files.
+Tool call format:
+<read_file>filepath</read_file>
+<create_file><path>filepath</path><content>content</content></create_file>
+<edit_file><path>filepath</path><old>old text</old><new>new text</new></edit_file>
+<list_files>directory</list_files>
+Response format: <reasoning>plan</reasoning><solution>tool calls + brief progress notes + result</solution>
+IMPORTANT: Between tool calls, add brief progress notes like "Analyzing structure...", "Understanding architecture...", "Checking components..."."""
+    elif mode == "DATA":
+        system_prompt = """Tools: read_file, list_files.
+Tool call format:
+<read_file>filepath</read_file>
+<list_files>directory</list_files>
+Execute tool and return ONLY raw output. NO commentary, NO interpretation.
+Response format: <solution>tool call</solution>"""
     elif mode == "SYNTHESIS":
-        system_prompt = f"""
-Follow the user's format instructions EXACTLY. Output ONLY code in the specified format.
-Do NOT write explanations, analysis, or reasoning.
-Do NOT write "I need to", "Let me", "Looking at", or any prose.
-Start your response immediately with the required format."""
+        system_prompt = "Output ONLY code in specified format. No explanations."
     elif mode == "ADAPTIVE":
-        system_prompt = f"""Analyze differences from past solution.
-
-Format:
-<delta_reasoning>What changed (1-2 sentences)</delta_reasoning>
-<solution>Adapted answer</solution>"""
+        system_prompt = """Adapt previous solution.
+Tool call format:
+<read_file>filepath</read_file>
+<create_file><path>filepath</path><content>content</content></create_file>
+<edit_file><path>filepath</path><old>old text</old><new>new text</new></edit_file>
+Response format: <solution>tool calls ONLY, NO reasoning text</solution>
+CRITICAL: Do NOT write reasoning or explanations. ONLY tool calls. Analysis will be generated separately."""
     elif mode == "REACTIVE":
-        system_prompt = f"""Apply the rule directly.
-
-Format:
-<rule_activation>Rule name</rule_activation>
-<solution>Answer following the rule</solution>"""
+        system_prompt = "Apply rule. Format: <rule_activation>name</rule_activation><solution>answer</solution>"
     else:
-        system_prompt = "You are a helpful assistant."
+        system_prompt = "Be helpful and concise."
 
     samples = []
     total_tokens = 0
@@ -409,6 +542,13 @@ Format:
                 }
             ]
         }
+
+        # Let model decide when to use extended thinking
+        if use_extended_thinking and mode in ("ANALYTIC", "ADAPTIVE"):
+            payload["thinking"] = {
+                "type": "enabled",
+                "budget_tokens": budget_tokens
+            }
 
         try:
             content = _post_anthropic("messages", payload, stream_callback=stream_callback)
@@ -440,11 +580,27 @@ Format:
 
                 solution = re.sub(r'<abstract_signature>.*?</abstract_signature>', '', solution, flags=re.DOTALL).strip()
             else:
-
-                solution = content.strip()
+                # No tags found - check if there's text before <solution>
+                # Remove everything before <solution> tag if it exists
+                if '<solution>' in content:
+                    solution = content.split('<solution>', 1)[1].strip()
+                    if '</solution>' in solution:
+                        solution = solution.split('</solution>', 1)[0].strip()
+                else:
+                    solution = content.strip()
 
                 solution = re.sub(r'<reasoning>.*?</reasoning>', '', solution, flags=re.DOTALL).strip()
                 solution = re.sub(r'<abstract_signature>.*?</abstract_signature>', '', solution, flags=re.DOTALL).strip()
+
+            # Remove any remaining tool_call tags from solution
+            solution = re.sub(r'<tool_call\s*>.*?</tool_call\s*>', '', solution, flags=re.DOTALL).strip()
+
+            # Append tool results if any were collected during streaming
+            if thinking_display and hasattr(thinking_display, '_tool_results'):
+                tool_results_text = ''.join(thinking_display._tool_results)
+                if tool_results_text.strip():
+                    solution = solution + tool_results_text
+                thinking_display._tool_results = []  # Clear for next iteration
 
             a_match = re.search(r'<abstract_signature>(.*?)</abstract_signature>', content, re.DOTALL)
             abstract_signature = a_match.group(1).strip() if a_match else None

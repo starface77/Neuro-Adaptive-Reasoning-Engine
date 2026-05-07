@@ -235,11 +235,52 @@ def _on_tool_end(console: Console, ev: ToolEnd) -> None:
     console.print()
 
 def _on_token_streamed(console: Console, state: dict, ev: TokenStreamed) -> None:
-    if not state.get("streaming"):
-        console.print()
-        console.print("  ", end="")
-        state["streaming"] = True
-    console.print(ev.text, end="", style="white")
+    # Filter out <tool_call> tags (with whitespace handling)
+    if not state.get("token_buffer"):
+        state["token_buffer"] = ""
+        state["in_tool_call"] = False
+
+    state["token_buffer"] += ev.text
+
+    # Check if we're entering <tool_call> (with possible whitespace)
+    import re
+    if not state["in_tool_call"]:
+        match = re.search(r'<tool_call\s*>', state["token_buffer"])
+        if match:
+            idx = match.start()
+            # Print content before <tool_call>
+            before = state["token_buffer"][:idx]
+            if before:
+                if not state.get("streaming"):
+                    console.print()
+                    console.print("  ", end="")
+                    state["streaming"] = True
+                console.print(before, end="", style="white")
+            state["token_buffer"] = state["token_buffer"][match.end():]
+            state["in_tool_call"] = True
+
+    # If inside <tool_call>, check for closing tag
+    if state["in_tool_call"]:
+        match = re.search(r'</tool_call\s*>', state["token_buffer"])
+        if match:
+            state["token_buffer"] = state["token_buffer"][match.end():]
+            state["in_tool_call"] = False
+        else:
+            # Still inside tool_call, discard buffer
+            state["token_buffer"] = ""
+            return
+
+    # Print remaining buffer if not in tool_call
+    if not state["in_tool_call"] and state["token_buffer"]:
+        # Keep last 20 chars in buffer to handle split tags
+        if len(state["token_buffer"]) > 20:
+            to_print = state["token_buffer"][:-20]
+            state["token_buffer"] = state["token_buffer"][-20:]
+            if not state.get("streaming"):
+                console.print()
+                console.print("  ", end="")
+                state["streaming"] = True
+            console.print(to_print, end="", style="white")
 
 def _on_iteration_completed(console: Console, state: dict, ev: IterationCompleted) -> None:
     """Show progress for long-running tasks."""
@@ -301,7 +342,9 @@ def _verb_for(name: str) -> str:
 def _format_target(name: str, args: dict) -> str:
     """Pick the best single-line representation of the tool call args."""
     if name in ("read_file", "write_file", "edit_file"):
-        return str(args.get("path", ""))
+        # Handle both formats: {'path': 'x'} and {'tool': 'read_file', 'path': 'x'}
+        path = args.get("path") or args.get("filepath", "")
+        return str(path) if path else ""
     if name == "bash":
         return str(args.get("command", ""))
     if name == "grep":
@@ -314,4 +357,6 @@ def _format_target(name: str, args: dict) -> str:
         return str(args.get("glob", ""))
     if name == "git_status":
         return ""
-    return ", ".join(f"{k}={v!r}" for k, v in args.items())
+    # Filter out 'tool' and 'name' keys from display
+    filtered = {k: v for k, v in args.items() if k not in ('tool', 'name')}
+    return ", ".join(f"{k}={v!r}" for k, v in filtered.items())

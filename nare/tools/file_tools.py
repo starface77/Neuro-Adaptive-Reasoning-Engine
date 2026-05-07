@@ -1,11 +1,4 @@
-"""
-File system tools for autonomous LLM operations.
-
-Provides safe, validated file operations that the LLM can call:
-- read_file: Read file contents with optional line range
-- create_file: Create new files with parent directories
-- edit_file: Surgically replace code blocks in existing files
-"""
+"""File system tools for autonomous LLM operations."""
 
 import os
 from pathlib import Path
@@ -14,19 +7,10 @@ from typing import Optional, Tuple
 # Import safety layer for path validation
 from nare.tools.safety import get_safety
 
+MAX_UNCHUNKED_LINES = 50
+
+
 def _validate_path(filepath: str, operation: str = "read") -> Path:
-    """Validate file path for security.
-
-    Args:
-        filepath: Path to validate
-        operation: Operation type ("read", "write", "delete")
-
-    Returns:
-        Resolved Path object
-
-    Raises:
-        ValueError: If path is unsafe
-    """
     try:
         # Resolve to absolute path and check for traversal
         resolved = Path(filepath).resolve()
@@ -45,21 +29,7 @@ def _validate_path(filepath: str, operation: str = "read") -> Path:
         raise ValueError(f"Invalid path '{filepath}': {e}")
 
 def read_file(filepath: str, start_line: Optional[int] = None, end_line: Optional[int] = None) -> str:
-    """Read file contents safely.
-
-    Args:
-        filepath: Path to file (relative or absolute)
-        start_line: Optional starting line (1-indexed)
-        end_line: Optional ending line (1-indexed, inclusive)
-
-    Returns:
-        File contents as string
-
-    Raises:
-        FileNotFoundError: If file doesn't exist
-        ValueError: If line range is invalid or path is unsafe
-    """
-    # Validate path
+    """Read file contents with enforced chunking."""
     resolved = _validate_path(filepath, "read")
 
     if not resolved.exists():
@@ -69,64 +39,52 @@ def read_file(filepath: str, start_line: Optional[int] = None, end_line: Optiona
         with open(resolved, 'r', encoding='utf-8', errors='replace') as f:
             lines = f.readlines()
 
-        if len(lines) > 500 and start_line is None and end_line is None:
-            return f"[WARNING] File has {len(lines)} lines. Please specify start_line and end_line to read a specific range.\n\nFirst 50 lines:\n" + ''.join(lines[:50])
+        total = len(lines)
 
         if start_line is not None or end_line is not None:
             start_idx = (start_line - 1) if start_line else 0
-            end_idx = end_line if end_line else len(lines)
-
-            if start_idx < 0 or end_idx > len(lines) or start_idx >= end_idx:
-                raise ValueError(f"Invalid line range: {start_line}-{end_line} (file has {len(lines)} lines)")
-
+            end_idx = end_line if end_line else total
+            if start_idx < 0 or end_idx > total or start_idx >= end_idx:
+                raise ValueError(f"Invalid line range: {start_line}-{end_line} (file has {total} lines)")
             lines = lines[start_idx:end_idx]
+
+        if total > MAX_UNCHUNKED_LINES and start_line is None and end_line is None:
+            preview = ''.join(lines[:20])
+            return (
+                f"[CHUNKING REQUIRED] File has {total} lines. "
+                f"Use start_line/end_line or grep to read specific sections.\n\n"
+                f"Preview (lines 1-20):\n{preview}"
+            )
 
         return ''.join(lines)
 
+    except (FileNotFoundError, ValueError):
+        raise
     except Exception as e:
         raise RuntimeError(f"Failed to read {filepath}: {e}")
 
 def create_file(filepath: str, content: str, stream_callback=None) -> bool:
-    """Create a new file with content.
-
-    Args:
-        filepath: Path to file (relative or absolute)
-        content: File contents
-        stream_callback: Optional callback(chunk) for streaming display
-
-    Returns:
-        True if successful
-
-    Raises:
-        FileExistsError: If file already exists
-        ValueError: If path is unsafe
-        RuntimeError: If creation fails
-    """
-    # Validate path
+    """Create a new file with content."""
     resolved = _validate_path(filepath, "write")
 
     if resolved.exists():
         raise FileExistsError(f"File already exists: {filepath}. Use edit_file to modify it.")
 
     try:
-        # Create parent directories
         parent = resolved.parent
         if parent:
             parent.mkdir(parents=True, exist_ok=True)
 
-        # Take snapshot for rollback
         safety = get_safety()
         safety.snapshot(str(resolved))
 
         with open(resolved, 'w', encoding='utf-8') as f:
             if stream_callback:
-                # Stream content in chunks
                 chunk_size = 50
                 for i in range(0, len(content), chunk_size):
-                    chunk = content[i:i+chunk_size]
+                    chunk = content[i:i + chunk_size]
                     f.write(chunk)
                     stream_callback(chunk)
-
                     import time
                     time.sleep(0.01)
             else:
@@ -138,30 +96,13 @@ def create_file(filepath: str, content: str, stream_callback=None) -> bool:
         raise RuntimeError(f"Failed to create {filepath}: {e}")
 
 def edit_file(filepath: str, target_block: str, replacement_block: str, stream_callback=None) -> bool:
-    """Surgically replace a code block in an existing file.
-
-    Args:
-        filepath: Path to file (relative or absolute)
-        target_block: Exact text to find and replace
-        replacement_block: New text to insert
-        stream_callback: Optional callback(chunk) for streaming display
-
-    Returns:
-        True if successful
-
-    Raises:
-        FileNotFoundError: If file doesn't exist
-        ValueError: If target_block not found, appears multiple times, or path is unsafe
-        RuntimeError: If edit fails
-    """
-    # Validate path
+    """Surgically replace a code block in an existing file."""
     resolved = _validate_path(filepath, "write")
 
     if not resolved.exists():
         raise FileNotFoundError(f"File not found: {filepath}")
 
     try:
-        # Take snapshot for rollback
         safety = get_safety()
         safety.snapshot(str(resolved))
 
@@ -169,29 +110,21 @@ def edit_file(filepath: str, target_block: str, replacement_block: str, stream_c
             content = f.read()
 
         def _normalize_whitespace(text: str) -> str:
-            """Normalize whitespace for fuzzy matching."""
             lines = text.splitlines()
-            # Remove empty lines at start and end
             while lines and not lines[0].strip():
                 lines.pop(0)
             while lines and not lines[-1].strip():
                 lines.pop()
-
-            # Normalize indentation (remove common prefix)
             if lines:
                 min_indent = min(len(line) - len(line.lstrip()) for line in lines if line.strip())
                 lines = [line[min_indent:] if len(line) > min_indent else line for line in lines]
-
             return '\n'.join(lines)
 
-        # Try exact match first
         count = content.count(target_block)
         if count == 0:
-            # Try normalized match
             normalized_content = _normalize_whitespace(content)
             normalized_target = _normalize_whitespace(target_block)
             count = normalized_content.count(normalized_target)
-
             if count == 0:
                 raise ValueError(
                     f"Target block not found in {filepath}.\n"
@@ -200,13 +133,10 @@ def edit_file(filepath: str, target_block: str, replacement_block: str, stream_c
                 )
             elif count > 1:
                 raise ValueError(f"Target block appears {count} times in {filepath}. Make it more specific.")
-
-            # Use normalized versions for replacement
             content = content.replace(normalized_target, replacement_block, 1)
         elif count > 1:
             raise ValueError(f"Target block appears {count} times in {filepath}. Make it more specific.")
         else:
-            # Exact match found
             content = content.replace(target_block, replacement_block, 1)
 
         import difflib
@@ -274,15 +204,7 @@ def edit_file(filepath: str, target_block: str, replacement_block: str, stream_c
         raise RuntimeError(f"Failed to edit {filepath}: {e}")
 
 def list_files(directory: str = ".", pattern: str = "*") -> list:
-    """List files in a directory matching a pattern.
-
-    Args:
-        directory: Directory to search (default: current)
-        pattern: Glob pattern (default: all files)
-
-    Returns:
-        List of file paths
-    """
+    """List files in a directory matching a pattern."""
     import glob
 
     if not os.path.isdir(directory):
@@ -296,19 +218,7 @@ def list_files(directory: str = ".", pattern: str = "*") -> list:
     return sorted(files)
 
 def run_command(command: str, cwd: str = ".") -> dict:
-    """Run a shell command and return output.
-
-    Args:
-        command: Command to execute
-        cwd: Working directory (default: current)
-
-    Returns:
-        Dict with stdout, stderr, returncode
-
-    Raises:
-        ValueError: If command is blocked by safety layer
-        RuntimeError: If command fails
-    """
+    """Run a shell command and return output."""
     import subprocess
 
     # Validate command with safety layer

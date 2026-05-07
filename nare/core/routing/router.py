@@ -14,6 +14,7 @@ from .detector import get_adaptive_tau_fast
 from ...agents.planning import PlanningAgent
 from ...memory.cache import ReasoningCache
 from .metrics import RouteMetrics
+from ...core.events import ToolStart, ToolEnd
 
 class ReasoningRouter:
     """The central routing engine for NARE.
@@ -31,13 +32,15 @@ class ReasoningRouter:
         critic: Critic,
         config: NareConfig,
         metrics: Any,
-        evolution: Optional[Any] = None
+        evolution: Optional[Any] = None,
+        bus: Optional[Any] = None
     ):
         self.memory = memory
         self.critic = critic
         self.config = config
         self.metrics = metrics
         self.evolution = evolution
+        self.bus = bus
 
         self.tau_fast = config.routing.tau_fast
         self.tau_hybrid = config.routing.tau_hybrid
@@ -322,11 +325,35 @@ class ReasoningRouter:
                                                 file_display.complete_file(filepath)
 
                                         try:
+                                            # Emit ToolStart events
+                                            if self.bus:
+                                                for tool_call in tool_calls:
+                                                    self.bus.emit(ToolStart(
+                                                        name=tool_call.get('name', 'unknown'),
+                                                        args=tool_call.get('args', {}),
+                                                        display_verb=None
+                                                    ))
+
                                             execution_result = execute_tools_from_response(
                                                 fast_answer,
                                                 working_dir=working_dir,
                                                 stream_callback=stream_callback
                                             )
+
+                                            # Emit ToolEnd events
+                                            if self.bus:
+                                                for tool_call in tool_calls:
+                                                    self.bus.emit(ToolEnd(
+                                                        name=tool_call.get('name', 'unknown'),
+                                                        args=tool_call.get('args', {}),
+                                                        ok=execution_result.get('success', False),
+                                                        summary=None,
+                                                        body=None,
+                                                        error=execution_result.get('error'),
+                                                        meta={},
+                                                        display_verb=None,
+                                                        body_lang=None
+                                                    ))
 
                                             if execution_result.get('success'):
                                                 logging.info(f"[ROUTER] FAST path tools executed successfully")
@@ -372,7 +399,14 @@ class ReasoningRouter:
 
         full_query_context = prompt_prefix + query
 
-        if max_sim >= self.tau_hybrid and retrieved_eps:
+        # Check if query requires real action execution (not just cached answer)
+        action_signals = [
+            'изучай', 'найди', 'покажи', 'прочитай', 'создай', 'напиши', 'измени', 'удали', 'добавь', 'исправь',
+            'study', 'explore', 'find', 'show', 'read', 'create', 'write', 'edit', 'delete', 'add', 'fix'
+        ]
+        requires_action = any(sig in query.lower() for sig in action_signals)
+
+        if max_sim >= self.tau_hybrid and retrieved_eps and not requires_action:
             if thinking_display:
                 thinking_display.start_waiting("HYBRID route: adapting previous solution")
 
@@ -398,11 +432,107 @@ class ReasoningRouter:
             if candidates and isinstance(candidates[0], dict) and 'solution' in candidates[0]:
                 best = candidates[0]
 
+                # Save tool results that were collected during generation
+                tool_results_from_generation = ""
+                if thinking_display and hasattr(thinking_display, '_tool_results'):
+                    tool_results_from_generation = ''.join(thinking_display._tool_results)
+                    thinking_display._tool_results = []  # Clear after saving
+
                 from ...tools.parsing.executor import ToolExecutor
                 executor = ToolExecutor(working_dir=".")
-                cleaned_solution, modified_files = executor.parse_and_execute(best['solution'])
 
-                best['solution'] = cleaned_solution
+                # Emit ToolStart event for HYBRID execution
+                if self.bus:
+                    self.bus.emit(ToolStart(
+                        name="hybrid_execution",
+                        args={"solution": best['solution'][:100]},
+                        display_verb="Execute"
+                    ))
+
+                cleaned_solution, modified_files, tool_results = executor.parse_and_execute(best['solution'])
+
+                logging.info(f"[HYBRID] parse_and_execute returned {len(tool_results)} tool results")
+                logging.info(f"[HYBRID] tool_results_from_generation: {len(tool_results_from_generation)} chars")
+                if tool_results:
+                    for i, result in enumerate(tool_results):
+                        logging.info(f"[HYBRID] tool_result[{i}]: {result[:200]}")
+
+                # Emit ToolEnd event
+                if self.bus:
+                    self.bus.emit(ToolEnd(
+                        name="hybrid_execution",
+                        args={},
+                        ok=True,
+                        summary=f"Modified {len(modified_files)} files" if modified_files else "Executed",
+                        body=None,
+                        error=None,
+                        meta={"modified_files": modified_files},
+                        display_verb="Execute",
+                        body_lang=None
+                    ))
+
+                # Build final solution from cleaned text + tool results
+                final_parts = []
+                if cleaned_solution.strip():
+                    final_parts.append(cleaned_solution.strip())
+
+                analysis_text = None
+                # If we have tool results, ask model to analyze them
+                if tool_results:
+                    logging.info(f"[HYBRID] Asking model to analyze {len(tool_results)} tool results")
+
+                    analysis_prompt = f"""The following tool calls were executed:
+
+{chr(10).join(tool_results)}
+
+Provide a brief analysis/summary of what you found. Be concise and focus on key insights."""
+
+                    if thinking_display:
+                        thinking_display.update_waiting("Analyzing results...")
+
+                    import asyncio
+                    analysis_candidates, analysis_tokens = await asyncio.to_thread(
+                        llm.generate_samples,
+                        analysis_prompt, n=1, temperature=0.3, mode="DIRECT", thinking_display=thinking_display
+                    )
+                    _solve_tokens += analysis_tokens
+
+                    if analysis_candidates and analysis_candidates[0].get('solution'):
+                        analysis_text = analysis_candidates[0]['solution'].strip()
+                        logging.info(f"[HYBRID] Model analysis: {analysis_text[:200]}")
+                        final_parts.append(analysis_text)
+                    else:
+                        # Fallback: just show tool results
+                        final_parts.extend(tool_results)
+                else:
+                    # No tool results, just use cleaned solution
+                    pass
+
+                if tool_results_from_generation.strip():
+                    final_parts.append(tool_results_from_generation.strip())
+
+                best['solution'] = "\n\n".join(final_parts) if final_parts else "Executed successfully."
+
+                logging.info(f"[HYBRID] Final solution length: {len(best['solution'])} chars")
+                logging.info(f"[HYBRID] Final solution preview: {best['solution'][:300]}")
+
+                # Stream analysis to user if thinking_display is active
+                if thinking_display and analysis_text:
+                    logging.info(f"[HYBRID] Streaming analysis: {len(analysis_text)} chars")
+
+                    # Ensure we're in solution mode
+                    if hasattr(thinking_display, 'mode') and thinking_display.mode != 'solution':
+                        if hasattr(thinking_display, 'switch_to_solution'):
+                            thinking_display.switch_to_solution()
+                            logging.info(f"[HYBRID] Switched to solution mode")
+
+                    thinking_display.stream_token(f"\n\n{analysis_text}")
+
+                    # Flush to ensure output is visible
+                    if hasattr(thinking_display, '_stop_live_and_spinner'):
+                        thinking_display._stop_live_and_spinner()
+                else:
+                    logging.info(f"[HYBRID] NOT streaming analysis")
 
                 best['solution'] = self._post_process_answer(best['solution'], "HYBRID", log)
                 best['final_score'] = (max_sim * 1.0) + ((1 - max_sim) * best['final_score'])
@@ -510,7 +640,18 @@ class ReasoningRouter:
             }]
         else:
 
-            should_plan = self._should_generate_plan(full_query_context)
+            # Detect DATA MODE queries (read-only, no interpretation)
+            query_lower = query.lower()
+            data_keywords = ['изучай', 'покажи', 'дай', 'прочитай', 'read', 'show', 'display', 'cat', 'view']
+            is_data_mode = any(query_lower.startswith(kw) for kw in data_keywords)
+            if is_data_mode:
+                # Check if query has analysis keywords
+                analysis_keywords = ['анализ', 'проанализ', 'объясни', 'explain', 'analyze', 'why', 'how', 'почему', 'как']
+                if any(kw in query_lower for kw in analysis_keywords):
+                    is_data_mode = False
+
+            # Don't plan for DATA MODE queries
+            should_plan = self._should_generate_plan(query) and not is_data_mode
 
             plan_result = None
             if should_plan:
@@ -549,7 +690,10 @@ class ReasoningRouter:
             while iter_count < max_auto_iters:
                 iter_count += 1
 
-                candidates, s_tokens = llm.generate_samples(current_prompt, n=1, temperature=0.2, mode="ANALYTIC", thinking_display=thinking_display)
+                # Use DATA mode if detected earlier
+                generation_mode = "DATA" if is_data_mode else "ANALYTIC"
+
+                candidates, s_tokens = llm.generate_samples(current_prompt, n=1, temperature=0.2, mode=generation_mode, thinking_display=thinking_display)
                 _solve_tokens += s_tokens
 
                 if not candidates or not isinstance(candidates[0], dict) or 'solution' not in candidates[0]:
@@ -618,7 +762,31 @@ class ReasoningRouter:
                     elif event_type == 'finish':
                         file_display.finish_writing()
 
+                # Emit ToolStart events
+                if self.bus:
+                    for tool_call in tool_calls:
+                        self.bus.emit(ToolStart(
+                            name=tool_call.get('tool', 'unknown'),
+                            args=tool_call,
+                            display_verb=None
+                        ))
+
                 tool_results = execute_tools_from_response(best['solution'], stream_callback=stream_callback if thinking_display else None, working_dir=working_dir)
+
+                # Emit ToolEnd events
+                if self.bus:
+                    for tool_call in tool_calls:
+                        self.bus.emit(ToolEnd(
+                            name=tool_call.get('tool', 'unknown'),
+                            args=tool_call,
+                            ok=bool(tool_results),
+                            summary=None,
+                            body=None,
+                            error=None,
+                            meta={},
+                            display_verb=None,
+                            body_lang=None
+                        ))
 
                 if tool_results:
                     log.append(f"Executed {len(tool_results)} tool calls")
@@ -875,26 +1043,13 @@ Extreme: novel patterns, 12 attempts, breadth 8, temp 0.9"""
         p += f"Past Approach: {past_text}\n\n"
         p += "CRITICAL: You MUST execute the NEW task, not just describe it.\n"
         p += "1. Briefly explain what you'll do\n"
-        p += "2. Use XML tags to perform ACTUAL actions\n"
+        p += "2. Use tool calls to perform ACTUAL actions\n"
         p += "3. NEVER say 'task is identical' - always execute\n\n"
-        p += "IMPORTANT: Use XML tags for tool calls:\n"
-        p += "- <edit_file><path>file.py</path><diff>...diff...</diff></edit_file> to edit files\n"
-        p += "- <write_file><path>file.py</path><content>...code...</content></write_file> to create files\n"
-        p += "- <read_file><path>file.py</path></read_file> to read files\n"
-        p += "- <bash_command><command>cmd</command></bash_command> to run commands\n\n"
         p += "Example response format:\n"
         p += "I'll add the greeting to ui.py.\n\n"
-        p += "<edit_file>\n"
-        p += "<path>cli/display/ui.py</path>\n"
-        p += "<diff>\n"
-        p += "--- cli/display/ui.py\n"
-        p += "+++ cli/display/ui.py\n"
-        p += "@@ -283,3 +283,5 @@\n"
-        p += "     console.print(f\"Done\")\n"
-        p += "+\n"
-        p += "+# Привет от NARE\n"
-        p += "</diff>\n"
-        p += "</edit_file>\n\n"
+        p += "<tool_call>\n"
+        p += '{"name": "edit_file", "args": {"path": "cli/display/ui.py", "old": "    console.print(f\\"Done\\")", "new": "    console.print(f\\"Done\\")\\n\\n# Привет от NARE"}}\n'
+        p += "</tool_call>\n\n"
         p += "Done! Added greeting to ui.py.\n"
         return p
 
@@ -925,24 +1080,11 @@ Extreme: novel patterns, 12 attempts, breadth 8, temp 0.9"""
         p += "\nIMPORTANT: Use the learned rules above as MANDATORY guidance, not suggestions.\n"
         p += "For Django tasks, you MUST check __init__.py files in packages.\n"
         p += "Solve the task with deep reasoning.\n\n"
-        p += "IMPORTANT: Use XML tags for tool calls:\n"
-        p += "- <edit_file><path>file.py</path><diff>...diff...</diff></edit_file> to edit files\n"
-        p += "- <write_file><path>file.py</path><content>...code...</content></write_file> to create files\n"
-        p += "- <read_file><path>file.py</path></read_file> to read files\n"
-        p += "- <bash_command><command>cmd</command></bash_command> to run commands\n\n"
         p += "Example response format:\n"
         p += "I'll add the greeting to ui.py.\n\n"
-        p += "<edit_file>\n"
-        p += "<path>cli/display/ui.py</path>\n"
-        p += "<diff>\n"
-        p += "--- cli/display/ui.py\n"
-        p += "+++ cli/display/ui.py\n"
-        p += "@@ -283,3 +283,5 @@\n"
-        p += "     console.print(f\"Done\")\n"
-        p += "+\n"
-        p += "+# Привет от NARE\n"
-        p += "</diff>\n"
-        p += "</edit_file>\n\n"
+        p += "<tool_call>\n"
+        p += '{"name": "edit_file", "args": {"path": "cli/display/ui.py", "old": "    console.print(f\\"Done\\")", "new": "    console.print(f\\"Done\\")\\n\\n# Привет от NARE"}}\n'
+        p += "</tool_call>\n\n"
         p += "Done! Added greeting to ui.py.\n"
         return p
 
@@ -1013,35 +1155,30 @@ Answer with just "ACTION" or "CONVERSATION"."""
             return "EDIT"  # Default to action
 
     def _should_generate_plan(self, query: str) -> bool:
-        """Determine if query needs planning based on complexity."""
+        """Determine if query needs planning based on complexity.
+
+        Only plan for truly complex multi-step tasks, not simple queries.
+        """
         query_lower = query.lower().strip()
 
+        # Never plan for greetings or very short queries
         greetings = ['привет', 'ку', 'hello', 'hi', 'hey', 'здравствуй', 'добрый день']
-        if query_lower in greetings or len(query_lower) < 5:
+        if query_lower in greetings or len(query_lower) < 10:
             return False
 
-        action_keywords = [
-            'создай', 'сделай', 'напиши', 'реализуй', 'добавь', 'измени', 'исправь',
-            'create', 'make', 'write', 'implement', 'add', 'change', 'fix', 'build',
-            'refactor', 'optimize', 'deploy', 'setup', 'configure', 'install'
-        ]
-
-        project_keywords = [
-            'проект', 'файл', 'класс', 'функци', 'модуль', 'компонент',
-            'project', 'file', 'class', 'function', 'module', 'component',
-            'api', 'endpoint', 'database', 'schema', 'migration'
-        ]
-
-        for keyword in action_keywords:
+        # Only plan if user explicitly asks for a plan
+        plan_keywords = ['план', 'plan', 'спланируй', 'распиши шаги', 'как будешь']
+        for keyword in plan_keywords:
             if keyword in query_lower:
                 return True
 
-        for keyword in project_keywords:
-            if keyword in query_lower:
+        # Don't auto-plan for simple read/explore tasks
+        simple_tasks = ['изучай', 'покажи', 'дай', 'прочитай', 'read', 'show', 'display']
+        for task in simple_tasks:
+            if query_lower.startswith(task):
+                return False
 
-                if len(query_lower) > 20:
-                    return True
-
+        return False
         if len(query_lower) > 50:
             return True
 
@@ -1059,13 +1196,11 @@ Answer with just "ACTION" or "CONVERSATION"."""
         """
         q = query.strip().lower()
 
-        if len(q) <= 4:
-            return True
-
         greetings = {
             'ку', 'привет', 'хай', 'здарова', 'здравствуйте', 'добрый день',
             'доброе утро', 'добрый вечер', 'салам', 'йо', 'хелло',
             'hi', 'hello', 'hey', 'yo', 'sup', 'howdy', 'greetings',
+            'спасибо', 'thanks', 'thank you', 'ок', 'ok', 'понятно', 'да', 'нет',
         }
         if q in greetings:
             return True
@@ -1088,9 +1223,6 @@ Answer with just "ACTION" or "CONVERSATION"."""
         for pattern in meta_patterns:
             if pattern in q:
                 return True
-
-        if len(q) < 15:
-            return True
 
         return False
 
@@ -1132,6 +1264,48 @@ Answer with just "ACTION" or "CONVERSATION"."""
         return None
 
     def _wrap_result(self, route, answer, memories, candidates, log, alpha, start_time, tokens, alpha_t=0.0, query="", chat_history="", repo_map="", intent=""):
+        # Clean up any XML tags that model might have generated by mistake
+        import re
+        if answer:
+            # Filter out lines containing <tool_call> tags
+            lines = answer.split('\n')
+            filtered_lines = []
+            skip_until_close = False
+
+            for i, line in enumerate(lines):
+                if '<tool_call' in line:
+                    skip_until_close = True
+                    # Remove previous line ONLY if it's a short prefix (< 20 chars and ends with >)
+                    if filtered_lines:
+                        prev = filtered_lines[-1].strip()
+                        if len(prev) < 20 and prev.endswith('>'):
+                            filtered_lines.pop()
+                if skip_until_close:
+                    if '</tool_call' in line:
+                        skip_until_close = False
+                    continue
+                filtered_lines.append(line)
+
+            answer = '\n'.join(filtered_lines)
+
+            # Remove XML-style tool calls: <read_file>path</read_file>, <list_files>path</list_files>, etc.
+            answer = re.sub(r'<read_file>.*?</read_file>', '', answer, flags=re.DOTALL)
+            answer = re.sub(r'<list_files>.*?</list_files>', '', answer, flags=re.DOTALL)
+            answer = re.sub(r'<create_file>.*?</create_file>', '', answer, flags=re.DOTALL)
+            answer = re.sub(r'<edit_file>.*?</edit_file>', '', answer, flags=re.DOTALL)
+            answer = re.sub(r'<write_file>.*?</write_file>', '', answer, flags=re.DOTALL)
+
+            answer = re.sub(r'<final_answer\s*>|</final_answer\s*>', '', answer)
+            answer = re.sub(r'<reasoning\s*>.*?</reasoning\s*>', '', answer, flags=re.DOTALL)
+            answer = re.sub(r'<delta_reasoning\s*>.*?</delta_reasoning\s*>', '', answer, flags=re.DOTALL)
+            answer = re.sub(r'<abstract_signature\s*>.*?</abstract_signature\s*>', '', answer, flags=re.DOTALL)
+            answer = re.sub(r'<solution\s*>|</solution\s*>', '', answer)
+            answer = re.sub(
+                r'\{\s*"name"\s*:\s*"(?:create_file|edit_file|read_file|list_files|list_dir|write_file)"\s*,\s*"args"\s*:\s*\{[^}]*\}\s*\}',
+                '', answer
+            )
+            answer = re.sub(r'\n{3,}', '\n\n', answer).strip()
+
         result = {
             "route_decision": route,
             "final_answer": answer,

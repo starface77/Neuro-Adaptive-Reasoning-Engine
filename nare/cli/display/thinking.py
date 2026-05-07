@@ -5,12 +5,27 @@ Shows LLM reasoning in gray, solution in white, with beautiful
 animated transitions between phases. Thread-safe and flicker-free.
 """
 
+import re
 import time
 import math
 from contextlib import contextmanager
 from rich.text import Text
 from . import ui
 from .spinner import WaitingSpinner
+
+_XML_TAGS = (
+    '<solution>', '</solution>', '<reasoning>', '</reasoning>',
+    '<abstract_signature>', '</abstract_signature>',
+    '<delta_reasoning>', '</delta_reasoning>',
+    '<tool_call>', '</tool_call>',
+)
+
+
+def _strip_xml_tags(text: str) -> str:
+    """Remove all internal XML tags from text."""
+    cleaned = re.sub(r'</?(?:solution|reasoning|abstract_signature|delta_reasoning|tool_call)\s*>', '', text)
+    cleaned = re.sub(r'\{\s*"name"\s*:\s*"\w+"\s*,\s*"args"\s*:\s*\{[^}]*\}\s*\}', '', cleaned)
+    return cleaned.strip()
 
 class ThinkingDisplay:
     """Manages real-time display of LLM reasoning and solution tokens.
@@ -22,7 +37,7 @@ class ThinkingDisplay:
     Transitions between phases are animated with color shifts.
     """
 
-    def __init__(self):
+    def __init__(self, session=None):
         self.live = None
         self.buffer = ""
         self.mode = "thinking"
@@ -40,6 +55,7 @@ class ThinkingDisplay:
         self.xml_buffer = ""
         self.thinking_lines = []
         self.keep_last_n_lines = 15
+        self.session = session
 
     def _stop_live_and_spinner(self):
         """Helper to stop any running spinners/live displays before printing."""
@@ -65,21 +81,19 @@ class ThinkingDisplay:
 
         self._stop_live_and_spinner()
 
-        if token.strip() in ['</solution>', '</reasoning>', '</abstract_signature>', '</delta_reasoning>']:
+        stripped = token.strip()
+        if stripped in _XML_TAGS or any(stripped == tag for tag in _XML_TAGS):
+            return
+        if re.search(r'^</?(?:solution|reasoning|abstract_signature|delta_reasoning|tool_call)\s*>$', stripped):
             return
 
         if self.mode == "thinking":
-            # Accumulate tokens into buffer, split by newlines
-            self.buffer += token
-            if '\n' in token:
-                lines = self.buffer.split('\n')
-                self.thinking_lines.extend(lines[:-1])
-                self.buffer = lines[-1]
+            self.thinking_lines.append(token)
             ui.console.print(token, style="#666666", end="")
             return
 
         if self.mode == "solution":
-            if '<read_file>' in token or '<edit_file>' in token or '<write_file>' in token or '<bash_command>' in token:
+            if any(tag in token for tag in ('<read_file>', '<edit_file>', '<write_file>', '<bash_command>', '<tool_call>', '<create_file>')):
                 self.in_xml_tag = True
                 self.xml_buffer = token
                 return
@@ -87,7 +101,8 @@ class ThinkingDisplay:
             if self.in_xml_tag:
                 self.xml_buffer += token
 
-                if '</read_file>' in self.xml_buffer or '</edit_file>' in self.xml_buffer or '</write_file>' in self.xml_buffer or '</bash_command>' in self.xml_buffer:
+                close_tags = ('</read_file>', '</edit_file>', '</write_file>', '</bash_command>', '</tool_call>', '</create_file>')
+                if any(tag in self.xml_buffer for tag in close_tags):
                     self.in_xml_tag = False
                     self.xml_buffer = ""
                 return
@@ -106,14 +121,14 @@ class ThinkingDisplay:
                 if self.in_code_block:
                     self.code_block_lines += lines_in_token
 
-            if self.in_code_block and self.code_block_lines > 40:
-                if self.code_block_lines == 41:
-                    ui.console.print("\n[dim]  ⋯ (long code truncated, full file saved)[/dim]", style="#555555")
+            if self.in_code_block and self.code_block_lines > 200:
+                if self.code_block_lines == 201:
+                    ui.console.print("\n[dim]  ⋯ (long code truncated)[/dim]", style="#555555")
                     ui.console.file.flush()
                 return
 
-            if self.solution_lines_printed > self.max_solution_lines:
-                if self.solution_lines_printed == self.max_solution_lines + 1:
+            if self.solution_lines_printed > 200:
+                if self.solution_lines_printed == 201:
                     ui.console.print("\n[dim]  ⋯ (output truncated)[/dim]", style="#555555")
                     ui.console.file.flush()
                 return
@@ -255,19 +270,8 @@ class ThinkingDisplay:
         finally:
             self._stop_live_and_spinner()
 
-            if self.thinking_lines and self.mode == "thinking":
-
-                ui.console.print()
-
-                ui.console.print("  [#444444]─── Key reasoning steps ───[/]")
-
-                last_lines = self.thinking_lines[-self.keep_last_n_lines:]
-                for line in last_lines:
-                    if line.strip():
-                        ui.console.print(f"  [#666666]{line}[/]")
-
-                ui.console.print("  [#444444]───────────────────────────[/]")
-                ui.console.print()
+            # Removed "Key reasoning steps" summary - reasoning should not leak to user
+            # User only sees solution output, not internal thinking process
 
 _thinking = ThinkingDisplay()
 
@@ -276,7 +280,8 @@ def get_thinking_display() -> ThinkingDisplay:
     return _thinking
 
 @contextmanager
-def show_thinking():
+def show_thinking(session=None):
     """Show thinking display for a block of code."""
-    with _thinking.show():
-        yield _thinking
+    display = ThinkingDisplay(session=session)
+    with display.show():
+        yield display

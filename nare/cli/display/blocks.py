@@ -91,6 +91,15 @@ def render_banner(console: Console, repo_path: str, mode: str = "Manual") -> Non
                 (" to cycle modes", TEXT_FAINT),
             )
         )
+        console.print(
+            Text.assemble(
+                ("    ", ""),
+                ("💡 Tip: ", TEXT_MUTED),
+                ("Use ", TEXT_FAINT),
+                ("/agent on", TEXT_MUTED),
+                (" for autonomous mode (better quality, uses more tokens)", TEXT_FAINT),
+            )
+        )
     elif width >= 60:
         console.print(
             Text.assemble(
@@ -185,11 +194,6 @@ class ToolBlock:
 
         console.print(header)
 
-        # Add subtle delay for visual smoothness
-        if self.state == "running":
-            import time
-            time.sleep(0.05)
-
         if self.summary:
             summary = Text()
             summary.append("    └ ", style=TEXT_FAINT)
@@ -201,7 +205,6 @@ class ToolBlock:
             shown = lines[:max_body_lines]
             extra = len(lines) - len(shown)
             indent = "      "
-            import time
             if self.body_lang == "diff":
                 for line in shown:
                     if line.startswith("+++") or line.startswith("---"):
@@ -214,7 +217,6 @@ class ToolBlock:
                         console.print(f"{indent}{escape(line)}", style="#FF6B80")
                     else:
                         console.print(f"{indent}{escape(line)}", style=TEXT_MUTED)
-                    time.sleep(0.015)
             elif self.body_numbered:
                 width = len(str(len(lines)))
                 for i, line in enumerate(shown, 1):
@@ -222,11 +224,9 @@ class ToolBlock:
                     num.append(f"{indent}{i:>{width}} ", style=TEXT_FAINT)
                     num.append(escape(line), style=TEXT_MUTED)
                     console.print(num)
-                    time.sleep(0.015)
             else:
                 for line in shown:
                     console.print(f"{indent}{escape(line)}", style=TEXT_MUTED)
-                    time.sleep(0.015)
             if extra > 0:
                 tail = Text()
                 tail.append(f"    … +{extra} lines", style=TEXT_FAINT)
@@ -527,9 +527,10 @@ def render_status_line(
 
     Layout::
 
-        Manual  claude-sonnet-4  project  1.2k tok  ◆ SLOW · 1.4s
+        Manual  claude-sonnet-4  project  ◆ SLOW
 
     Empty fields are skipped silently.
+    Note: tokens and elapsed are NOT shown here anymore - they're shown in a separate line above.
     """
 
     entries: list[tuple[int, Text]] = []
@@ -540,10 +541,8 @@ def render_status_line(
         entries.append((2, Text(model, style=TEXT_MUTED)))
     if repo:
         entries.append((2, Text(repo, style=TEXT_SUBTLE)))
-    if tokens is not None and tokens > 0:
-        entries.append((1, Text(_human_tokens(tokens) + " tok", style=TEXT_SUBTLE)))
-    if episodes is not None and episodes > 0:
-        entries.append((1, Text(f"{episodes} ep", style=TEXT_FAINT)))
+    # Removed tokens display - now shown in separate line above
+    # Removed episodes display - tokens are more important
     if skills is not None and skills > 0:
         entries.append((1, Text(f"{skills} sk", style=TEXT_FAINT)))
     if route:

@@ -12,7 +12,7 @@ to keep startup fast and the dependency surface small.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Awaitable
+from typing import Any, Callable, Dict, List, Optional
 
 class ToolError(Exception):
     """Raised when a tool's input is invalid or execution fails fatally."""
@@ -66,7 +66,7 @@ class Tool:
     name: str
     description: str
     parameters: List[ToolParam]
-    run: Callable[..., Awaitable[ToolResult]]
+    run: Callable[..., ToolResult]
 
     display_verb: Optional[str] = None
 

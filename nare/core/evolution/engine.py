@@ -75,14 +75,20 @@ class EvolutionEngine:
 
         Renamed from run_sleep_cycle.
         """
-        if self._is_compiling: return
+        if self._is_compiling:
+            logging.info("[EVOLUTION] Compilation already running, skipping")
+            return
         self._is_compiling = True
+        logging.info("[EVOLUTION] Starting compilation cycle")
 
         def _wrapper():
             try:
                 self._compile_skills()
                 self._validate_skills()
                 self._background_validate_episodes()
+                logging.info("[EVOLUTION] Compilation cycle complete")
+            except Exception as e:
+                logging.error(f"[EVOLUTION] Compilation failed: {e}")
             finally:
                 self._is_compiling = False
 
@@ -171,6 +177,11 @@ class EvolutionEngine:
             logging.info(f"[LIBRARY LEARNING] Total skills: {len(self.memory.compiled_skills)}")
         else:
             logging.warning("[LIBRARY LEARNING] Failed to discover generalizing rule.")
+
+        # Save compiled skills to disk
+        if self.memory.compiled_skills:
+            logging.info("[LIBRARY LEARNING] Saving compiled skills to disk")
+            self.memory.force_save()
 
     def _validate_skills(self):
         """Validate existing skills through stress testing.

@@ -159,12 +159,30 @@ def run_query(session: NareSession, query: str):
                 if not any(word in path for path in session.context_files):
                     content = session.read_file(word)
                     if content:
-
+                        # Show UI block for auto-loaded file
+                        from nare.cli.display import blocks
+                        num_lines = content.count('\n') + 1 if content else 0
+                        blocks.render_read(console, word, num_lines=num_lines)
+                        console.print()
                         added_files.append(word)
 
     if added_files:
         console.print(f"[#666666]Auto-context loaded:[/] [#00FFFF]{', '.join(added_files)}[/]")
         console.print()
+
+        # Add file contents to query so model can reference them
+        file_contents = []
+        for file_path in added_files:
+            content = session.context_files.get(file_path, "")
+            if content:
+                # Show first 2000 chars
+                preview = content[:2000]
+                if len(content) > 2000:
+                    preview += f"\n\n... ({len(content) - 2000} more characters)"
+                file_contents.append(f"\n## File: {file_path}\n```\n{preview}\n```")
+
+        if file_contents:
+            query = f"{query}\n\n[Context: The following files are loaded:]\n{''.join(file_contents)}"
 
     autonomous = AutonomousRunner(session)
     if autonomous.should_run_autonomously(query):
@@ -176,7 +194,7 @@ def run_query(session: NareSession, query: str):
 
         if user_choice:
             if mode_config.show_thinking:
-                with show_thinking() as thinking:
+                with show_thinking(session=session) as thinking:
                     thinking.start_waiting("Thinking")
                     result = autonomous.run(query, thinking_display=thinking)
                     thinking.stop_waiting()
@@ -188,7 +206,7 @@ def run_query(session: NareSession, query: str):
             console.print()
 
             if mode_config.show_thinking:
-                with show_thinking() as thinking:
+                with show_thinking(session=session) as thinking:
                     thinking.start_waiting("Thinking")
                     result = session.solve(query, thinking_display=thinking)
                     thinking.stop_waiting()
@@ -199,7 +217,7 @@ def run_query(session: NareSession, query: str):
     else:
 
         if mode_config.show_thinking:
-            with show_thinking() as thinking:
+            with show_thinking(session=session) as thinking:
 
                 thinking.start_waiting("Thinking")
                 result = session.solve(query, thinking_display=thinking)
@@ -216,10 +234,40 @@ def run_query(session: NareSession, query: str):
     answer = result.get("final_answer") or result.get("best_solution") or "No answer."
 
     import re
+    import logging
+    logging.info(f"[REPL] Raw answer before filtering (first 500 chars): {answer[:500]}")
+
+    # Split by lines and filter out lines containing <tool_call> tags
+    lines = answer.split('\n')
+    filtered_lines = []
+    skip_until_close = False
+
+    for i, line in enumerate(lines):
+        if '<tool_call' in line:
+            skip_until_close = True
+            # Remove previous line ONLY if it's a short prefix (< 20 chars and looks like a tag prefix)
+            if filtered_lines:
+                prev = filtered_lines[-1].strip()
+                if len(prev) < 20 and prev.endswith('>'):
+                    filtered_lines.pop()
+        if skip_until_close:
+            if '</tool_call' in line:
+                skip_until_close = False
+            continue
+        filtered_lines.append(line)
+
+    answer = '\n'.join(filtered_lines)
+
+    # Remove other XML tags
     answer = re.sub(r'<reasoning>.*?</reasoning>', '', answer, flags=re.DOTALL)
     answer = re.sub(r'<abstract_signature>.*?</abstract_signature>', '', answer, flags=re.DOTALL)
     answer = re.sub(r'<delta_reasoning>.*?</delta_reasoning>', '', answer, flags=re.DOTALL)
     answer = re.sub(r'</?solution>', '', answer)
+    answer = re.sub(r'</?final_answer>', '', answer)
+    answer = re.sub(
+        r'\{\s*"name"\s*:\s*"(?:create_file|edit_file|read_file|list_files|list_dir|write_file)"\s*,\s*"args"\s*:\s*\{[^}]*\}\s*\}',
+        '', answer
+    )
     answer = re.sub(r'<[^>]+>', '', answer)
     answer = re.sub(r'\n{3,}', '\n\n', answer).strip()
 
@@ -229,7 +277,7 @@ def run_query(session: NareSession, query: str):
     total_tokens = tokens_in + tokens_out
 
     was_streamed = mode_config.show_thinking and route in (
-        "SLOW", "HYBRID", "SLOW-RETRY", "SLOW-PATH-FIX", "DIRECT", "AGENT",
+        "FAST", "SLOW", "HYBRID", "SLOW-RETRY", "SLOW-PATH-FIX", "DIRECT", "AGENT",
     )
 
     ResultCard.render(console, answer, route, elapsed, total_tokens, streamed=was_streamed)
@@ -268,6 +316,24 @@ def run_query(session: NareSession, query: str):
         session._start_time = session_start
 
     if route != "AGENT":
+        # Show tokens line before status bar (like in agent loop)
+        if total_tokens > 0:
+            from rich.text import Text
+            from nare.cli.display import blocks
+
+            if total_tokens >= 1000:
+                token_str = f"{total_tokens / 1000:.1f}k".replace(".0k", "k")
+            else:
+                token_str = str(total_tokens)
+
+            token_line = Text()
+            token_line.append("  ● ", style=blocks.ACCENT)
+            token_line.append(token_str + " tokens", style=blocks.TEXT_MUTED)
+            token_line.append("  ·  ", style=blocks.TEXT_FAINT)
+            token_line.append(f"{elapsed:.1f}s", style=blocks.TEXT)
+            console.print(token_line)
+            console.print()
+
         info = session.get_status()
         StatusBar.render(
             console, route, elapsed, tokens_in, tokens_out,

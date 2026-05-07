@@ -72,8 +72,13 @@ class AgentCommand(Command):
             session.use_agent_loop = True
         elif arg in ("off", "false", "0", "no"):
             session.use_agent_loop = False
+            # Reset cached AgentLoop instance to ensure clean state
+            session._agent_loop = None
         else:
             session.use_agent_loop = not session.use_agent_loop
+            # Reset AgentLoop when turning off
+            if not session.use_agent_loop:
+                session._agent_loop = None
         state = "on" if session.use_agent_loop else "off"
         ui.print_status("Agent loop", state, "info" if session.use_agent_loop else "warning")
 
@@ -554,6 +559,18 @@ class SkillsCommand(Command):
         import json
         from pathlib import Path
 
+        arg = (arg or "").strip().lower()
+
+        # Handle /skills compile subcommand
+        if arg == "compile":
+            ui.print_status("Compilation", "starting", "info")
+            if hasattr(session, 'agent') and session.agent and hasattr(session.agent, 'evolution'):
+                session.agent.evolution.run_compilation_cycle()
+                ui.print_status("Compilation", "running in background", "success")
+            else:
+                ui.print_error("Evolution engine not available - agent not initialized")
+            return
+
         # Try to get skills from agent first
         skills = None
         if hasattr(session, 'agent') and session.agent and hasattr(session.agent, 'memory'):
@@ -574,6 +591,7 @@ class SkillsCommand(Command):
             ui.console.print()
             ui.console.print("  [#666666]No compiled skills yet[/]")
             ui.console.print("  [#666666]Skills are learned from successful task patterns[/]")
+            ui.console.print("  [#666666]Tip: Use /skills compile to trigger manual compilation[/]")
             ui.console.print()
             return
 
@@ -777,6 +795,42 @@ class ResumeCommand(Command):
         except Exception as e:
             ui.print_error(f"Failed to resume session: {e}")
 
+class AutonomyCommand(Command):
+    name = "autonomy"
+    aliases = ["auto"]
+    help = "Change agent autonomy level (supervised/assisted/autonomous)"
+
+    def execute(self, session: NareSession, arg: str):
+        from nare.cli.autonomy_level import AutonomyLevel, AUTONOMY_DESCRIPTIONS
+
+        if not arg:
+            # Show current level
+            current = session.autonomy_level
+            ui.console.print()
+            ui.console.print(f"  [#D77757]Current autonomy level:[/] [bold]{current.value}[/]")
+            ui.console.print(f"  [#999999]{AUTONOMY_DESCRIPTIONS[current]}[/]")
+            ui.console.print()
+            ui.console.print("  [#666666]Available levels:[/]")
+            for level in AutonomyLevel:
+                marker = "→" if level == current else " "
+                ui.console.print(f"  {marker} [#D77757]{level.value}[/] - {AUTONOMY_DESCRIPTIONS[level]}")
+            ui.console.print()
+            ui.console.print("  [#666666]Usage: /autonomy <level>[/]")
+            return
+
+        # Set new level
+        level_name = arg.strip().lower()
+        try:
+            new_level = AutonomyLevel(level_name)
+            session.autonomy_level = new_level
+            ui.console.print()
+            ui.console.print(f"  [#4EBA65]✓[/] Autonomy level set to: [bold]{new_level.value}[/]")
+            ui.console.print(f"  [#999999]{AUTONOMY_DESCRIPTIONS[new_level]}[/]")
+            ui.console.print()
+        except ValueError:
+            ui.print_error(f"Invalid autonomy level: {level_name}")
+            ui.console.print("  [#666666]Valid levels: supervised, assisted, autonomous[/]")
+
 COMMANDS: list[Command] = [
     HelpCommand(),
     AgentCommand(),
@@ -790,6 +844,7 @@ COMMANDS: list[Command] = [
     ClearCommand(),
     ThemeCommand(),
     ModeCommand(),
+    AutonomyCommand(),
     MemoryCommand(),
     SkillsCommand(),
     MetricsCommand(),
