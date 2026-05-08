@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="narecli",
-    version="0.2.1",
+    version="0.3.5",
     description="Neuro-Adaptive Reasoning Engine (NARE) - A Skill-Based Cognitive Architecture",
     author="NARE Contributors",
     packages=find_packages(),
