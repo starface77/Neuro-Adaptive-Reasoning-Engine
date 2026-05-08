@@ -70,21 +70,26 @@ class ThinkingDisplay:
     def _print_transition(self):
         if self.thinking_token_count > 0:
             elapsed = self._elapsed_str()
+            width = min((ui.console.size.width if hasattr(ui.console, "size") else 80) - 4, 60)
             ui.console.print()
             ui.console.print(
-                f"  [#444444]\u2500[/] [#555555]thought for {elapsed}[/]",
+                f"  [#444444]{'\u2500' * width}[/]",
+            )
+            ui.console.print(
+                f"  [#555555]\u25c7 reasoned for {elapsed}[/]",
             )
             ui.console.print()
 
     def show_route(self, route: str):
-        from .blocks import ROUTE_PALETTE
+        from .blocks import ROUTE_PALETTE, ROUTE_ICONS
         self.current_route = route
         color = ROUTE_PALETTE.get(route, "#999999")
+        icon = ROUTE_ICONS.get(route, "\u25c6")
         self._stop_live_and_spinner()
         ui.console.print(
             Text.assemble(
                 ("  ", ""),
-                ("\u25c6 ", f"bold {color}"),
+                (f"{icon} ", f"bold {color}"),
                 (route, f"bold {color}"),
             )
         )

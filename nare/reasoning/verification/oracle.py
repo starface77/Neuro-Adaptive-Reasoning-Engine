@@ -88,7 +88,7 @@ def python_assert_oracle(
     the AST sandbox. For *trusted* tests authored by the user, you can
     bypass the sandbox by passing them directly as plain Python.
     """
-    from .sandbox import safe_load_module, SecurityError
+    from nare.sandbox import safe_load_module, SecurityError
 
     template = (
         "def _check(answer):\n"

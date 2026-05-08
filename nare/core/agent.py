@@ -103,7 +103,7 @@ class NAREProductionAgent:
         """
 
         if oracle is None and oracle_spec is not None:
-            from .oracle import build_oracle_from_spec
+            from nare.oracle import build_oracle_from_spec
             oracle = build_oracle_from_spec(oracle_spec)
 
         result = await self.router.route(
@@ -173,7 +173,7 @@ class NAREProductionAgent:
 
     def _compile_skill(self, query: str, solution: str, query_emb: list):
         """Compile repeated pattern as reusable skill."""
-        from .sandbox import extract_python_block
+        from nare.sandbox import extract_python_block
 
         code_block = extract_python_block(solution)
         if not code_block:

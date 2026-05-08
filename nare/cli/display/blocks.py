@@ -14,10 +14,16 @@ from rich.text import Text
 
 ACCENT = "#D77757"
 ACCENT_DIM = "#a25a40"
+ACCENT_LIGHT = "#EB9F7F"
 TEXT = "#FFFFFF"
 TEXT_MUTED = "#999999"
 TEXT_SUBTLE = "#666666"
 TEXT_FAINT = "#444444"
+SUCCESS = "#4EBA65"
+ERROR = "#FF6B80"
+WARNING = "#FFC107"
+INFO = "#5599FF"
+BORDER_CHAR = "─"
 
 ROUTE_PALETTE = {
     "DIRECT":         "#888888",
@@ -31,6 +37,18 @@ ROUTE_PALETTE = {
     "AGENT":          "#D77757",
 }
 
+ROUTE_ICONS = {
+    "DIRECT":         "→",
+    "FAST":           "✦",
+    "COMPILED_SKILL": "★",
+    "REFLEX":         "↯",
+    "HYBRID":         "◈",
+    "SLOW":           "✻",
+    "SLOW-RETRY":     "✻",
+    "SLOW-PATH-FIX":  "✻",
+    "AGENT":          "◆",
+}
+
 def render_banner(console: Console, repo_path: str, mode: str = "Manual") -> None:
     repo = os.path.basename(os.path.abspath(repo_path)) or repo_path
     safe_repo = escape(repo)
@@ -38,45 +56,49 @@ def render_banner(console: Console, repo_path: str, mode: str = "Manual") -> Non
     safe_mode = escape(mode)
 
     width = max(20, console.size.width if hasattr(console, "size") else 80)
+    rule_len = min(width - 4, 60)
 
+    console.print()
+    console.print(f"  [dim]{BORDER_CHAR * rule_len}[/dim]")
     console.print()
     console.print(
         Text.assemble(
             ("  ◆ ", f"bold {ACCENT}"),
             ("NARE", f"bold {TEXT}"),
             ("  ", ""),
-            ("reasoning agent", TEXT_SUBTLE),
+            ("reasoning agent for software engineering", TEXT_SUBTLE),
         )
     )
-    if width >= 80:
-        console.print(
-            Text.assemble(
-                ("    ", ""),
-                (safe_repo, TEXT_MUTED),
-                ("  ", ""),
-                (safe_full, TEXT_FAINT),
-            )
+    console.print(
+        Text.assemble(
+            ("    NareCLI ", TEXT_MUTED),
+            (safe_full, TEXT_FAINT),
         )
-    else:
-        console.print(
-            Text.assemble(
-                ("    ", ""),
-                (safe_repo, TEXT_MUTED),
-            )
-        )
+    )
+    console.print()
     console.print(
         Text.assemble(
             ("    ", ""),
-            (safe_mode, TEXT_SUBTLE),
+            (safe_mode + " mode", TEXT_SUBTLE),
             ("  ·  ", TEXT_FAINT),
+            ("type ", TEXT_FAINT),
             ("/help", TEXT_MUTED),
-            ("  ·  ", TEXT_FAINT),
+            (" for commands, ", TEXT_FAINT),
             ("Tab", TEXT_MUTED),
-            (" mode", TEXT_FAINT),
-            ("  ·  ", TEXT_FAINT),
-            ("/agent", TEXT_MUTED),
+            (" to cycle modes", TEXT_FAINT),
         )
     )
+    console.print(
+        Text.assemble(
+            ("    ", ""),
+            ("Use ", TEXT_FAINT),
+            ("/agent", f"bold {ACCENT}"),
+            (" for deep autonomous reasoning — ", TEXT_FAINT),
+            ("higher accuracy, longer runtime, increased API usage", TEXT_MUTED),
+        )
+    )
+    console.print()
+    console.print(f"  [dim]{BORDER_CHAR * rule_len}[/dim]")
     console.print()
 
 @dataclass
@@ -92,9 +114,9 @@ class ToolBlock:
     body_numbered: bool = False
 
     _STATE_DOT = {
-        "ok":      ("●", ACCENT),
-        "running": ("◌", "#FFC107"),
-        "error":   ("✕", "#FF6B80"),
+        "ok":      ("●", SUCCESS),
+        "running": ("◌", WARNING),
+        "error":   ("✕", ERROR),
     }
 
     def render(self, console: Console, max_body_lines: int = 8) -> None:
@@ -419,11 +441,19 @@ def render_status_line(
     if repo:
         entries.append((2, Text(repo, style=TEXT_SUBTLE)))
     if skills is not None and skills > 0:
-        entries.append((1, Text(f"{skills} sk", style=TEXT_FAINT)))
+        sk_text = Text()
+        sk_text.append("★ ", style=SUCCESS)
+        sk_text.append(f"{skills} skills", style=TEXT_FAINT)
+        entries.append((1, sk_text))
+    if episodes is not None and episodes > 0:
+        ep_text = Text()
+        ep_text.append(f"{episodes} episodes", style=TEXT_FAINT)
+        entries.append((1, ep_text))
     if route:
         color = ROUTE_PALETTE.get(route, TEXT_MUTED)
+        icon = ROUTE_ICONS.get(route, "◆")
         right = Text()
-        right.append("◆ ", style=color)
+        right.append(f"{icon} ", style=color)
         right.append(route, style=color)
         if elapsed is not None:
             right.append(f"  {elapsed:.1f}s", style=TEXT_FAINT)
@@ -465,13 +495,20 @@ def render_todos(
     header.append(title, style=TEXT)
     console.print(header)
 
+    done_count = sum(1 for s, _ in items if s == "done")
+    total = len(items)
+    if total > 0:
+        progress = Text()
+        progress.append(f"    {done_count}/{total} completed", style=TEXT_FAINT)
+        console.print(progress)
+
     width = len(str(len(items))) if items else 1
     for i, (state, text) in enumerate(items, 1):
         line = Text()
         line.append(f"    {i:>{width}}. ", style=TEXT_FAINT)
         if state == "done":
             line.append("[", style=TEXT_FAINT)
-            line.append("✓", style="#4EBA65")
+            line.append("✓", style=SUCCESS)
             line.append("] ", style=TEXT_FAINT)
             line.append(escape(text), style=TEXT_MUTED)
         elif state == "in_progress":
@@ -487,6 +524,15 @@ def render_todos(
 def render_command_table(
     console: Console, commands: Iterable[tuple[str, Sequence[str], str]]
 ) -> None:
+    console.print()
+    console.print(
+        Text.assemble(
+            ("  ◆ ", f"bold {ACCENT}"),
+            ("Available Commands", f"bold {TEXT}"),
+        )
+    )
+    console.print()
+
     table = Table(show_header=False, box=None, padding=(0, 2), pad_edge=False)
     table.add_column("cmd", style=ACCENT, min_width=18)
     table.add_column("desc", style=TEXT_MUTED)
@@ -497,9 +543,25 @@ def render_command_table(
             label += "  " + " ".join(f"/{a}" for a in aliases)
         table.add_row(label, help_text or "")
 
-    console.print()
     console.print(Padding(table, (0, 0, 0, 2)))
     console.print()
+    console.print(
+        Text.assemble(
+            ("    ", ""),
+            ("Tip: ", TEXT_MUTED),
+            ("Tab", f"bold {TEXT_MUTED}"),
+            (" cycles modes, ", TEXT_FAINT),
+            ("Ctrl+L", f"bold {TEXT_MUTED}"),
+            (" clears screen, ", TEXT_FAINT),
+            ("Ctrl+D", f"bold {TEXT_MUTED}"),
+            (" exits", TEXT_FAINT),
+        )
+    )
+    console.print()
+
+def render_separator(console: Console, width: Optional[int] = None) -> None:
+    w = width or min((console.size.width if hasattr(console, "size") else 80) - 4, 60)
+    console.print(f"  [dim]{BORDER_CHAR * w}[/dim]")
 
 def confirm(console: Console, prompt: str, default_yes: bool = True) -> bool:
     suffix = "(Y/n)" if default_yes else "(y/N)"

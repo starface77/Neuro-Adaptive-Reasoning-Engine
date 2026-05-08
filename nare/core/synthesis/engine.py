@@ -275,7 +275,7 @@ def verified_synthesis(
     pass first, then by "did the code execute without error"), the
     full list of attempts, and a ``converged`` flag.
     """
-    log = logger or get_logger(__name__)
+    log = logger or logging.getLogger(__name__)
     attempts: List[SynthesisAttempt] = []
 
     base_prompt = query  # Store original prompt for context

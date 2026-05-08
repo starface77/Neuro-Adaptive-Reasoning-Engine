@@ -54,7 +54,13 @@ def print_banner(repo_path: str = ".", mode: str = "Manual"):
 def print_status(label: str, value: str, style: str = "text"):
     from rich.markup import escape
     safe_value = escape(value)
-    console.print(f"[#D77757]{label}:[/] [white]{safe_value}[/]")
+    style_color = {
+        "info": "#5599FF",
+        "success": "#4EBA65",
+        "warning": "#FFC107",
+        "error": "#FF6B80",
+    }.get(style, "#FFFFFF")
+    console.print(f"  [#D77757]{label}:[/] [{style_color}]{safe_value}[/]")
 
 def print_intent(intent: str):
     pass
@@ -63,16 +69,23 @@ def print_plan(plan: dict):
     from rich.markup import escape
 
     complexity = plan.get("complexity", "moderate")
+    complexity_colors = {
+        "simple": "#4EBA65",
+        "moderate": "#FFC107",
+        "complex": "#D77757",
+        "very_complex": "#FF6B80",
+    }
+    c_color = complexity_colors.get(complexity, "#FFC107")
 
     console.print()
-    console.print(f"[#D77757]Plan[/] [white]{complexity}[/]")
+    console.print(f"  [#D77757]◆[/]  [bold white]Plan[/]  [{c_color}]{complexity}[/]")
+    console.print()
 
     steps = plan.get("plan_steps", [])
     if steps:
-        console.print()
         for i, step in enumerate(steps, 1):
             safe_step = escape(step)
-            console.print(f"[#D77757]{i}.[/] [white]{safe_step}[/]")
+            console.print(f"    [#D77757]{i}.[/] [white]{safe_step}[/]")
 
     console.print()
 
@@ -150,24 +163,24 @@ def content_line_count(path: str) -> int:
 def print_file_loaded(path: str, lines: int):
     from rich.markup import escape
     safe_path = escape(path)
-    console.print(f"[#D77757]{safe_path}[/] [white]{lines} lines[/]")
+    console.print(f"  [#4EBA65]●[/]  [#D77757]{safe_path}[/]  [#666666]{lines} lines[/]")
 
 def print_error(msg: str):
     from rich.markup import escape
     safe_msg = escape(msg)
     console.print()
-    console.print(f"[#D77757]Error:[/] [white]{safe_msg}[/]")
+    console.print(f"  [#FF6B80]✕[/]  [#FF6B80]Error:[/] [white]{safe_msg}[/]")
     console.print()
 
 def print_warning(msg: str):
     from rich.markup import escape
     safe_msg = escape(msg)
-    console.print(f"[#999999]{safe_msg}[/]")
+    console.print(f"  [#FFC107]△[/]  [#999999]{safe_msg}[/]")
 
 def print_success(msg: str):
     from rich.markup import escape
     safe_msg = escape(msg)
-    console.print(f"[white]{safe_msg}[/]")
+    console.print(f"  [#4EBA65]✓[/]  [white]{safe_msg}[/]")
 
 def print_code_changes(file_path: str, added_lines: list, line_number: int = None):
     from rich.markup import escape
@@ -242,8 +255,10 @@ def spinner(msg: str, animation: str = "dots"):
             elapsed = time.time() - self.start
             text = Text()
             frame_idx = int(elapsed / 0.08) % len(self.FRAMES)
-            text.append(f"{self.FRAMES[frame_idx]} ", style="#D77757")
+            text.append(f"  {self.FRAMES[frame_idx]} ", style="#D77757")
             text.append(self.msg, style="#999999")
+            if elapsed > 2.0:
+                text.append(f"  {elapsed:.0f}s", style="#555555")
             return text
 
     s = SimpleSpinner(msg)
@@ -251,5 +266,6 @@ def spinner(msg: str, animation: str = "dots"):
         yield live
 
     from rich.markup import escape
+    elapsed = time.time() - start
     safe_msg = escape(msg)
-    console.print(f"[#D77757]Done[/] [white]{safe_msg}[/]")
+    console.print(f"  [#4EBA65]✓[/]  [white]{safe_msg}[/]  [#555555]{elapsed:.1f}s[/]")

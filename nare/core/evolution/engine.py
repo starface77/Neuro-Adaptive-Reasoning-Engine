@@ -70,18 +70,22 @@ class EvolutionEngine:
 
         return False
 
-    def run_compilation_cycle(self):
+    def run_compilation_cycle(self, on_complete=None):
         """Run background skill compilation cycle.
 
-        Renamed from run_sleep_cycle.
+        Args:
+            on_complete: Optional callback(skills_before, skills_after, error)
+                         called when the cycle finishes.
         """
         if self._is_compiling:
             logging.info("[EVOLUTION] Compilation already running, skipping")
             return
         self._is_compiling = True
         logging.info("[EVOLUTION] Starting compilation cycle")
+        skills_before = len(self.memory.compiled_skills)
 
         def _wrapper():
+            error = None
             try:
                 self._compile_skills()
                 self._validate_skills()
@@ -89,8 +93,14 @@ class EvolutionEngine:
                 logging.info("[EVOLUTION] Compilation cycle complete")
             except Exception as e:
                 logging.error(f"[EVOLUTION] Compilation failed: {e}")
+                error = str(e)
             finally:
                 self._is_compiling = False
+                if on_complete:
+                    try:
+                        on_complete(skills_before, len(self.memory.compiled_skills), error)
+                    except Exception:
+                        pass
 
         threading.Thread(target=_wrapper, daemon=True).start()
 
@@ -168,15 +178,16 @@ class EvolutionEngine:
                 self.memory.add_compiled_skill(
                     pattern=rule['pattern'],
                     code=rule['python_code'],
-                    trigger_emb=np.array(embedding, dtype=np.float32)
+                    trigger_emb=np.array(embedding, dtype=np.float32),
+                    confidence=rule.get('confidence', 0.7)
                 )
 
                 self.memory.add_semantic_rule(rule, np.array(embedding, dtype=np.float32))
 
-            logging.info(f"[LIBRARY LEARNING] Successfully compiled skill: {rule['pattern']} (confidence: {rule['confidence']:.2f})")
-            logging.info(f"[LIBRARY LEARNING] Total skills: {len(self.memory.compiled_skills)}")
-        else:
-            logging.warning("[LIBRARY LEARNING] Failed to discover generalizing rule.")
+                logging.info(f"[LIBRARY LEARNING] Successfully compiled skill: {rule['pattern']} (confidence: {rule['confidence']:.2f})")
+                logging.info(f"[LIBRARY LEARNING] Total skills: {len(self.memory.compiled_skills)}")
+            else:
+                logging.warning(f"[LIBRARY LEARNING] Cluster {cluster_id}: failed to discover generalizing rule.")
 
         # Save compiled skills to disk
         if self.memory.compiled_skills:

@@ -1022,6 +1022,7 @@ def _validate_skill(python_code: str, episodes: list, oracle: Optional["Oracle"]
     negative_pass = 0
     positive_total = 0
     positive_no_crash = 0
+    positive_oracle_pass = 0
 
     for ep in stress_eps:
         is_negative = ep.get('type') == 'NEGATIVE'
@@ -1042,6 +1043,10 @@ def _validate_skill(python_code: str, episodes: list, oracle: Optional["Oracle"]
             result_str = str(result).strip()
             if not result_str.startswith("Error"):
                 positive_no_crash += 1
+                if vcfg.include_positive_stress and oracle is not None:
+                    ok, _ = oracle(ep['query'], result_str)
+                    if ok:
+                        positive_oracle_pass += 1
         except Exception as e:
             if is_negative:
                 negative_total += 1
@@ -1050,6 +1055,7 @@ def _validate_skill(python_code: str, episodes: list, oracle: Optional["Oracle"]
 
     negative_trap_accuracy = negative_pass / negative_total if negative_total > 0 else 1.0
     positive_no_crash_rate = positive_no_crash / positive_total if positive_total > 0 else 1.0
+    positive_oracle_rate = positive_oracle_pass / positive_total if positive_total > 0 else 1.0
 
     overall = (
         vcfg.w_trigger * trigger_accuracy
@@ -1057,6 +1063,11 @@ def _validate_skill(python_code: str, episodes: list, oracle: Optional["Oracle"]
         + vcfg.w_negative_trap * negative_trap_accuracy
     )
     weight_sum = vcfg.w_trigger + vcfg.w_execute + vcfg.w_negative_trap
+
+    if vcfg.include_positive_stress:
+        overall += vcfg.w_positive_stress * positive_oracle_rate
+        weight_sum += vcfg.w_positive_stress
+
     overall = overall / weight_sum if weight_sum > 0 else 0.0
 
     if trigger_accuracy < vcfg.minimum_trigger_accuracy or execute_accuracy < vcfg.minimum_execute_accuracy:

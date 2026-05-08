@@ -6,6 +6,7 @@ from nare.reasoning.verification.oracle import (
     string_contains_oracle,
     python_assert_oracle,
     build_oracle_from_spec,
+    cached_episode_oracle,
 )
 
 __all__ = [
@@ -14,4 +15,5 @@ __all__ = [
     "string_contains_oracle",
     "python_assert_oracle",
     "build_oracle_from_spec",
+    "cached_episode_oracle",
 ]

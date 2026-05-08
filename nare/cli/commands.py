@@ -563,12 +563,44 @@ class SkillsCommand(Command):
 
         # Handle /skills compile subcommand
         if arg == "compile":
+            if not (hasattr(session, 'agent') and session.agent and hasattr(session.agent, 'evolution')):
+                ui.print_error("Evolution engine not available — agent not initialized")
+                return
+
+            memory = session.agent.memory
+            episodes = memory.episodes
+            high_score = [ep for ep in episodes if ep.get('score', 0) >= 0.80]
+            with_emb = [ep for ep in high_score if 'embedding' in ep]
+
+            ui.console.print()
+            ui.print_status("Episodes in memory", str(len(episodes)))
+            ui.print_status("High-score (≥0.80)", str(len(high_score)))
+            ui.print_status("With embeddings", str(len(with_emb)))
+
+            if len(with_emb) < 3:
+                ui.console.print()
+                ui.print_warning(
+                    f"Need ≥3 episodes with embeddings for compilation (have {len(with_emb)})"
+                )
+                ui.console.print("  [#666666]Keep using NARE — episodes are saved automatically from SLOW/HYBRID/REFLEX routes[/]")
+                ui.console.print()
+                return
+
+            def _on_compile_done(before, after, error):
+                if error:
+                    ui.print_error(f"Compilation failed: {error}")
+                elif after > before:
+                    ui.print_success(f"Compiled {after - before} new skill(s) — total: {after}")
+                    ui.console.print("  [#666666]Run /skills to inspect[/]")
+                else:
+                    ui.print_warning("No new skills compiled — episodes may be too diverse for clustering")
+
+            ui.console.print()
             ui.print_status("Compilation", "starting", "info")
-            if hasattr(session, 'agent') and session.agent and hasattr(session.agent, 'evolution'):
-                session.agent.evolution.run_compilation_cycle()
-                ui.print_status("Compilation", "running in background", "success")
-            else:
-                ui.print_error("Evolution engine not available - agent not initialized")
+            session.agent.evolution.run_compilation_cycle(on_complete=_on_compile_done)
+            ui.print_success("Compilation running in background")
+            ui.console.print("  [#666666]Results will appear when complete[/]")
+            ui.console.print()
             return
 
         # Try to get skills from agent first

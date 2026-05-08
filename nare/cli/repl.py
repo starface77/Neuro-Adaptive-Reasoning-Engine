@@ -24,7 +24,7 @@ def get_bottom_toolbar():
     mode_manager = get_mode_manager()
     name = mode_manager.current_mode.value
 
-    parts = [f'<style fg="#D77757">{name}</style>']
+    parts = [f'<style fg="#D77757">◆ {name}</style>']
 
     if _session_for_toolbar is not None:
         repo = os.path.basename(_session_for_toolbar.repo_path)
@@ -34,10 +34,15 @@ def get_bottom_toolbar():
             model = info.get("model")
             if model:
                 parts.append(f'<style fg="#666666">{model}</style>')
+            if info.get("agent_ready"):
+                ep = info.get("episodes", 0)
+                sk = info.get("skills", 0)
+                if ep > 0 or sk > 0:
+                    parts.append(f'<style fg="#555555">{ep} ep · {sk} sk</style>')
         except Exception:
             pass
 
-    parts.append('<style fg="#505050">Tab·mode  Ctrl+L·clear  Ctrl+D·exit</style>')
+    parts.append('<style fg="#444444">Tab mode  ·  Ctrl+L clear  ·  Ctrl+D exit</style>')
     return HTML("  ".join(parts))
 
 class NareCompleter(Completer):
@@ -114,9 +119,10 @@ def _clean_answer(answer):
 def _render_status(console, route, elapsed, tokens_in, tokens_out):
     total_tokens = tokens_in + tokens_out
     color = blocks.ROUTE_PALETTE.get(route, blocks.TEXT_MUTED)
+    icon = blocks.ROUTE_ICONS.get(route, "◆")
 
     line = Text()
-    line.append("  ◆ ", style=f"bold {color}")
+    line.append(f"  {icon} ", style=f"bold {color}")
     line.append(route, style=f"bold {color}")
     line.append("  ", style="")
     line.append(f"{elapsed:.1f}s", style=blocks.TEXT_MUTED)
@@ -177,7 +183,7 @@ def run_query(session: NareSession, query: str):
 
     if autonomous.should_run_autonomously(query):
         console.print()
-        console.print("  [#FFA500]◆ Multi-step task detected[/]")
+        console.print("  [#FFC107]◈[/]  [bold white]Multi-step task detected[/]")
         console.print()
 
         user_choice = ask_yes_no("Work on this autonomously?", default=False)
@@ -297,9 +303,11 @@ def repl(session: NareSession):
 
     while True:
         try:
-            raw = prompt_session.prompt(HTML('<style fg="#EB9F7F">></style> ')).strip()
+            raw = prompt_session.prompt(HTML('<style fg="#D77757">◆</style> ')).strip()
         except (EOFError, KeyboardInterrupt):
-            console.print("\nGoodbye.")
+            console.print()
+            console.print("  [#D77757]◆[/] [#999999]Goodbye. Session ended.[/]")
+            console.print()
             break
 
         if not raw:
@@ -308,7 +316,9 @@ def repl(session: NareSession):
         if raw.startswith("/"):
             action = dispatch(session, raw)
             if action == "exit":
-                console.print("Goodbye.")
+                console.print()
+                console.print("  [#D77757]◆[/] [#999999]Goodbye. Session ended.[/]")
+                console.print()
                 break
             continue
 

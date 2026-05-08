@@ -80,3 +80,52 @@ class BudgetManager:
     def should_warn(self, threshold: float = 0.8) -> bool:
         """Check if budget usage exceeds warning threshold."""
         return self.usage_percentage >= (threshold * 100)
+
+
+def estimate_token_usage(operation: str, context_size: int = 0) -> int:
+    """
+    Estimate token usage for an operation.
+
+    Args:
+        operation: Operation type (e.g., 'llm_call', 'tool_execution')
+        context_size: Size of context in tokens
+
+    Returns:
+        Estimated token count
+    """
+    estimates = {
+        'llm_call': 1000 + context_size,
+        'tool_execution': 100,
+        'planning': 500,
+        'synthesis': 2000 + context_size,
+        'verification': 300,
+    }
+    return estimates.get(operation, 500)
+
+
+def check_budget_before_call(budget_manager: BudgetManager, operation: str, context_size: int = 0) -> bool:
+    """
+    Check if budget is sufficient before making a call.
+
+    Args:
+        budget_manager: BudgetManager instance
+        operation: Operation type
+        context_size: Size of context in tokens
+
+    Returns:
+        True if sufficient budget, False otherwise
+    """
+    estimated = estimate_token_usage(operation, context_size)
+    return budget_manager.remaining >= estimated
+
+
+def update_budget_after_call(budget_manager: BudgetManager, actual_tokens: int, operation: str):
+    """
+    Update budget after a call completes.
+
+    Args:
+        budget_manager: BudgetManager instance
+        actual_tokens: Actual tokens consumed
+        operation: Operation name for logging
+    """
+    budget_manager.consume(actual_tokens, operation)

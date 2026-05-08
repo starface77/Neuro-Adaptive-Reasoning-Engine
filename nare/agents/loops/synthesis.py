@@ -178,3 +178,7 @@ The code will be formally verified - ensure it:
 Provide only the corrected code, no explanations."""
 
         return prompt
+
+
+# Alias for backward compatibility
+SynthesisAgent = VerifiedSynthesisLoop

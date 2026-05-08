@@ -12,7 +12,9 @@ This file serves as the main orchestrator for the autonomous agent loop.
 from __future__ import annotations
 
 import json
+import re
 import time
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
@@ -21,8 +23,6 @@ from nare.utils.logger import get_logger
 from nare.agents.loops.state.agent_state import AgentState, ToolCall, ToolResult, Budget, MessageHistory
 from nare.agents.loops.execution.tool_executor import ToolRegistry
 from nare.agents.loops.planning.budget import estimate_token_usage, check_budget_before_call, update_budget_after_call
-from .agent_state import ToolCall, ToolResult, AgentState
-from .tool_registry import ToolRegistry
 from .tool_implementations import (
     get_tool_function,
     TOOL_SCHEMAS,
@@ -64,10 +64,9 @@ from ...tools.builtin.base import ToolResult
 
 log = get_logger("nare.agents.loop")
 
+
 @dataclass
-
 class Budget:
-
     """Hard caps on a single agent run."""
     max_iterations: int = 150
     max_tokens: int = 1_000_000
@@ -84,17 +83,14 @@ class Budget:
         self.tokens_out = 0
 
     @property
-
     def elapsed(self) -> float:
         return time.time() - self.started if self.started else 0.0
 
     @property
-
     def total_tokens(self) -> int:
         return self.tokens_in + self.tokens_out
 
     def exhausted(self) -> Optional[str]:
-
         """Return a reason string if the budget is exhausted, else None."""
         if self.iterations >= self.max_iterations:
             return f"max_iterations ({self.max_iterations})"
@@ -1434,3 +1430,7 @@ def build_loop(
         budget=budget or Budget(),
     )
 
+
+
+# Alias for backward compatibility
+AutonomousAgent = AgentLoop

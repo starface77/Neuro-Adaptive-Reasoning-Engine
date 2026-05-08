@@ -23,9 +23,47 @@ class ToolResult:
 
 
 @dataclass
+class Budget:
+    """Token budget tracking."""
+    total: int = 200000
+    used: int = 0
+
+    @property
+    def remaining(self) -> int:
+        """Get remaining budget."""
+        return self.total - self.used
+
+    def consume(self, amount: int):
+        """Consume tokens from budget."""
+        self.used += amount
+
+    def has_budget(self) -> bool:
+        """Check if budget remains."""
+        return self.remaining > 0
+
+
+@dataclass
+class MessageHistory:
+    """Conversation history manager."""
+    messages: List[Dict[str, Any]] = field(default_factory=list)
+
+    def add(self, role: str, content: str):
+        """Add message to history."""
+        self.messages.append({"role": role, "content": content})
+
+    def get_all(self) -> List[Dict[str, Any]]:
+        """Get all messages."""
+        return self.messages
+
+    def clear(self):
+        """Clear history."""
+        self.messages.clear()
+
+
+@dataclass
 class AgentState:
     """State container for autonomous agent."""
-    
+
     task: str
     context: Dict[str, Any] = field(default_factory=dict)
     messages: List[Dict[str, Any]] = field(default_factory=list)

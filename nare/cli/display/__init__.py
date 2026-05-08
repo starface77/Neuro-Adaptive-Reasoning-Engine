@@ -42,6 +42,7 @@ from .blocks import (
     render_diff,
     render_status_line,
     render_command_table,
+    render_separator,
     confirm,
     confirm_action,
 )
@@ -84,6 +85,7 @@ __all__ = [
     "render_diff",
     "render_status_line",
     "render_command_table",
+    "render_separator",
     "confirm",
     "confirm_action",
 ]

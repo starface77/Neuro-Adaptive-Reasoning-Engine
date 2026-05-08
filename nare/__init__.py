@@ -4,7 +4,7 @@ Professional agentic framework for verified synthesis, episodic memory,
 and library learning.
 """
 
-__version__ = "0.2.1"
+__version__ = "0.2.4"
 
 from .core.agent import NAREProductionAgent
 from .memory.engine import MemorySystem

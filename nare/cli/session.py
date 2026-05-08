@@ -7,7 +7,7 @@ import subprocess
 import json
 from nare.cli.autonomy_level import AutonomyLevel, should_ask_permission
 import asyncio
-from typing import Optional
+from typing import Dict, Optional
 
 log = get_logger("nare.cli.session")
 
@@ -204,13 +204,6 @@ class NareSession:
 
         import hashlib
         import shutil
-
-        legacy_dir = os.path.join(self.repo_path, ".nare_memory")
-        if os.path.exists(legacy_dir):
-            try:
-                shutil.rmtree(legacy_dir, ignore_errors=True)
-            except Exception:
-                pass
 
         project_id = hashlib.md5(os.path.abspath(self.repo_path).encode('utf-8')).hexdigest()[:12]
         persist_dir = os.path.expanduser(f"~/.nare/projects/{project_id}/memory")
@@ -655,25 +648,36 @@ class NareSession:
             self.chat_history = self.chat_history[:2] + self.chat_history[-18:]
         self._save_chat_history()
 
-        # Skill compilation disabled - too intrusive
-        # route = result.get("route_decision")
-        # intent = result.get("_intent")
-        # words = query.strip().split()
-        # if route in ("SLOW", "HYBRID") and intent == "EDIT" and len(query.strip()) > 10 and len(words) >= 2:
-        #     if result.get("final_answer"):
-        #         from nare.cli.interactive import ask_compile_skill
-        #         if ask_compile_skill(query):
-        #             try:
-        #                 # Use evolution engine to compile skill directly
-        #                 if self.agent.evolution:
-        #                     log.info(f"[Session] Triggering skill compilation for query: {query[:50]}")
-        #                     self.agent.evolution._compile_skills()
-        #                     self.agent.memory.force_save()
-        #                     log.info(f"[Session] Skill compiled and saved")
-        #                 else:
-        #                     log.warning(f"[Session] Evolution engine not available")
-        #             except Exception as e:
-        #                 log.warning(f"[Session] Failed to compile: {e}")
+        # Save episode to memory for skill compilation
+        route = result.get("route_decision", "")
+        final_answer = result.get("final_answer", "")
+        if final_answer and route in ("SLOW", "HYBRID", "REFLEX") and self.agent and self.agent.memory:
+            try:
+                from nare.reasoning import llm
+                import numpy as np
+
+                query_emb = llm.get_embedding(query)
+                episode_data = {
+                    "query": query,
+                    "solution": final_answer,
+                    "reasoning_trace": f"Route: {route}, Intent: {intent}",
+                    "score": 0.85,
+                    "metadata": {
+                        "source": "solve_async",
+                        "route": route,
+                        "intent": intent,
+                        "elapsed": result.get("_elapsed", 0),
+                    }
+                }
+                self.agent.memory.add_episode(episode_data, np.array([query_emb], dtype=np.float32))
+                log.info(f"[Session] Saved episode to memory (route={route})")
+
+                if self.agent.config.sleep.enabled and self.agent.evolution:
+                    if self.agent.evolution.check_compilation_trigger():
+                        log.info(f"[Session] Auto-compilation triggered")
+                        self.agent.evolution.run_compilation_cycle()
+            except Exception as e:
+                log.warning(f"[Session] Failed to save episode: {e}")
 
         return result
 
@@ -903,12 +907,11 @@ Compiled: {run.iterations} iterations, {run.tokens} tokens
             self.agent.memory.add_compiled_skill(
                 pattern=pattern,
                 code=skill_code,
-                trigger_emb=trigger_emb
+                trigger_emb=trigger_emb,
+                confidence=0.70
             )
 
-            # Add confidence manually (add_compiled_skill doesn't support it)
             if self.agent.memory.compiled_skills:
-                self.agent.memory.compiled_skills[-1]['confidence'] = 0.70
                 self.agent.memory.compiled_skills[-1]['source'] = 'user_approved'
                 self.agent.memory.compiled_skills[-1]['iterations'] = run.iterations
                 self.agent.memory.compiled_skills[-1]['tokens'] = run.tokens

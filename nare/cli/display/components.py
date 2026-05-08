@@ -95,26 +95,28 @@ class MemoryStats:
         cache_hit_rate: float
     ) -> None:
         table = Table(show_header=False, box=None, padding=(0, 2))
-        table.add_column("label", style="#999999")
+        table.add_column("label", style="#999999", min_width=16)
         table.add_column("value", style="white")
 
         table.add_row(
-            "Episodes:",
-            f"{episodes} ({high_quality_episodes} high-quality)"
+            "Episodes",
+            f"{episodes} [#666666]({high_quality_episodes} high-quality)[/]"
         )
         table.add_row(
-            "Skills:",
-            f"{skills} ({mature_skills} mature)"
+            "Compiled Skills",
+            f"{skills} [#666666]({mature_skills} mature)[/]"
         )
+
+        hit_color = "#4EBA65" if cache_hit_rate > 0.5 else "#FFC107" if cache_hit_rate > 0.2 else "#FF6B80"
         table.add_row(
-            "Cache hit rate:",
-            f"{cache_hit_rate:.0%}"
+            "Cache hit rate",
+            f"[{hit_color}]{cache_hit_rate:.0%}[/]"
         )
 
         panel = Panel(
             table,
-            title="[#D77757]Memory[/]",
-            border_style="#666666",
+            title="[#D77757]◆ Memory[/]",
+            border_style="#444444",
             padding=(1, 2),
         )
 
@@ -126,16 +128,26 @@ class IntentBadge:
         "QUESTION": "#5599FF",
         "EXPLORE": "#AA55FF",
         "EDIT": "#FF9955",
+        "DEBUG": "#FF6B80",
+        "REFACTOR": "#FFC107",
+    }
+
+    INTENT_ICONS = {
+        "QUESTION": "?",
+        "EXPLORE": "▷",
+        "EDIT": "✎",
+        "DEBUG": "✖",
+        "REFACTOR": "↻",
     }
 
     @staticmethod
     def render(console: Console, intent: str) -> None:
         color = IntentBadge.INTENT_COLORS.get(intent, "#999999")
+        icon = IntentBadge.INTENT_ICONS.get(intent, "◆")
 
         badge = Text()
-        badge.append("[", style="#666666")
+        badge.append(f"{icon} ", style=color)
         badge.append(intent, style=color)
-        badge.append("]", style="#666666")
 
         console.print(badge, end=" ")
 
@@ -153,18 +165,20 @@ class SessionStats:
         cache_rate = (cache_hits / queries * 100) if queries > 0 else 0
 
         table = Table(show_header=False, box=None, padding=(0, 2))
-        table.add_column("label", style="#999999")
+        table.add_column("label", style="#999999", min_width=16)
         table.add_column("value", style="white")
 
-        table.add_row("Queries:", str(queries))
-        table.add_row("Cache hits:", f"{cache_hits} ({cache_rate:.0f}%)")
-        table.add_row("Avg response:", f"{avg_response_time:.1f}s")
-        table.add_row("Memory:", f"{episodes} episodes, {skills} skills")
+        table.add_row("Queries", str(queries))
+        hit_color = "#4EBA65" if cache_rate > 50 else "#FFC107" if cache_rate > 20 else "#999999"
+        table.add_row("Cache hits", f"{cache_hits} [{hit_color}]({cache_rate:.0f}%)[/]")
+        resp_color = "#4EBA65" if avg_response_time < 2 else "#FFC107" if avg_response_time < 5 else "#D77757"
+        table.add_row("Avg response", f"[{resp_color}]{avg_response_time:.1f}s[/]")
+        table.add_row("Memory", f"{episodes} episodes, {skills} skills")
 
         panel = Panel(
             table,
-            title="[#D77757]Session Stats[/]",
-            border_style="#666666",
+            title="[#D77757]◆ Session[/]",
+            border_style="#444444",
             padding=(1, 2),
         )
 

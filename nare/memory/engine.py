@@ -1,3 +1,4 @@
+import copy
 import hashlib
 import time
 import faiss
@@ -109,8 +110,9 @@ class MemorySystem:
                     valid_skills.append(skill)
                 else:
                     logging.warning(f"[Memory] Removing skill with wrong embedding dim: {len(emb)} != {embedding_dim}")
+            removed_count = len(self.compiled_skills) - len(valid_skills)
             self.compiled_skills = valid_skills
-            if len(valid_skills) < len(self.compiled_skills):
+            if removed_count > 0:
                 self._mark_dirty()
 
         # Filter semantic rules with wrong embedding dimension
@@ -611,29 +613,6 @@ class MemorySystem:
             self._flush_timer = None
         self.save()
 
-    def _mark_dirty(self):
-        """Mark memory as dirty and schedule flush."""
-        self._dirty = True
-        if self._flush_timer is None:
-            self._flush_timer = threading.Timer(5.0, self._flush)
-            self._flush_timer.daemon = True
-            self._flush_timer.start()
-
-    def _flush(self):
-        """Background flush of dirty memory."""
-        with self._lock:
-            if self._dirty:
-                self._mark_dirty()
-                self._dirty = False
-            self._flush_timer = None
-
-    def force_save(self):
-        """Force immediate save (for shutdown)."""
-        if self._flush_timer:
-            self._flush_timer.cancel()
-            self._flush_timer = None
-        self.save()
-
     def load(self):
         ep_index = os.path.join(self.persist_dir, "episodic.faiss")
         ep_data = os.path.join(self.persist_dir, "episodes.json")
@@ -831,17 +810,18 @@ class MemorySystem:
         """Rebuild FAISS index with current embedding dimension."""
         self._rebuild_episodic_index()
 
-    def add_compiled_skill(self, pattern: str, code: str, trigger_emb: np.ndarray):
+    def add_compiled_skill(self, pattern: str, code: str, trigger_emb: np.ndarray, confidence: float = 0.7):
         """Add a compiled skill (reusable function)."""
         with self._lock:
             self.compiled_skills.append({
                 'pattern': pattern,
                 'code': code,
                 'trigger_embedding': trigger_emb.tolist() if hasattr(trigger_emb, 'tolist') else list(trigger_emb),
+                'confidence': confidence,
                 'use_count': 0,
                 'created_at': time.time()
             })
-            logging.info(f"[LibraryLearning] Compiled skill: {pattern}")
+            logging.info(f"[LibraryLearning] Compiled skill: {pattern} (confidence: {confidence:.2f})")
             self._mark_dirty()
 
     def retrieve_skills(self, query_emb: np.ndarray, k: int = 3) -> List[Dict]:
