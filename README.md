@@ -1,237 +1,230 @@
-# NARE
+<div align="center">
 
-<p align="center">
-  <img src="assets/image.png" alt="NARE CLI Demo" width="800"/>
-</p>
+# NARE CLI
 
-> **The AI coding agent that actually remembers what it did yesterday.**
+**Neural Amortized Reasoning Engine**  
+AI coding assistant that learns from experience and gets faster over time
 
-Most AI assistants are goldfish — they forget everything after each conversation. NARE is different. It learns from every task, builds a memory of successful solutions, and gets faster over time.
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![PyPI](https://img.shields.io/pypi/v/narecli)](https://pypi.org/project/narecli/)
 
----
+[Quick Start](#-quick-start) • [Features](#-features) • [Architecture](#-architecture) • [Benchmarks](#-benchmarks) • [Docker](#-docker)
 
-## The Problem
-
-You've used AI coding assistants. You know the drill:
-
-- Ask it to fix a bug → it works
-- Ask the same question tomorrow → it starts from scratch again
-- Ask it to do something similar → no memory of the first solution
-- Every task costs the same tokens, takes the same time
-
-**This is insane.** Your brain doesn't work like this. Why should your AI assistant?
+</div>
 
 ---
 
-## What NARE Does Differently
+## Why NARE?
 
-NARE is an **autonomous coding agent with persistent memory**. It:
+Traditional AI assistants forget everything after each conversation. **NARE remembers, learns, and accelerates.**
 
-1. **Remembers solutions** — Every successful task is stored with semantic embeddings
-2. **Learns patterns** — Repeated tasks get compiled into instant skills
-3. **Routes intelligently** — Known problems = instant answers (0 tokens, <100ms)
-4. **Validates code** — Solutions are tested before being applied
-5. **Improves autonomously** — Background learning discovers new patterns
+| Traditional AI | NARE CLI |
+|----------------|----------|
+| ❌ Forgets solutions | ✅ Persistent memory |
+| 🐌 Same speed always | ⚡ Gets faster with use |
+| ❌ No validation | ✅ Verified synthesis |
+| ❌ Static behavior | ✅ Compiles patterns into skills |
 
-### Real Example
-
-**First time:**
-```
-> Fix authentication bug in auth.py
-
-● Reading auth.py...
-● Found issue: missing token validation
-● Applying fix...
-● Running tests...
-✓ Fixed in 4.2s (3.2k tokens)
-```
-
-**Next time (similar task):**
-```
-> Fix authentication bug in payment.py
-
-● Memory hit: similar to auth.py fix
-● Applying cached solution...
-✓ Fixed in 0.08s (0 tokens)
-```
-
-**That's 50x faster. Zero API cost.**
+**The result:** Common tasks become instant. Complex tasks get verified. Your assistant evolves with your codebase.
 
 ---
 
-## Installation
+## 🚀 Quick Start
+
+### Installation
 
 ```bash
 pip install narecli
-export ANTHROPIC_API_KEY="your-key"
+```
+
+### Setup
+
+```bash
+# Set your Anthropic API key
+export ANTHROPIC_API_KEY="your-key-here"
+
+# Start interactive mode
 nare
 ```
 
-That's it. No complex setup. No configuration files. Just works.
-
----
-
-## How It Works
-
-### 1. Smart Routing
-
-Every query goes through a 5-tier decision engine:
-
-```
-Query → Router → [FAST | REFLEX | COMPILED | HYBRID | SLOW]
-```
-
-- **FAST** (0 tokens): Exact memory match
-- **REFLEX** (0 tokens): Pre-compiled skill
-- **COMPILED** (0 tokens): Pattern match
-- **HYBRID** (minimal tokens): Memory + small edit
-- **SLOW** (full tokens): Generate new solution
-
-Most queries hit FAST or REFLEX after a few uses.
-
-### 2. Episodic Memory
-
-NARE uses **FAISS vector search** to store and retrieve solutions:
-
-- Every successful task → embedding + full trace
-- Similar queries → sub-100ms retrieval
-- Automatic clustering → discovers patterns
-- Smart pruning → keeps memory lean
-
-Memory persists across sessions. Your agent gets smarter every day.
-
-### 3. Verified Synthesis
-
-When NARE generates new code, it:
-
-1. Writes the solution
-2. Tests it (oracle validation)
-3. If it fails → auto-repair with error feedback
-4. Repeats until verified or max attempts
-
-No more "here's some code that might work" — NARE only returns tested solutions.
-
-### 4. Library Learning
-
-NARE watches for patterns:
-
-- Same type of task 3+ times → compile into skill
-- Background evolution → continuous optimization
-- Skill quarantine → invalid patterns isolated
-
-Your agent builds a library of instant solutions tailored to your codebase.
-
----
-
-## Architecture
-
-```
-┌─────────────────────────────────────────┐
-│         NAREProductionAgent             │
-├─────────────────────────────────────────┤
-│                                         │
-│  Memory System    Reasoning Router     │
-│  ├─ Episodes      ├─ Intent Classifier │
-│  ├─ Skills        ├─ 5-Tier Routing    │
-│  └─ FAISS Index   └─ Confidence Score  │
-│                                         │
-│  Evolution Engine    Verified Synthesis│
-│  ├─ Pattern Mining   ├─ Oracle Loop    │
-│  ├─ Skill Compile    ├─ Auto-Repair    │
-│  └─ Background Run   └─ Critic Score   │
-└─────────────────────────────────────────┘
-```
-
-**Core modules:**
-- `nare/core/agent.py` — Main orchestrator
-- `nare/memory/engine.py` — Persistent storage + FAISS
-- `nare/core/routing/router.py` — Smart decision engine
-- `nare/core/evolution/engine.py` — Background learning
-- `nare/agents/loops/autonomous.py` — Multi-step execution
-
----
-
-## Performance
-
-After 100 tasks on a typical codebase:
-
-| Metric | Cold Start | After 100 Tasks | Improvement |
-|--------|------------|-----------------|-------------|
-| Avg Response Time | 4.2s | 0.8s | **5.2x faster** |
-| Token Usage | 3.2k | 740 | **77% reduction** |
-| Memory Hit Rate | 0% | 67% | **2/3 instant** |
-| Compiled Skills | 0 | 34 | **34 patterns** |
-
-**Translation:** Your API bill drops by 77%. Your agent gets 5x faster. And it keeps improving.
-
----
-
-## Real-World Use Cases
-
-### 1. Bug Fixes
-```
-> Fix the authentication bug in auth.py
-```
-NARE finds the function, identifies the issue, applies the fix, runs tests.
-
-### 2. Refactoring
-```
-> Refactor UserService to use dependency injection
-```
-Multi-file changes, maintains tests, validates behavior.
-
-### 3. Feature Implementation
-```
-> Add rate limiting to the API endpoints
-```
-Autonomous planning, tool use, verification.
-
-### 4. Code Review
-```
-> Review the changes in PR #123
-```
-Fetches PR, analyzes diff, provides feedback.
-
----
-
-## Why NARE vs Other Tools
-
-| Feature | GitHub Copilot | Cursor | Aider | **NARE** |
-|---------|---------------|--------|-------|----------|
-| Persistent Memory | ❌ | ❌ | ❌ | ✅ |
-| Gets Faster Over Time | ❌ | ❌ | ❌ | ✅ |
-| Autonomous Multi-Step | ❌ | ⚠️ | ✅ | ✅ |
-| Code Verification | ❌ | ❌ | ❌ | ✅ |
-| Pattern Compilation | ❌ | ❌ | ❌ | ✅ |
-| Zero-Token Responses | ❌ | ❌ | ❌ | ✅ |
-
-NARE is the only tool that **learns from your codebase** and **gets cheaper over time**.
-
----
-
-## Configuration
-
-### Basic Setup
+### One-Shot Mode
 
 ```bash
-# Set API key
-export ANTHROPIC_API_KEY="sk-ant-..."
-
-# Optional: custom memory location
-export NARE_MEMORY_DIR="~/.nare/memory"
+nare "add type hints to utils.py"
 ```
 
-### Advanced Config
+### Example Session
+
+```
+> fix the bug in auth.py
+  ● Intent: edit
+  ◌ find_function(function_name='authenticate', file_path='auth.py')
+  ● Found function 'authenticate' at line 45
+  ◌ apply_hunks(...)
+  ● Applied 1 hunk to auth.py
+  
+Fixed authentication bug in auth.py
+  3.2k tokens  ·  4.1s
+```
+
+Next time you ask a similar question:
+
+```
+> fix the bug in payment.py
+  ● Route: FAST (memory hit)
+  
+Fixed payment validation bug in payment.py
+  0 tokens  ·  0.02s
+```
+
+---
+
+## ✨ Features
+
+### 🧠 Semantic Memory
+- **Episodic storage**: Every solved task is remembered
+- **FAISS-powered retrieval**: Sub-100ms similarity search
+- **Automatic deduplication**: No redundant storage
+
+### ⚡ 5-Tier Routing
+
+```
+User Query → Router → [FAST|REFLEX|COMPILED|HYBRID|SLOW]
+```
+
+1. **FAST** (0 tokens, <100ms): Exact memory match
+2. **REFLEX** (0 tokens, <100ms): Pre-compiled skills
+3. **COMPILED_SKILL** (0 tokens, <500ms): Pattern matching
+4. **HYBRID** (minimal tokens): Memory + small edits
+5. **SLOW** (full tokens): Verified synthesis with LLM
+
+### 🔬 Verified Synthesis
+- **Oracle-based validation**: Code is tested before application
+- **Automatic repair**: Failed attempts trigger refinement
+- **Confidence scoring**: Critic evaluates solution quality
+
+### 📚 Library Learning
+- **Pattern compilation**: Frequent tasks become instant skills
+- **Background evolution**: Continuous optimization
+- **Skill quarantine**: Invalid patterns are isolated
+
+### 🛠️ Developer Tools
+- **Token-efficient editing**: `find_function` → `apply_hunks` workflow
+- **Batch operations**: Multi-file edits in one call
+- **Git integration**: Safe branching and PR creation
+- **Web search**: Real-time information retrieval
+
+---
+
+## 🏗️ Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                  NAREProductionAgent                    │
+├─────────────────────────────────────────────────────────┤
+│                                                         │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐ │
+│  │ MemorySystem │  │ReasoningRouter│  │EvolutionEngine│ │
+│  ├──────────────┤  ├──────────────┤  ├──────────────┤ │
+│  │ Episodes     │  │ Intent       │  │ Skill        │ │
+│  │ Skills       │  │ Classifier   │  │ Compilation  │ │
+│  │ FAISS Index  │  │ 5-Tier Route │  │ Background   │ │
+│  └──────────────┘  └──────────────┘  └──────────────┘ │
+│                                                         │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐ │
+│  │VerifiedSynth │  │    Critic    │  │MetricsTracker│ │
+│  ├──────────────┤  ├──────────────┤  ├──────────────┤ │
+│  │ Oracle Loop  │  │ Confidence   │  │ Performance  │ │
+│  │ Auto-Repair  │  │ Scoring      │  │ Analytics    │ │
+│  └──────────────┘  └──────────────┘  └──────────────┘ │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Core Components
+
+- **`nare/core/agent.py`**: Main facade coordinating all subsystems
+- **`nare/memory/engine.py`**: Persistent storage with FAISS indexing
+- **`nare/core/routing/router.py`**: 5-tier decision engine
+- **`nare/core/evolution/engine.py`**: Background learning and skill compilation
+- **`nare/core/synthesis/loop.py`**: Verified synthesis with oracle validation
+- **`nare/cli/app.py`**: Rich terminal interface with live rendering
+
+---
+
+## 📊 Benchmarks
+
+### ARC Challenge (Abstract Reasoning)
+
+```python
+# Run ARC benchmark
+python benchmarks/nare_arc_full.py
+```
+
+**Results**: See `benchmarks/nare_arc_results.json`
+
+### SWE-bench (Real-World Software Engineering)
+
+```python
+# Run SWE-bench pilot
+python benchmarks/nare_swe_bench.py
+```
+
+**Dataset**: 50 real GitHub issues from popular Python repositories
+
+### Performance Metrics
+
+| Metric | Cold Start | After 100 Tasks |
+|--------|------------|----------------|
+| Avg Response Time | 4.2s | 0.8s |
+| Token Usage | 100% | 23% |
+| Memory Hit Rate | 0% | 67% |
+| Skill Compilation | 0 | 34 |
+
+---
+
+## 🐳 Docker
+
+### Quick Start
+
+```bash
+docker-compose up -d
+docker exec -it nare-cli nare
+```
+
+### Build from Source
+
+```bash
+docker build -t nare-cli .
+docker run -it \
+  -e ANTHROPIC_API_KEY="your-key" \
+  -v $(pwd):/workspace \
+  nare-cli
+```
+
+---
+
+## 🔧 Configuration
+
+Create `.env` in your project root:
+
+```bash
+ANTHROPIC_API_KEY=your-key-here
+NARE_MEMORY_DIR=~/.nare/memory  # Optional: custom memory location
+NARE_LOG_LEVEL=INFO             # Optional: DEBUG, INFO, WARNING, ERROR
+```
+
+### Advanced Configuration
 
 ```python
 from nare.config import NareConfig
 from nare.core.agent import NAREProductionAgent
 
 config = NareConfig(
-    memory_threshold=0.85,           # Similarity for memory hits
-    max_synthesis_attempts=3,        # Max repair attempts
-    skill_compilation_min_uses=5,    # Pattern threshold
-    enable_background_evolution=True # Auto-learning
+    memory_threshold=0.85,        # Similarity threshold for memory hits
+    max_synthesis_attempts=3,     # Max repair attempts in verified synthesis
+    skill_compilation_min_uses=5, # Min uses before pattern compilation
+    enable_background_evolution=True,
 )
 
 agent = NAREProductionAgent(config=config)
@@ -239,7 +232,24 @@ agent = NAREProductionAgent(config=config)
 
 ---
 
-## Programmatic API
+## 📖 Usage Examples
+
+### Interactive Mode
+
+```bash
+nare
+```
+
+```
+NARE CLI v0.2.4
+Type 'help' for commands, 'exit' to quit
+
+> add logging to database.py
+> refactor UserService to use dependency injection
+> write tests for the payment module
+```
+
+### Programmatic API
 
 ```python
 import asyncio
@@ -249,85 +259,99 @@ async def main():
     agent = NAREProductionAgent()
     
     result = await agent.solve(
-        query="Fix the bug in auth.py",
-        working_dir="./my-project"
+        query="fix the bug in auth.py",
+        working_dir="./my-project",
     )
     
-    print(result["final_answer"])
-    print(f"Route: {result['route_decision']}")
-    print(f"Tokens: {result.get('tokens_used', 0)}")
+    print(result["answer"])
+    print(f"Route: {result['route']}")
+    print(f"Tokens: {result['tokens_used']}")
 
 asyncio.run(main())
 ```
 
----
+### Compile Skills from History
 
-## Development
+```python
+from nare.core.agent import NAREProductionAgent
 
-```bash
-# Clone repo
-git clone https://github.com/Nare-Labs/NARE-CLI
-cd nare
-
-# Install in dev mode
-pip install -e .
-
-# Run tests
-pytest tests/
-
-# Run benchmarks
-python benchmarks/nare_arc_full.py
+agent = NAREProductionAgent()
+agent.evolution.compile_skills(min_uses=3, max_skills=50)
 ```
 
 ---
 
-## Benchmarks
+## 🧪 Testing
 
-NARE has been tested on:
+```bash
+# Run all tests
+pytest tests/
 
-- **SWE-bench** — Real GitHub issues from popular Python repos
-- **ARC Challenge** — Abstract reasoning tasks
-- **GSM8K** — Math word problems
+# Run specific test suite
+pytest tests/test_agent_loop.py
 
-Results show consistent improvement over time as memory builds.
-
----
-
-## Roadmap
-
-- [ ] Multi-language support (currently Python-focused)
-- [ ] Team memory sharing
-- [ ] VSCode extension
-- [ ] Self-hosted memory backend
-- [ ] Skill marketplace
+# Run with coverage
+pytest --cov=nare tests/
+```
 
 ---
 
-## Contributing
+## 🤝 Contributing
 
-We welcome contributions! See [CONTRIBUTING.md](docs/CONTRIBUTING.md) for guidelines.
+We welcome contributions! Here's how to get started:
 
-**Quick start:**
-1. Fork the repo
-2. Create a feature branch
-3. Add tests
-4. Submit PR
+1. **Fork the repository**
+2. **Create a feature branch**: `git checkout -b feature/amazing-feature`
+3. **Make your changes** and add tests
+4. **Run tests**: `pytest tests/`
+5. **Commit**: `git commit -m 'Add amazing feature'`
+6. **Push**: `git push origin feature/amazing-feature`
+7. **Open a Pull Request**
+
+### Development Setup
+
+```bash
+git clone https://github.com/Nare-Labs/NARE-CLI.git
+cd NARE-CLI
+pip install -e ".[embeddings]"
+pytest tests/
+```
+
+### Code Style
+
+- Follow PEP 8
+- Use type hints
+- Add docstrings for public APIs
+- Keep functions focused and testable
 
 ---
 
-## License
+## 📄 License
 
-Apache License 2.0 - see [LICENSE](LICENSE)
-
----
-
-## Contact
-
-- **Issues**: [GitHub Issues](https://github.com/Nare-Labs/NARE-CLI/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/Nare-Labs/NARE-CLI/discussions)
+Apache License 2.0 - see [LICENSE](LICENSE) for details.
 
 ---
 
-**Built by developers who were tired of AI assistants with amnesia.**
+## 🙏 Acknowledgments
 
-⭐ Star us on GitHub if you want an AI that actually learns.
+- **Anthropic Claude** for reasoning capabilities
+- **FAISS** for efficient similarity search
+- **Rich** for beautiful terminal rendering
+- **SWE-bench** for real-world evaluation dataset
+
+---
+
+## 📬 Contact
+
+- **GitHub Issues**: [Report bugs or request features](https://github.com/Nare-Labs/NARE-CLI/issues)
+- **Discussions**: [Join the community](https://github.com/Nare-Labs/NARE-CLI/discussions)
+
+---
+
+<div align="center">
+
+**Built with ❤️ by the NARE Labs team**
+
+[⭐ Star us on GitHub](https://github.com/Nare-Labs/NARE-CLI) • [📦 PyPI Package](https://pypi.org/project/narecli/)
+
+</div>
