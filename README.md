@@ -154,15 +154,6 @@ User Query → Router → [FAST|REFLEX|COMPILED|HYBRID|SLOW]
 
 ## 📊 Benchmarks
 
-### ARC Challenge (Abstract Reasoning)
-
-```python
-# Run ARC benchmark
-python benchmarks/nare_arc_full.py
-```
-
-**Results**: See `benchmarks/nare_arc_results.json`
-
 ### SWE-bench (Real-World Software Engineering)
 
 ```python
