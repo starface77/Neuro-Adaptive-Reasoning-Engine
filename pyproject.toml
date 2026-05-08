@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "narecli"
-version = "0.2.4"
+version = "0.3.5"
 description = "Skill-based reasoning engine with verified synthesis, semantic memory, and library learning."
 readme = "README.md"
 license = {text = "MIT"}
