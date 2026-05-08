@@ -1,17 +1,3 @@
-"""Reusable rendering blocks for the NARE CLI.
-
-This module is the canonical place for high-level visual elements:
-banner, tool-call blocks (Read/Edit/Write/Bash/Grep), status line, and
-diff renderer. Existing modules (ui.py, components.py) delegate to the
-helpers here so the look stays consistent across the REPL.
-
-Visual rules:
-- One accent color (orange #D77757) for active state and primary actions.
-- Neutral grays for everything secondary; route colors are reserved for
-  the status line.
-- One blank line of breathing room between blocks; never two.
-- All text is escaped before being passed to Rich markup.
-"""
 
 from __future__ import annotations
 
@@ -46,14 +32,6 @@ ROUTE_PALETTE = {
 }
 
 def render_banner(console: Console, repo_path: str, mode: str = "Manual") -> None:
-    """Render the welcome banner.
-
-    Compact, modern layout that adapts to the terminal width:
-      - wide  (≥ 80): tagline + repo + full path + mode + hint
-      - mid   (60..79): tagline + repo + mode (no full path, no hint)
-      - narrow (< 60): just the product line + repo + mode
-    Aligned with two leading spaces to match the rest of the UI grid.
-    """
     repo = os.path.basename(os.path.abspath(repo_path)) or repo_path
     safe_repo = escape(repo)
     safe_full = escape(repo_path)
@@ -62,101 +40,47 @@ def render_banner(console: Console, repo_path: str, mode: str = "Manual") -> Non
     width = max(20, console.size.width if hasattr(console, "size") else 80)
 
     console.print()
+    console.print(
+        Text.assemble(
+            ("  ◆ ", f"bold {ACCENT}"),
+            ("NARE", f"bold {TEXT}"),
+            ("  ", ""),
+            ("reasoning agent", TEXT_SUBTLE),
+        )
+    )
     if width >= 80:
         console.print(
             Text.assemble(
-                ("  ◆ ", f"bold {ACCENT}"),
-                ("NARE", f"bold {TEXT}"),
+                ("    ", ""),
+                (safe_repo, TEXT_MUTED),
                 ("  ", ""),
-                ("reasoning agent for software engineering", TEXT_SUBTLE),
-            )
-        )
-        console.print(
-            Text.assemble(
-                ("    ", ""),
-                (f"{safe_repo}", TEXT_MUTED),
-                ("  ", ""),
-                (f"{safe_full}", TEXT_FAINT),
-            )
-        )
-        console.print(
-            Text.assemble(
-                ("    ", ""),
-                (f"{safe_mode} mode", TEXT_SUBTLE),
-                ("  ·  ", TEXT_FAINT),
-                ("type ", TEXT_FAINT),
-                ("/help", TEXT_MUTED),
-                (" for commands, ", TEXT_FAINT),
-                ("Tab", TEXT_MUTED),
-                (" to cycle modes", TEXT_FAINT),
-            )
-        )
-        console.print(
-            Text.assemble(
-                ("    ", ""),
-                ("💡 Tip: ", TEXT_MUTED),
-                ("Use ", TEXT_FAINT),
-                ("/agent on", TEXT_MUTED),
-                (" for autonomous mode (better quality, uses more tokens)", TEXT_FAINT),
-            )
-        )
-    elif width >= 60:
-        console.print(
-            Text.assemble(
-                ("  ◆ ", f"bold {ACCENT}"),
-                ("NARE", f"bold {TEXT}"),
-                ("  ", ""),
-                ("reasoning agent", TEXT_SUBTLE),
-            )
-        )
-        console.print(
-            Text.assemble(
-                ("    ", ""),
-                (f"{safe_repo}", TEXT_MUTED),
-                ("  ·  ", TEXT_FAINT),
-                (f"{safe_mode}", TEXT_SUBTLE),
+                (safe_full, TEXT_FAINT),
             )
         )
     else:
         console.print(
             Text.assemble(
-                ("  ◆ ", f"bold {ACCENT}"),
-                ("NARE", f"bold {TEXT}"),
-            )
-        )
-        console.print(
-            Text.assemble(
                 ("    ", ""),
-                (f"{safe_repo}", TEXT_MUTED),
-                ("  ", ""),
-                (f"{safe_mode}", TEXT_FAINT),
+                (safe_repo, TEXT_MUTED),
             )
         )
+    console.print(
+        Text.assemble(
+            ("    ", ""),
+            (safe_mode, TEXT_SUBTLE),
+            ("  ·  ", TEXT_FAINT),
+            ("/help", TEXT_MUTED),
+            ("  ·  ", TEXT_FAINT),
+            ("Tab", TEXT_MUTED),
+            (" mode", TEXT_FAINT),
+            ("  ·  ", TEXT_FAINT),
+            ("/agent", TEXT_MUTED),
+        )
+    )
     console.print()
 
 @dataclass
 class ToolBlock:
-    """A single tool-call block.
-
-    Rendered as::
-
-        ● Read(nare/core/agent.py)
-          └ 247 lines
-
-        ● Bash(pytest -q)
-          └ 12 passed in 2.3s
-
-        ● Edit(README.md)
-          └ +12  -8
-              @@ -10,3 +10,4 @@
-              -old line
-              +new line
-
-    `verb` is the action name (Read, Edit, Write, Bash, Grep, …),
-    `target` is the primary argument (path, command, pattern). `summary`
-    is the one-line result shown after `└`; multi-line bodies use
-    `body` (truncated automatically with an `(ctrl+o to expand)` hint).
-    """
 
     verb: str
     target: str
@@ -233,13 +157,6 @@ class ToolBlock:
                 console.print(tail)
 
 def render_running(console: Console, verb: str, target: str) -> None:
-    """Print a tool-call block in the running state.
-
-    Mirrors the reference look::
-
-        ◌ Bash(cmd)
-          └ Running…
-    """
     ToolBlock(verb, target, summary="Running…", state="running").render(console)
 
 def render_read(
@@ -262,17 +179,6 @@ def render_write(
     lang: Optional[str] = None,
     preview_lines: int = 9,
 ) -> None:
-    """Render a Write tool block with a numbered code preview.
-
-    Layout (matches the reference)::
-
-        ● Write(snakegame/snake.py)
-          └ Wrote 147 lines to snakegame/snake.py
-              1 import pygame
-              2 import random
-              3 import sys
-              … +144 lines
-    """
     line_count = content.count("\n") + 1 if content else 0
     inferred = lang or _ext_lang(path)
     ToolBlock(
@@ -313,16 +219,6 @@ def render_hunks(
     summary: str,
     hunks: str,
 ) -> None:
-    """Render apply_hunks tool output with diff-style coloring.
-
-    Shows the unified diff format with:
-    - File headers in muted color
-    - Hunk headers (@@ lines) in faint
-    - Added lines (+) in green
-    - Removed lines (-) in red
-    - Context lines in muted
-    """
-    # Parse hunks to count changes
     additions = sum(
         1 for line in hunks.splitlines()
         if line.startswith("+") and not line.startswith("+++")
@@ -390,14 +286,6 @@ def render_batch_header(
     *,
     expandable: bool = True,
 ) -> None:
-    """Print a single-line header for a batched tool action.
-
-    Examples::
-
-        Reading 2 files… (ctrl+o to expand)
-        Searching for 1 pattern, reading 2 files… (ctrl+o to expand)
-        Listing 1 directory… (ctrl+o to expand)
-    """
     line = Text("  ")
     line.append(escape(text), style=TEXT)
 
@@ -470,7 +358,6 @@ def render_diff(
     context: int = 2,
     max_lines: int = 30,
 ) -> None:
-    """Render a unified-style diff between two strings."""
     import difflib
 
     safe_path = escape(path)
@@ -523,16 +410,6 @@ def render_status_line(
     episodes: Optional[int] = None,
     skills: Optional[int] = None,
 ) -> None:
-    """Render a single-line status footer.
-
-    Layout::
-
-        Manual  claude-sonnet-4  project  ◆ SLOW
-
-    Empty fields are skipped silently.
-    Note: tokens and elapsed are NOT shown here anymore - they're shown in a separate line above.
-    """
-
     entries: list[tuple[int, Text]] = []
 
     if mode:
@@ -541,8 +418,6 @@ def render_status_line(
         entries.append((2, Text(model, style=TEXT_MUTED)))
     if repo:
         entries.append((2, Text(repo, style=TEXT_SUBTLE)))
-    # Removed tokens display - now shown in separate line above
-    # Removed episodes display - tokens are more important
     if skills is not None and skills > 0:
         entries.append((1, Text(f"{skills} sk", style=TEXT_FAINT)))
     if route:
@@ -585,19 +460,6 @@ def render_todos(
     *,
     title: str = "Update todos",
 ) -> None:
-    """Render a TODO panel matching the reference layout::
-
-        ● Update todos
-            1. [✓] Done step
-            2. [▸] In-progress step
-            3. [ ] Pending step
-
-    Each item is a ``(state, text)`` tuple where state is one of:
-
-        ``"done"``        — rendered with ``[✓]`` (green)
-        ``"in_progress"`` — rendered with ``[▸]`` (orange)
-        ``"pending"``     — rendered with ``[ ]`` (muted)
-    """
     header = Text()
     header.append("  ● ", style=ACCENT)
     header.append(title, style=TEXT)
@@ -625,10 +487,6 @@ def render_todos(
 def render_command_table(
     console: Console, commands: Iterable[tuple[str, Sequence[str], str]]
 ) -> None:
-    """Render the slash-command help table.
-
-    `commands` is an iterable of `(name, aliases, help)` tuples.
-    """
     table = Table(show_header=False, box=None, padding=(0, 2), pad_edge=False)
     table.add_column("cmd", style=ACCENT, min_width=18)
     table.add_column("desc", style=TEXT_MUTED)
@@ -644,7 +502,6 @@ def render_command_table(
     console.print()
 
 def confirm(console: Console, prompt: str, default_yes: bool = True) -> bool:
-    """Ask for `Y/n` (or `y/N`) confirmation. Empty input takes the default."""
     suffix = "(Y/n)" if default_yes else "(y/N)"
     try:
         raw = console.input(
@@ -677,27 +534,6 @@ def confirm_action(
         "ctrl+e to explain",
     ),
 ) -> int:
-    """Render a confirmation panel and read a numbered choice.
-
-    Layout::
-
-         Bash command
-
-         cd "..." && pwd
-         Change to NareCLI directory
-
-        Do you want to proceed?
-        > 1. Yes
-          2. Yes, allow reading from project
-          3. No
-
-        Esc to cancel · Tab to amend · ctrl+e to explain
-
-    Returns the 0-based index of the selected option, or -1 on cancel.
-    Note: hotkeys (Esc/Tab/ctrl+e) are shown for reference but are not
-    wired to a key handler here; this helper uses simple stdin input.
-    The full keybinding flow is part of the Phase 3 agent loop.
-    """
     console.print()
     console.print(Text.assemble((f"  {title}", f"bold {ACCENT}")))
     console.print()
@@ -748,25 +584,6 @@ def confirm_action(
     return -1
 
 class LiveStatus:
-    """Animated single-line footer shown while the agent is working.
-
-    Reference layout::
-
-        + Proofing… (12s · ↑ 167 tokens)
-
-    Uses Rich `Live` to keep the line in place. Token counts and the
-    verb can be updated via `update()` from the calling code.
-
-    Example::
-
-        with LiveStatus("Thinking", console=console) as live:
-            for token in stream():
-                live.bump_tokens(1)
-
-    The class only **renders**; producing token counts and elapsed time
-    is the caller's responsibility. Hotkeys aren't bound here — the
-    `(ctrl+o to expand)` style cues are decorative.
-    """
 
     SPINNER_FRAMES = ["+", "✦", "*", "·"]
 
@@ -852,7 +669,6 @@ class LiveStatus:
         return line
 
 def _ext_lang(path: str) -> Optional[str]:
-    """Best-effort syntax language from a file extension."""
     ext = (os.path.splitext(path)[1] or "").lower().lstrip(".")
     mapping = {
         "py": "python",
@@ -871,7 +687,6 @@ def _ext_lang(path: str) -> Optional[str]:
     return mapping.get(ext)
 
 def _human_tokens(n: int) -> str:
-    """Format a token count as `1.2k` / `34k` / `2.1M`."""
     if n < 1000:
         return str(n)
     if n < 1_000_000:

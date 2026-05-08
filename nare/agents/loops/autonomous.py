@@ -1,22 +1,48 @@
-"""Tool-calling agent loop for NARE."""
+"""Tool-calling agent loop for NARE.
+
+This module has been refactored into a clean folder structure:
+- state/agent_state.py: Data structures (AgentState, ToolCall, ToolResult, Budget, MessageHistory)
+- execution/tool_executor.py: Tool registry and execution
+- execution/command_runner.py: Command execution utilities
+- planning/budget.py: Budget management and planning
+
+This file serves as the main orchestrator for the autonomous agent loop.
+"""
 
 from __future__ import annotations
 
 import json
-
-from nare.utils.logger import get_logger
-
-import re
-
 import time
-
-from dataclasses import dataclass, field
-
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
 
+from nare.utils.logger import get_logger
+from nare.agents.loops.state.agent_state import AgentState, ToolCall, ToolResult, Budget, MessageHistory
+from nare.agents.loops.execution.tool_executor import ToolRegistry
+from nare.agents.loops.planning.budget import estimate_token_usage, check_budget_before_call, update_budget_after_call
+from .agent_state import ToolCall, ToolResult, AgentState
+from .tool_registry import ToolRegistry
+from .tool_implementations import (
+    get_tool_function,
+    TOOL_SCHEMAS,
+    read_file_tool,
+    create_file_tool,
+    edit_file_tool,
+    list_files_tool,
+    run_command_tool,
+    search_files_tool
+)
+from .utils import (
+    parse_tool_calls_from_text,
+    format_tool_result,
+    truncate_output,
+    is_safe_command
+)
+
 load_dotenv()
+
+logger = get_logger(__name__)
 
 from ...core.events import (
     EventBus,

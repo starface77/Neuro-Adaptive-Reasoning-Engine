@@ -1,16 +1,3 @@
-"""Component library for the NARE CLI.
-
-Provides composable UI primitives for the interactive REPL:
-- StatusBar       — bottom status line (route, timing, memory stats)
-- ResultCard      — final answer block with metadata footer
-- ProgressIndicator — long-running progress bar
-- MemoryStats     — memory statistics panel
-- IntentBadge     — small badge showing the classified intent
-
-Design principles: clean, minimal, no decorative noise. Routes are
-color-coded (FAST=green, REFLEX=cyan, HYBRID=yellow, SLOW=orange).
-"""
-
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
 from rich.table import Table
@@ -21,7 +8,6 @@ from typing import Optional
 from . import blocks
 
 class StatusBar:
-    """Bottom status bar with premium route indicators."""
 
     ROUTE_STYLES = {
         "FAST":     ("#4EBA65", "✦"),
@@ -56,12 +42,6 @@ class StatusBar:
         model: Optional[str] = None,
         repo: Optional[str] = None,
     ) -> None:
-        """Render the bottom status line.
-
-        Layout::
-
-            Manual  claude-sonnet-4  project  1.2k tok  ◆ SLOW · 1.4s
-        """
         total_tokens = (tokens_in or 0) + (tokens_out or 0)
         blocks.render_status_line(
             console,
@@ -76,7 +56,6 @@ class StatusBar:
         )
 
 class ResultCard:
-    """Premium result card with animated route badge."""
 
     @staticmethod
     def render(
@@ -87,40 +66,14 @@ class ResultCard:
         tokens: int = 0,
         streamed: bool = False
     ) -> None:
-        """Render the model's answer.
-
-        We deliberately do NOT print a status line here — the canonical
-        bottom status bar is rendered by ``StatusBar.render`` once per
-        turn. Printing it twice produced two ``◆ AGENT_LOOP 9.8s``
-        lines stacked on top of each other.
-        """
         if not streamed and answer:
             console.print(answer, style="white")
         console.print()
 
 class ProgressIndicator:
-    """Progress bar for long operations.
-
-    ⠋ Generating candidates... [████████░░] 80%
-
-    Usage:
-        with ProgressIndicator.create(console, "Processing") as progress:
-            task = progress.add_task("Generating", total=100)
-            for i in range(100):
-                progress.update(task, advance=1)
-    """
 
     @staticmethod
     def create(console: Console, description: str) -> Progress:
-        """Create progress indicator.
-
-        Args:
-            console: Rich console instance
-            description: Task description
-
-        Returns:
-            Progress instance (use as context manager)
-        """
         return Progress(
             SpinnerColumn(spinner_name="dots", style="#D77757"),
             TextColumn("[#D77757]{task.description}[/]"),
@@ -131,13 +84,6 @@ class ProgressIndicator:
         )
 
 class MemoryStats:
-    """Memory statistics panel.
-
-    Memory:
-      Episodes: 45 (12 high-quality)
-      Skills: 12 (8 mature)
-      Cache hit rate: 67%
-    """
 
     @staticmethod
     def render(
@@ -148,16 +94,6 @@ class MemoryStats:
         mature_skills: int,
         cache_hit_rate: float
     ) -> None:
-        """Render memory statistics.
-
-        Args:
-            console: Rich console instance
-            episodes: Total episodes in memory
-            high_quality_episodes: High-quality episodes
-            skills: Total compiled skills
-            mature_skills: Mature skills (used 3+ times)
-            cache_hit_rate: Cache hit rate (0.0-1.0)
-        """
         table = Table(show_header=False, box=None, padding=(0, 2))
         table.add_column("label", style="#999999")
         table.add_column("value", style="white")
@@ -185,15 +121,6 @@ class MemoryStats:
         console.print(panel)
 
 class IntentBadge:
-    """Badge showing query intent type.
-
-    Displays: [QUESTION] [EXPLORE] [EDIT]
-
-    Color coding:
-    - QUESTION: blue - simple Q&A
-    - EXPLORE: purple - codebase exploration
-    - EDIT: orange - code modification
-    """
 
     INTENT_COLORS = {
         "QUESTION": "#5599FF",
@@ -203,12 +130,6 @@ class IntentBadge:
 
     @staticmethod
     def render(console: Console, intent: str) -> None:
-        """Render intent badge.
-
-        Args:
-            console: Rich console instance
-            intent: Intent type (QUESTION/EXPLORE/EDIT)
-        """
         color = IntentBadge.INTENT_COLORS.get(intent, "#999999")
 
         badge = Text()
@@ -219,15 +140,6 @@ class IntentBadge:
         console.print(badge, end=" ")
 
 class SessionStats:
-    """Session statistics display.
-
-    ┌─ Session Stats ──────────────────┐
-    │ Queries: 5                       │
-    │ Cache hits: 3 (60%)              │
-    │ Avg response: 2.1s               │
-    │ Memory: 45 episodes, 12 skills   │
-    └──────────────────────────────────┘
-    """
 
     @staticmethod
     def render(
@@ -238,16 +150,6 @@ class SessionStats:
         episodes: int,
         skills: int
     ) -> None:
-        """Render session statistics.
-
-        Args:
-            console: Rich console instance
-            queries: Total queries in session
-            cache_hits: Number of cache hits
-            avg_response_time: Average response time
-            episodes: Memory episodes
-            skills: Compiled skills
-        """
         cache_rate = (cache_hits / queries * 100) if queries > 0 else 0
 
         table = Table(show_header=False, box=None, padding=(0, 2))

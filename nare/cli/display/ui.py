@@ -1,9 +1,3 @@
-"""High-level UI helpers for the NARE CLI.
-
-Bold, clean, professional. Orange accent (#D77757), no clutter.
-This module is the canonical place for top-level rendering helpers
-(banner, status, plan, solution, etc.).
-"""
 
 from contextlib import contextmanager
 from rich.console import Console
@@ -26,7 +20,6 @@ PADDING_LEFT = 0
 PADDING_RIGHT = 0
 
 def _build_rich_theme():
-    """Build Rich theme from current NARA theme."""
     theme = get_theme(_current_theme)
     return RichTheme({
         "accent": theme.accent,
@@ -48,67 +41,44 @@ def _build_rich_theme():
 console = Console(theme=_build_rich_theme(), force_terminal=True, force_interactive=True)
 
 def set_theme(name: ThemeName):
-    """Set active theme and rebuild console."""
     global _current_theme, console
     _current_theme = name
     console = Console(theme=_build_rich_theme(), force_terminal=True, force_interactive=True)
 
 def _theme():
-    """Get current theme."""
     return get_theme(_current_theme)
 
 def print_banner(repo_path: str = ".", mode: str = "Manual"):
-    """Professional banner."""
     blocks.render_banner(console, repo_path=repo_path, mode=mode)
 
 def print_status(label: str, value: str, style: str = "text"):
-    """Print status line."""
-    import time
-    from .animations import get_shimmer_color
-
-    current_time = time.time()
-    shimmer = get_shimmer_color(current_time, speed=4.0)
-
-    console.print(f"[{shimmer}]{label}:[/] [white]{value}[/]")
+    from rich.markup import escape
+    safe_value = escape(value)
+    console.print(f"[#D77757]{label}:[/] [white]{safe_value}[/]")
 
 def print_intent(intent: str):
-    """Silent — intent is shown via triage spinner."""
     pass
 
 def print_plan(plan: dict):
-    """Render execution plan with shimmer."""
-    import time
-    from .animations import get_shimmer_color
     from rich.markup import escape
-
-    current_time = time.time()
 
     complexity = plan.get("complexity", "moderate")
 
     console.print()
-    shimmer = get_shimmer_color(current_time, speed=3.0)
-    console.print(f"[{shimmer}]Plan[/] [white]{complexity}[/]")
+    console.print(f"[#D77757]Plan[/] [white]{complexity}[/]")
 
     steps = plan.get("plan_steps", [])
     if steps:
         console.print()
         for i, step in enumerate(steps, 1):
-            step_shimmer = get_shimmer_color(current_time + i * 0.1, speed=3.0)
             safe_step = escape(step)
-            console.print(f"[{step_shimmer}]{i}.[/] [white]{safe_step}[/]")
+            console.print(f"[#D77757]{i}.[/] [white]{safe_step}[/]")
 
     console.print()
 
 def print_solution(answer: str, route: str, elapsed: float):
-    """Print solution with parsed tool calls."""
-    import time
     import re
-    from .animations import get_shimmer_color
     from rich.markup import escape
-    from rich.syntax import Syntax
-
-    current_time = time.time()
-    route_color = get_shimmer_color(current_time, speed=3.0)
 
     console.print()
 
@@ -171,7 +141,6 @@ def print_solution(answer: str, route: str, elapsed: float):
     console.print()
 
 def content_line_count(path: str) -> int:
-    """Best-effort line count for a file path; 0 if unreadable."""
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             return sum(1 for _ in f)
@@ -179,39 +148,21 @@ def content_line_count(path: str) -> int:
         return 0
 
 def print_file_loaded(path: str, lines: int):
-    import time
-    from .animations import get_shimmer_color
     from rich.markup import escape
-
-    current_time = time.time()
-    shimmer = get_shimmer_color(current_time, speed=4.0)
-
     safe_path = escape(path)
-    console.print(f"[{shimmer}]{safe_path}[/] [white]{lines} lines[/]")
+    console.print(f"[#D77757]{safe_path}[/] [white]{lines} lines[/]")
 
 def print_error(msg: str):
-    import time
-    from .animations import get_shimmer_color
     from rich.markup import escape
-
-    current_time = time.time()
-    shimmer = get_shimmer_color(current_time, speed=3.0)
     safe_msg = escape(msg)
-
     console.print()
-    console.print(f"[{shimmer}]Error:[/] [white]{safe_msg}[/]")
+    console.print(f"[#D77757]Error:[/] [white]{safe_msg}[/]")
     console.print()
 
 def print_warning(msg: str):
-    import time
-    from .animations import get_shimmer_color
     from rich.markup import escape
-
-    current_time = time.time()
-    shimmer = get_shimmer_color(current_time, speed=3.0)
-
     safe_msg = escape(msg)
-    console.print(f"[{shimmer}]{safe_msg}[/]")
+    console.print(f"[#999999]{safe_msg}[/]")
 
 def print_success(msg: str):
     from rich.markup import escape
@@ -219,17 +170,11 @@ def print_success(msg: str):
     console.print(f"[white]{safe_msg}[/]")
 
 def print_code_changes(file_path: str, added_lines: list, line_number: int = None):
-    """Show code changes with green background for added lines."""
-    import time
-    from .animations import get_shimmer_color
     from rich.markup import escape
-
-    current_time = time.time()
-    shimmer = get_shimmer_color(current_time, speed=3.0)
 
     console.print()
     safe_path = escape(file_path)
-    console.print(f"[{shimmer}]Changes:[/]  [white]{safe_path}[/]")
+    console.print(f"[#D77757]Changes:[/]  [white]{safe_path}[/]")
     console.print()
 
     if line_number:
@@ -243,17 +188,11 @@ def print_code_changes(file_path: str, added_lines: list, line_number: int = Non
     console.print()
 
 def print_file_diff(file_path: str, old_content: str, new_content: str):
-    """Show file diff with green background for additions."""
-    import time
-    from .animations import get_shimmer_color
     from rich.markup import escape
-
-    current_time = time.time()
-    shimmer = get_shimmer_color(current_time, speed=3.0)
 
     console.print()
     safe_path = escape(file_path)
-    console.print(f"[{shimmer}]Modified:[/]  [white]{safe_path}[/]")
+    console.print(f"[#D77757]Modified:[/]  [white]{safe_path}[/]")
     console.print()
 
     old_lines = old_content.split('\n') if old_content else []
@@ -280,15 +219,8 @@ def print_file_diff(file_path: str, old_content: str, new_content: str):
     console.print()
 
 def confirm_plan() -> bool:
-    """Ask user to confirm plan."""
-    import time
-    from .animations import get_shimmer_color
-
-    current_time = time.time()
-    shimmer = get_shimmer_color(current_time, speed=4.0)
-
     try:
-        result = console.input(f"[{shimmer}]>[/] [white]Proceed?[/] [#999999](Y/n)[/] ").strip().lower()
+        result = console.input("[#D77757]>[/] [white]Proceed?[/] [#999999](Y/n)[/] ").strip().lower()
         return result not in ('n', 'no')
     except (EOFError, KeyboardInterrupt):
         console.print()
@@ -296,37 +228,28 @@ def confirm_plan() -> bool:
 
 @contextmanager
 def spinner(msg: str, animation: str = "dots"):
-    """Non-blocking animated spinner with shimmer."""
     import time
-    from .animations import get_shimmer_color
     start = time.time()
 
-    class ShimmerSpinner:
+    class SimpleSpinner:
+        FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
         def __init__(self, msg):
             self.msg = msg
             self.start = start
 
-            self.frames = ["|", "/", "-", "\\"]
-            self.interval = 0.1
-
         def __rich__(self):
             elapsed = time.time() - self.start
-            spinner_color = get_shimmer_color(elapsed, speed=5.0)
-            text_color = get_shimmer_color(elapsed + 0.2, speed=4.0)
-
             text = Text()
-            frame_idx = int(elapsed / self.interval) % len(self.frames)
-            text.append(self.frames[frame_idx], style=spinner_color)
-            text.append("  ", style="default")
-            text.append(self.msg, style=text_color)
+            frame_idx = int(elapsed / 0.08) % len(self.FRAMES)
+            text.append(f"{self.FRAMES[frame_idx]} ", style="#D77757")
+            text.append(self.msg, style="#999999")
             return text
 
-    shimmer = ShimmerSpinner(msg)
-    with Live(shimmer, console=console, refresh_per_second=20, transient=True) as live:
+    s = SimpleSpinner(msg)
+    with Live(s, console=console, refresh_per_second=12, transient=True) as live:
         yield live
 
-    final_time = time.time()
-    final_shimmer = get_shimmer_color(final_time, speed=3.0)
     from rich.markup import escape
     safe_msg = escape(msg)
-    console.print(f"[{final_shimmer}]Done[/] [white]{safe_msg}[/]")
+    console.print(f"[#D77757]Done[/] [white]{safe_msg}[/]")

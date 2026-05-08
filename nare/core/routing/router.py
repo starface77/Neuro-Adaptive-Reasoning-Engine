@@ -95,8 +95,7 @@ class ReasoningRouter:
 
         if intent != "EDIT" and self._is_conversational(query):
             if thinking_display:
-                thinking_display.stream_token("| Direct response\n")
-                thinking_display.start_waiting("Thinking")
+                thinking_display.show_route("DIRECT")
                 thinking_display.switch_to_solution()
 
             # Check if it's a simple greeting - return instant response
@@ -153,18 +152,15 @@ class ReasoningRouter:
                                     query=query, chat_history=chat_history, repo_map=repo_map, intent=intent)
 
         if thinking_display:
-            thinking_display.update_waiting("Routing query...")
+            thinking_display.update_waiting("Routing...")
 
         adaptive_tau_fast = get_adaptive_tau_fast(query, self.config)
         logging.info(f"[ROUTER] Adaptive tau_fast: {adaptive_tau_fast:.2f} (base: {self.tau_fast:.2f})")
 
-        if thinking_display:
-            thinking_display.update_waiting("Computing query embedding...")
-
         query_emb = llm.get_embedding(query)
 
         if thinking_display:
-            thinking_display.update_waiting("Checking compiled skills...")
+            thinking_display.update_waiting("Matching skills...")
 
         # Unified skill path: check both compiled_skills and semantic_rules
         skills = self.memory.retrieve_skills(query_emb, k=3)
@@ -257,7 +253,8 @@ class ReasoningRouter:
 
                 if sims[0][0] >= adaptive_tau_fast:
                     if thinking_display:
-                        thinking_display.update_waiting(f"FAST route: validating cached solution (sim: {sims[0][0]:.2f})")
+                        thinking_display.show_route("FAST")
+                        thinking_display.start_waiting("Validating cached solution...")
 
                     idx = int(indices[0][0])
                     if 0 <= idx < len(self.memory.episodes):
@@ -408,7 +405,8 @@ class ReasoningRouter:
 
         if max_sim >= self.tau_hybrid and retrieved_eps and not requires_action:
             if thinking_display:
-                thinking_display.start_waiting("HYBRID route: adapting previous solution")
+                thinking_display.show_route("HYBRID")
+                thinking_display.start_waiting("Adapting previous solution...")
 
             log.append(f"Route: HYBRID PATH (sim: {max_sim:.3f})")
             prompt = self._build_hybrid_prompt(full_query_context, retrieved_eps[0])
@@ -425,7 +423,7 @@ class ReasoningRouter:
             _solve_tokens += h_tokens
 
             if thinking_display:
-                thinking_display.update_waiting("Evaluating solution quality...")
+                thinking_display.update_waiting("Evaluating quality...")
 
             candidates = self.critic.evaluate(query, candidates, oracle=oracle)
             logging.info(f"[HYBRID] After critic: {len(candidates)} candidates")
@@ -556,12 +554,14 @@ Provide a brief analysis/summary of what you found. Be concise and focus on key 
                 logging.warning(f"[ROUTER] HYBRID produced no valid candidates - falling back to SLOW")
                 log.append("HYBRID failed: no valid candidates - trying SLOW")
                 if thinking_display:
-                    thinking_display.update_waiting("HYBRID failed, trying SLOW...")
+                    thinking_display.show_route("SLOW")
+                    thinking_display.start_waiting("Falling back to synthesis...")
 
         log.append(f"Route: SLOW PATH (sim: {max_sim:.3f})")
 
         if thinking_display:
-            thinking_display.update_waiting("SLOW route: synthesizing solution from scratch...")
+            thinking_display.show_route("SLOW")
+            thinking_display.start_waiting("Synthesizing solution...")
 
         adaptive_params = self._assess_task_complexity(full_query_context, thinking_display=None) if max_sim < 0.3 else {}
 

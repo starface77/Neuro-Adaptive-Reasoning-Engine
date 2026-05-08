@@ -1,8 +1,3 @@
-"""
-Provides RGB-based themes with proper color definitions,
-avoiding dependency on terminal ANSI color customizations.
-"""
-
 from dataclasses import dataclass
 from typing import Literal
 
@@ -44,9 +39,8 @@ class Theme:
     diff_removed_word: str
 
 DARK_THEME = Theme(
-
-    accent="rgb(255,255,255)",
-    accent_shimmer="rgb(230,230,230)",
+    accent="rgb(215,119,87)",
+    accent_shimmer="rgb(235,159,127)",
 
     text="rgb(255,255,255)",
     text_inverse="rgb(0,0,0)",
@@ -57,25 +51,25 @@ DARK_THEME = Theme(
     border_shimmer="rgb(80,80,80)",
     background="rgb(0,0,0)",
 
-    success="rgb(200,200,200)",
-    error="rgb(180,180,180)",
-    warning="rgb(160,160,160)",
-    info="rgb(140,140,140)",
+    success="rgb(78,186,101)",
+    error="rgb(215,87,87)",
+    warning="rgb(255,193,7)",
+    info="rgb(85,153,255)",
 
-    route_fast="rgb(255,255,255)",
-    route_compiled_skill="rgb(220,220,220)",
-    route_reflex="rgb(200,200,200)",
-    route_hybrid="rgb(160,160,160)",
-    route_slow="rgb(120,120,120)",
+    route_fast="rgb(78,186,101)",
+    route_compiled_skill="rgb(78,200,120)",
+    route_reflex="rgb(177,185,249)",
+    route_hybrid="rgb(255,193,7)",
+    route_slow="rgb(215,119,87)",
 
-    agent_triage="rgb(200,200,200)",
-    agent_planning="rgb(160,160,160)",
-    agent_coding="rgb(140,140,140)",
+    agent_triage="rgb(177,185,249)",
+    agent_planning="rgb(255,193,7)",
+    agent_coding="rgb(215,119,87)",
 
-    diff_added="rgb(50,50,50)",
-    diff_removed="rgb(40,40,40)",
-    diff_added_word="rgb(80,80,80)",
-    diff_removed_word="rgb(70,70,70)",
+    diff_added="rgb(35,60,35)",
+    diff_removed="rgb(60,35,35)",
+    diff_added_word="rgb(78,186,101)",
+    diff_removed_word="rgb(215,87,87)",
 )
 
 LIGHT_THEME = Theme(
@@ -180,20 +174,11 @@ def get_theme(name: ThemeName = "dark") -> Theme:
     return THEMES.get(name, DARK_THEME)
 
 def rgb_to_ansi(color: str) -> str:
-    """Convert RGB or ANSI-named color to escape sequence.
-
-    Examples:
-        rgb(215,119,87) -> \x1b[38;2;215;119;87m
-        ansi:redBright -> \x1b[91m
-    """
     if color.startswith("rgb("):
-
         rgb = color[4:-1].split(",")
         r, g, b = int(rgb[0]), int(rgb[1]), int(rgb[2])
         return f"\x1b[38;2;{r};{g};{b}m"
-
     elif color.startswith("ansi:"):
-
         ansi_map = {
             "black": "30", "red": "31", "green": "32", "yellow": "33",
             "blue": "34", "magenta": "35", "cyan": "36", "white": "37",
@@ -204,19 +189,9 @@ def rgb_to_ansi(color: str) -> str:
         name = color[5:]
         code = ansi_map.get(name, "37")
         return f"\x1b[{code}m"
-
     return "\x1b[0m"
 
 def colorize(text: str, color: str) -> str:
-    """Wrap text in ANSI color sequences.
-
-    Args:
-        text: Text to colorize
-        color: Color from theme (rgb(...) or ansi:...)
-
-    Returns:
-        ANSI-colored text with reset at end
-    """
     return f"{rgb_to_ansi(color)}{text}\x1b[0m"
 
 RICH_STYLE_MAP = {

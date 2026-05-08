@@ -8,6 +8,7 @@ Contains domain-specific agents that form the autonomous workflow:
   - CriticAgent:       Code review and quality check
   - AnalyzerAgent:     Summarizes work and provides conclusions
   - MultiAgentWorkflow: Orchestrates Planner → Coder → Critic
+  - AutonomousAgent:   Tool-calling autonomous agent
   - repo_map:          Repository structure mapper for LLM context
 """
 from .roles.triage import TriageAgent
@@ -17,6 +18,8 @@ from .roles.critic import CriticAgent
 from .roles.analyzer import AnalyzerAgent
 from .workflow import MultiAgentWorkflow
 from .repo_map import generate_repo_map
+from .state import ToolCall, ToolResult, AgentState
+from .autonomous import AutonomousAgent
 
 __all__ = [
     "TriageAgent",
@@ -25,5 +28,9 @@ __all__ = [
     "CriticAgent",
     "AnalyzerAgent",
     "MultiAgentWorkflow",
-    "generate_repo_map"
+    "AutonomousAgent",
+    "generate_repo_map",
+    "ToolCall",
+    "ToolResult",
+    "AgentState"
 ]
