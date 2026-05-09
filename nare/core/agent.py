@@ -125,6 +125,50 @@ class NAREProductionAgent:
 
         return result
 
+    def get_amortization_stats(self) -> Dict[str, Any]:
+        """Compute live amortization metrics.
+
+        Returns:
+            Dict with alpha_t, blended_cost, query counts, and route breakdown.
+        """
+        import math
+        stats = self.metrics.routing_stats()
+        total = stats.get('total_queries', 0)
+        if total == 0:
+            return {
+                'alpha_t': 0.0,
+                'blended_cost': self.config.amortization.c_llm,
+                'total_queries': 0,
+                'memory_size': len(self.memory.episodes),
+                'skills_count': len(self.memory.compiled_skills),
+            }
+
+        amortized = sum(
+            stats.get('route_counts', {}).get(r, 0)
+            for r in ('FAST', 'REFLEX', 'COMPILED_SKILL', 'DIRECT')
+        )
+        alpha_t = amortized / total
+        c_llm = self.config.amortization.c_llm
+        c_mem = self.config.amortization.c_mem
+        kappa = self.config.amortization.kappa
+        mem_size = len(self.memory.episodes)
+        blended_cost = (1.0 - alpha_t) * c_llm + alpha_t * c_mem
+        theoretical_alpha = 1.0 - math.exp(-kappa * mem_size)
+        marginal_cost = -kappa * math.exp(-kappa * mem_size) * (c_llm - c_mem)
+
+        return {
+            'alpha_t': round(alpha_t, 4),
+            'alpha_t_theoretical': round(theoretical_alpha, 4),
+            'blended_cost': round(blended_cost, 2),
+            'marginal_cost_reduction': round(marginal_cost, 4),
+            'total_queries': total,
+            'amortized_queries': amortized,
+            'novel_queries': total - amortized,
+            'memory_size': mem_size,
+            'skills_count': len(self.memory.compiled_skills),
+            'route_breakdown': stats.get('route_counts', {}),
+        }
+
     def _after_solve(self, query: str, result: Dict[str, Any]):
         route = result.get("route_decision")
         final_answer = result.get("final_answer")

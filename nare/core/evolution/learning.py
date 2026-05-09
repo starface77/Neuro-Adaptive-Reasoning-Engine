@@ -38,6 +38,7 @@ def discover_rule(
         return None
 
     n_holdout = max(1, int(len(episodes) * holdout_ratio))
+    episodes = list(episodes)  # defensive copy before shuffle
     np.random.shuffle(episodes)
     train_eps = episodes[:-n_holdout]
     holdout_eps = episodes[-n_holdout:]
@@ -77,13 +78,14 @@ def discover_rule(
     if not scores:
         return None
 
-    best_idx, best_score = max(scores, key=lambda x: x[1])
+    best_pos = max(range(len(scores)), key=lambda j: scores[j][1])
+    best_idx, best_score = scores[best_pos]
 
     if best_score < 0.6:
         logging.warning(f"[Library Learning] Best score {best_score:.2f} < 0.6, reject")
         return None
 
-    _, best_cand, best_op = operators[best_idx]
+    _, best_cand, best_op = operators[best_pos]
 
     logging.info(f"[Library Learning] Selected rule with score {best_score:.2f}")
 

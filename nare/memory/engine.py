@@ -592,11 +592,12 @@ class MemorySystem:
 
     def _mark_dirty(self):
         """Mark memory as dirty and schedule flush."""
-        self._dirty = True
-        if self._flush_timer is None:
-            self._flush_timer = threading.Timer(5.0, self._flush)
-            self._flush_timer.daemon = True
-            self._flush_timer.start()
+        with self._lock:
+            self._dirty = True
+            if self._flush_timer is None:
+                self._flush_timer = threading.Timer(5.0, self._flush)
+                self._flush_timer.daemon = True
+                self._flush_timer.start()
 
     def _flush(self):
         """Background flush of dirty memory."""

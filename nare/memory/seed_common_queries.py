@@ -13,7 +13,7 @@ COMMON_QUERIES = [
 
 def seed_memory(memory_system):
     """Add common queries to memory for instant FAST route."""
-    from ...reasoning import llm
+    from ..reasoning import llm
     import numpy as np
     
     for query, answer in COMMON_QUERIES:

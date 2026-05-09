@@ -116,7 +116,19 @@ def _clean_answer(answer):
     return answer
 
 
-def _render_status(console, route, elapsed, tokens_in, tokens_out):
+ROUTE_DESCRIPTIONS = {
+    "FAST": "cached from episodic memory",
+    "COMPILED_SKILL": "executed compiled skill",
+    "REFLEX": "matched semantic rule",
+    "HYBRID": "delta reasoning with memory context",
+    "SLOW": "verified synthesis (best-of-N)",
+    "SLOW-RETRY": "verified synthesis retry",
+    "SLOW-PATH-FIX": "verified synthesis with path fix",
+    "DIRECT": "direct response",
+    "AGENT": "autonomous agent loop",
+}
+
+def _render_status(console, route, elapsed, tokens_in, tokens_out, result=None, session=None):
     total_tokens = tokens_in + tokens_out
     color = blocks.ROUTE_PALETTE.get(route, blocks.TEXT_MUTED)
     icon = blocks.ROUTE_ICONS.get(route, "◆")
@@ -135,7 +147,38 @@ def _render_status(console, route, elapsed, tokens_in, tokens_out):
         line.append("  ·  ", style=blocks.TEXT_FAINT)
         line.append(f"{token_str} tokens", style=blocks.TEXT_MUTED)
 
+    # Show amortization ratio if available
+    if result:
+        alpha = result.get("amortization_ratio", 0)
+        if alpha > 0:
+            line.append("  ·  ", style=blocks.TEXT_FAINT)
+            line.append(f"α={alpha:.0%}", style="#5599FF")
+
     console.print(line)
+
+    # Show route description
+    desc = ROUTE_DESCRIPTIONS.get(route)
+    if desc:
+        console.print(f"  [#555555]  {desc}[/]")
+
+    # Show memory context info
+    if session and hasattr(session, 'agent') and session.agent:
+        try:
+            mem = session.agent.memory
+            ep_count = len(mem.episodes)
+            sk_count = len(mem.compiled_skills)
+            if ep_count > 0 or sk_count > 0:
+                mem_line = Text()
+                mem_line.append("    ", style="")
+                mem_line.append(f"{ep_count}", style="#5599FF")
+                mem_line.append(" episodes", style="#555555")
+                if sk_count > 0:
+                    mem_line.append("  ·  ", style="#444444")
+                    mem_line.append(f"{sk_count}", style="#4EBA65")
+                    mem_line.append(" skills", style="#555555")
+                console.print(mem_line)
+        except Exception:
+            pass
 
 
 def run_query(session: NareSession, query: str):
@@ -222,7 +265,7 @@ def run_query(session: NareSession, query: str):
         console.print(answer, style="white")
         console.print()
 
-    _render_status(console, route, elapsed, tokens_in, tokens_out)
+    _render_status(console, route, elapsed, tokens_in, tokens_out, result=result, session=session)
 
     if getattr(mode_config, 'auto_commit', False):
         import subprocess

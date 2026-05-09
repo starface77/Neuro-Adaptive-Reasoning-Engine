@@ -117,11 +117,11 @@ class EvolutionEngine:
         logging.info(f"[LIBRARY LEARNING] Total episodes: {len(self.memory.episodes)}")
         logging.info(f"[LIBRARY LEARNING] Existing skills: {len(self.memory.compiled_skills)}")
 
-        episodes_to_cluster = [ep for ep in self.memory.episodes if ep.get('score', 0) >= 0.80]
-        logging.info(f"[LIBRARY LEARNING] High-score episodes (≥0.80): {len(episodes_to_cluster)}")
+        episodes_to_cluster = [ep for ep in self.memory.episodes if ep.get('score', 0) >= 0.50]
+        logging.info(f"[LIBRARY LEARNING] Eligible episodes (score≥0.50): {len(episodes_to_cluster)}")
 
         if len(episodes_to_cluster) < 3:
-            logging.info("[LIBRARY LEARNING] Need ≥3 verified episodes for rule discovery.")
+            logging.info("[LIBRARY LEARNING] Need ≥3 episodes with score≥0.50 for rule discovery.")
             return
 
         embeddings = []
@@ -143,7 +143,8 @@ class EvolutionEngine:
         faiss.normalize_L2(X)
 
         # Use cosine distance via normalized L2
-        clustering = DBSCAN(eps=0.15, min_samples=3, metric='euclidean')
+        # eps=0.5 on L2-normalized vectors ≈ cosine similarity ≥ 0.875
+        clustering = DBSCAN(eps=0.5, min_samples=3, metric='euclidean')
         labels = clustering.fit_predict(X)
 
         logging.info(f"[LIBRARY LEARNING] DBSCAN found {len(set(labels))} clusters (including noise)")

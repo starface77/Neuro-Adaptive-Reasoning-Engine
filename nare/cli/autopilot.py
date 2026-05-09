@@ -81,7 +81,7 @@ class AutopilotAgent:
         """Build enriched query with context from previous attempts."""
 
         if not context:
-
+            return f"""{original_task}
 
 IMPORTANT: After completing the task, verify your work by:
 1. Running any tests if applicable
@@ -90,6 +90,7 @@ IMPORTANT: After completing the task, verify your work by:
 
 Provide clear verification steps in your response."""
 
+        query = f"""{original_task}
 
 PREVIOUS ATTEMPTS:
 """
@@ -97,6 +98,7 @@ PREVIOUS ATTEMPTS:
             query += f"\nIteration {ctx['iteration']}:\n"
             query += f"Error: {ctx['error']}\n"
 
+        query += f"""
 CURRENT ERROR: {last_error}
 
 Analyze what went wrong and provide a corrected solution.

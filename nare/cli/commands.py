@@ -310,9 +310,19 @@ class MemoryCommand(Command):
         episodes = info.get("episodes", 0)
         skills = info.get("skills", 0)
 
-        high_quality = int(episodes * 0.3)
-        mature = int(skills * 0.6)
+        # Compute real stats from memory instead of fake ratios
+        memory = session.agent.memory
+        high_quality = sum(1 for ep in memory.episodes if ep.get('score', 0) >= 0.80)
+        mature = sum(1 for sk in memory.compiled_skills if sk.get('use_count', 0) >= 3)
+
+        # Real cache hit rate from router metrics
         cache_hit_rate = 0.0
+        if hasattr(session.agent, 'router') and hasattr(session.agent.router, 'route_metrics'):
+            rm_stats = session.agent.router.route_metrics.get_stats()
+            total_q = rm_stats.get('total_queries', 0)
+            if total_q > 0:
+                fast_count = rm_stats.get('route_distribution', {}).get('FAST', 0)
+                cache_hit_rate = fast_count
 
         ui.console.print()
         MemoryStats.render(
@@ -726,12 +736,23 @@ class MetricsCommand(Command):
             bar = "█" * bar_length
             ui.console.print(f"    {route:20s} {pct:5.1%} {bar}", style="#999999")
 
+        # Amortization stats
+        if hasattr(session.agent, 'get_amortization_stats'):
+            amor = session.agent.get_amortization_stats()
+            ui.console.print()
+            ui.console.print("  Amortization:", style="#D77757")
+            ui.console.print(f"    α_t (empirical)     {amor.get('alpha_t', 0):.1%}", style="#999999")
+            ui.console.print(f"    α_t (theoretical)   {amor.get('alpha_t_theoretical', 0):.1%}", style="#999999")
+            ui.console.print(f"    Blended cost        {amor.get('blended_cost', 0):.1f}", style="#999999")
+            ui.console.print(f"    Amortized queries   {amor.get('amortized_queries', 0)} / {amor.get('total_queries', 0)}", style="#999999")
+            ui.console.print(f"    Memory size         {amor.get('memory_size', 0)} episodes", style="#999999")
+            ui.console.print(f"    Skills count        {amor.get('skills_count', 0)}", style="#999999")
+
         # Top skills
         if stats["top_skills"]:
             ui.console.print()
             ui.console.print("  Top Skills:", style="#D77757")
             for pattern, count in stats["top_skills"]:
-                # Truncate long patterns
                 if len(pattern) > 50:
                     pattern = pattern[:47] + "..."
                 ui.console.print(f"    {pattern:50s} {count:3d} uses", style="#999999")

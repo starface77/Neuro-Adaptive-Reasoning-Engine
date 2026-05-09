@@ -116,7 +116,7 @@ def _try_execute(raw: str, use_subprocess: bool = True) -> Tuple[str, str, Optio
     if use_subprocess:
         try:
             from ...execution.local import safe_execute_subprocess
-            out = safe_execute_subprocess(code)
+            out = safe_execute_subprocess(code, query="")
         except Exception as exc:
             return code, "", f"{type(exc).__name__}: {exc}"
     else:

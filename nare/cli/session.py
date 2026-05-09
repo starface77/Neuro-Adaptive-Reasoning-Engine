@@ -428,22 +428,14 @@ class NareSession:
                     self.agent.memory.add_episode(episode_data, np.array([query_emb], dtype=np.float32))
                     log.info(f"[Session] Saved AgentLoop result to NARE memory")
 
-                    # Skill compilation disabled - too intrusive
-                    # words = query.strip().split()
-                    # if intent == "EDIT" and len(query.strip()) > 10 and len(words) >= 2:
-                    #     from nare.cli.interactive import ask_compile_skill
-                    #     if ask_compile_skill(query):
-                    #         try:
-                    #             # Use evolution engine to compile skill directly
-                    #             if self.agent.evolution:
-                    #                 log.info(f"[Session] Triggering skill compilation for query: {query[:50]}")
-                    #                 self.agent.evolution._compile_skills()
-                    #                 self.agent.memory.force_save()
-                    #                 log.info(f"[Session] Skill compiled and saved")
-                    #             else:
-                    #                 log.warning(f"[Session] Evolution engine not available")
-                    #         except Exception as compile_err:
-                    #             log.warning(f"[Session] Failed to compile skill: {compile_err}")
+                    # Skill compilation: prompt user after successful EDIT tasks
+                    words = query.strip().split()
+                    if intent == "EDIT" and len(query.strip()) > 10 and len(words) >= 2:
+                        try:
+                            if self.agent.evolution:
+                                self._prompt_skill_compilation(query, run, thinking_display)
+                        except Exception as compile_err:
+                            log.warning(f"[Session] Failed to compile skill: {compile_err}")
 
                     if self.agent.config.sleep.enabled:
                         if self.agent.evolution.check_compilation_trigger():

@@ -158,7 +158,9 @@ The code will be formally verified - it must:
 
 Provide only the code, no explanations."""
 
-        prompt += f"""
+            return prompt
+
+        prompt = f"""
 PREVIOUS ATTEMPTS FAILED VERIFICATION:
 """
 
