@@ -323,8 +323,8 @@ Apache License 2.0 - see [LICENSE](LICENSE)
 
 ## Contact
 
-- **Issues**: [GitHub Issues](https://github.com/Nare-Labs/NARE-CLI/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/Nare-Labs/NARE-CLI/discussions)
+- **Issues**: [GitHub Issues](https://github.com/narelabs/NARE-CLI/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/narelabs/NARE-CLI/discussions)
 
 ---
 
